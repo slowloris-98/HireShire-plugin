@@ -1,3 +1,17 @@
-1. plugin should be device agnostic - work on both windows linux/mac
-2. reevaluate the database storage and requirement, should we even introduce database in this plugin as users will have the csv with the shortlisted jobs for them already.
+1. When applier enabled:
+    - the hireshire_job_search/hireshire_run_results/<datetime>/ folder should contain folder for each application, inside which the resume used for applying should be stored and if possible also the job description. The result csv should have if the job was already applied for or not.
+
+2. reevaluate the database storage and requirement, should we even introduce database in this plugin as users will have the csv with the shortlisted jobs for them already. if db then when should it be cleaned, as we do not want the plugin to baloon on user disk.
+
 3. Resume expansion should also have access to the project/work ex bank so that the matcher can score from unlisted projects also. In fact it can also happen that the matcher only has the project bank instead of the resume.
+
+4. remove dry run option from the applier
+
+5. install python and node directly from the single command.
+
+
+user flow:
+
+1. create new folder, add resume -> csv's should be saved here?
+2. open claude code from this folder
+3. setup -> orchestrate

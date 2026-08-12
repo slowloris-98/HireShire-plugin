@@ -37,15 +37,66 @@ Then run `scripts/bootstrap.py` if the venv isn't ready, and call
 directory. Everything after this edits that copy, so plugin updates never
 overwrite their answers.
 
-## The questions
+## Step 1 — where their job search lives
+
+Ask this **before** the resume question: the resume gets copied into the folder
+they pick, so it has to exist first.
+
+This is the one answer you supply rather than the engine. **You can see the working
+directory; the engine deliberately cannot** — a plugin's cwd is whatever project
+the user happens to be in, so the engine reads this from config and never from cwd.
+Capture it once, here.
+
+Default to the folder this session started in. Show it and ask:
+
+> I'll keep your job search in `<cwd>`. Your results go in
+> `hireshire_run_results/`, and I'll keep a copy of your resume in
+> `resume/original/`. Somewhere else? Give me the full path.
+
+Then create the structure and record it:
+
+- ```python
+  from hireshire import workspace, config_writer
+  ws = workspace.init_workspace(r"<their answer, or cwd>")
+  config_writer.write_config("scraper", {"workspace_dir": str(ws)})
+  ```
+
+`init_workspace` creates `resume/original/` and `hireshire_run_results/` if they
+are missing, so a folder they made thirty seconds ago and left empty is fine. It
+refuses a folder inside the plugin's own directories — those are wiped on update —
+and tells them why.
+
+Say once, plainly: **this is recorded, so results land there even if they later
+launch Claude Code from somewhere else.** Re-running `/hireshire:setup` is how they
+move it; results already written stay where they are.
+
+## Step 2 — the questions
 
 Ask these **conversationally and in small groups** — two or three at a time, not
 as a ten-item form. Confirm what you understood before writing.
 
 1. **Resume** → `matcher.resume_path`, and the same path to `applier.resume_path`.
-   Validate immediately by extracting text with `extract_resume_text`. If it
-   yields nothing the PDF is a scan; say so now rather than letting the first run
-   fail three minutes in.
+
+   Look in the workspace first with `workspace.find_resumes(ws)`. A PDF already
+   sitting in `resume/original/` means the documented flow worked — offer it by
+   name and confirm rather than asking for a path.
+
+   Otherwise ask for the file and call `workspace.install_resume(path, ws)`:
+
+   - ```python
+     dest = workspace.install_resume(r"<their path>", ws)
+     config_writer.write_config("matcher", {"resume_path": str(dest)})
+     config_writer.write_config("applier", {"resume_path": str(dest)})
+     ```
+
+   It validates with `extract_resume_text` **before** copying, so a scanned PDF
+   fails now — while they can still pick another file — rather than three minutes
+   into the first run, and it leaves nothing behind in their folder when it does.
+   Then it copies the file into `resume/original/` so the whole search is one
+   directory. It never overwrites: same name, different contents gets a numbered
+   suffix.
+
+   **Write the path it returns**, which is the copy's, not the one they typed.
 
 2. **Locations** → `scraper.location_filter`. Case-insensitive substring match,
    so "united states", "remote", "london" all work. Empty means everywhere.
@@ -153,3 +204,9 @@ Summarise what you configured in plain language — locations, how selective, ho
 many jobs per run, which boards, what happens next — and tell them to run
 `/hireshire:find-jobs`. Warn that the first sweep is the slowest, because the job
 database starts empty and every posting is new.
+
+Name the workspace and show them where the first CSV will appear:
+
+> Everything lives in `<workspace>`. Your resume is in `resume/original/`, and
+> after the first search you'll find `hireshire_run_results/<date>_<time>/` with
+> the results CSV in it.

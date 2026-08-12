@@ -10,13 +10,30 @@ rate limit.
 
 ## Install
 
+Make a folder for your job search, put your resume in it, and open Claude Code
+there:
+
 ```
-/plugin marketplace add <owner>/HireShire-plugin
+hireshire_job_search/
+└── resume/
+    └── original/
+        └── your_resume.pdf
+```
+
+Then, in Claude Code:
+
+```
+/plugin marketplace add slowloris-98/HireShire-plugin
 /plugin install hireshire@hireshire
 /hireshire:setup
 ```
 
 That is the whole installation. No `git clone`, no terminal, no YAML.
+
+Setup adopts the folder you launched from, finds the resume you left there, and
+writes every run's results back into it. You do not have to create the folders
+first — point setup at an empty folder and it builds the layout for you, copying
+in a resume from wherever you keep it.
 
 **Requirements:** Claude Code with a Pro or Max subscription (an OpenAI API key
 works as an alternative), Python 3.10+, and about 3 GB of disk for the models.
@@ -101,8 +118,23 @@ discovers is kept separately so an update never erases it.
 
 ## Where your data lives
 
-Everything mutable — the SQLite database, your config, your results, the venv —
-lives in `~/.claude/plugins/data/hireshire-hireshire/`. That directory survives
+**Your job search is one folder, and it is yours.** Your resume and every run's
+results live in the folder you chose at setup:
+
+```
+hireshire_job_search/
+├── resume/original/your_resume.pdf
+└── hireshire_run_results/
+    ├── 2026-08-12_143005/2026-08-12_143005_results.csv
+    └── 2026-08-12_183012/2026-08-12_183012_results.csv
+```
+
+One directory to back up, sync or delete. The folder's absolute path is recorded
+at setup, so results land there whether or not you launched Claude Code from it.
+Re-run `/hireshire:setup` to move it; runs already written stay where they are.
+
+**The plugin's own state** — the SQLite database, your config, the venv, logs —
+stays in `~/.claude/plugins/data/hireshire-hireshire/`. That directory survives
 plugin updates. The install directory is replaced wholesale on every update and
 holds only shipped, read-only content.
 

@@ -40,19 +40,31 @@ python scripts/run_engine.py orchestrate.py --once
 
 ## Architecture
 
-### The ROOT/DATA split governs where every file goes
+### The ROOT/DATA/WORKSPACE split governs where every file goes
 
 `${CLAUDE_PLUGIN_ROOT}` is the install dir and is **replaced wholesale on every
 plugin update** — shipped, read-only content only: engine code, default YAMLs,
 company slug lists, the curated bad-slug seed. `${CLAUDE_PLUGIN_DATA}`
 (`~/.claude/plugins/data/hireshire-hireshire/`) **survives updates** — venv, SQLite
-DB, the user's config, generated profile, results.
+DB, the user's config, generated profile, logs.
 
 **Putting mutable state in ROOT loses it on the next update.** `hireshire/paths.py`
 is the single place this is decided; nothing else may resolve a path against the
 working directory, because a plugin's cwd is whatever project the user is in.
 `paths.resolve_data()` passes absolute paths through (that is how the user's resume,
 which lives outside the plugin, is addressed) and anchors relative ones under DATA.
+
+The third root belongs to the user, not the plugin. **WORKSPACE** is the folder they
+made for their job search — resume in `resume/original/`, one directory per run in
+`hireshire_run_results/`. Its absolute path is captured **once** by
+`/hireshire:setup` into `scraper.workspace_dir`; `paths.results_root()` is the only
+reader. This does not weaken the cwd rule above, it is what makes obeying it
+possible: the *skill* knows the working directory and records it, the engine only
+ever reads config, so a session launched from another folder still writes to the
+folder the user chose. `hireshire/workspace.py` owns creating it and copying the
+resume in, and refuses a workspace inside ROOT or DATA. Empty `workspace_dir` falls
+back to `DATA/results`, which is where installs predating the setting keep writing —
+so every statement about the results path needs that clause.
 
 Consequences already worked out, which should not be re-derived:
 
@@ -129,7 +141,8 @@ asyncio queues with exactly one `None` sentinel per queue, always sent in a
 
 ```
 scraper.main(out_queue=q1) → q1[(board_token, list[Job])] → matcher.main(q1→q2)
-  → q2[(MatchResult, Job)] → _collect_results → q3 → results CSV + pipeline_results
+  → q2[(MatchResult, Job)] → _collect_results → q3 → pipeline_results table
+  → <workspace>/hireshire_run_results/<stamp>/<stamp>_results.{csv,json}
 ```
 
 Each `main()` takes optional `in_queue` / `out_queue` / `quiet`. `quiet=True`

@@ -76,6 +76,17 @@ class ScraperSettings(BaseModel):
     # the monitor rather than substituting — so the value has to come from here).
     poll_interval_hours: float = 4.0
 
+    # The user's own job-search folder, captured ONCE by /hireshire:setup. Results
+    # go to <workspace_dir>/hireshire_run_results/ and their resume is kept in
+    # <workspace_dir>/resume/original/. It lives here for the same reason
+    # poll_interval_hours does: the monitor needs it and cannot use ${user_config.*}.
+    #
+    # It is stored rather than derived from cwd because a plugin's cwd is whatever
+    # project the user happens to be in — a session launched somewhere else must
+    # still write to the folder they chose. Empty = fall back to DATA/results,
+    # which is where installs that predate this setting keep writing.
+    workspace_dir: str = ""
+
     # Which job boards to sweep. Workday (POST-based) and BambooHR (list->detail,
     # two requests per company) dominate run time — 14,798 more companies between
     # them — so they are opt-in. A disabled board's slug file is never even read.
@@ -113,6 +124,22 @@ class ScraperSettings(BaseModel):
     def _floor_request_timeout(cls, v: float) -> float:
         # Guarantee every API call gets at least a 10s window (user requirement).
         return max(10.0, v)
+
+    @field_validator("workspace_dir")
+    @classmethod
+    def _workspace_must_be_absolute(cls, v: str) -> str:
+        # Windows' "Copy as path" wraps the path in quotes, and users paste it whole.
+        v = v.strip().strip('"').strip("'")
+        if not v:
+            return ""
+        p = Path(v).expanduser()
+        if not p.is_absolute():
+            raise ValueError(
+                f"workspace_dir must be an absolute path, got {v!r}. A relative "
+                "value would resolve against the working directory, which is "
+                "exactly what this plugin must never do — see hireshire/paths.py."
+            )
+        return str(p)
 
     def make_limiter(self, source: str) -> RateLimiter:
         cfg = self.rate_limits.get(source) or RateLimitConfig(concurrency=self.concurrency)

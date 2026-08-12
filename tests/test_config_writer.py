@@ -97,9 +97,11 @@ def test_shipped_defaults_carry_no_personal_or_role_specific_data():
     and no real contact details may ship in the package."""
     matcher = (paths.SHIPPED_CONFIG / "matcher.yaml").read_text(encoding="utf-8")
     applier = (paths.SHIPPED_CONFIG / "applier.yaml").read_text(encoding="utf-8")
+    scraper_yaml = (paths.SHIPPED_CONFIG / "scraper.yaml").read_text(encoding="utf-8")
 
     for leaked in ("Udayan", "udayan", "6693406033", "@gmail.com"):
         assert leaked not in matcher and leaked not in applier
+        assert leaked not in scraper_yaml
 
     import yaml
     m = yaml.safe_load(matcher)
@@ -112,3 +114,8 @@ def test_shipped_defaults_carry_no_personal_or_role_specific_data():
     assert a["settings"]["enable_applier"] is False
     assert a["settings"]["dry_run"] is True
     assert a["settings"]["email"] == ""
+
+    # workspace_dir is the first setting whose natural value is an absolute path on
+    # the packager's own machine, so it is the likeliest thing to ship by accident.
+    s = yaml.safe_load(scraper_yaml)
+    assert s["settings"]["workspace_dir"] == ""

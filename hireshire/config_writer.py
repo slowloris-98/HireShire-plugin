@@ -46,6 +46,19 @@ class FieldSpec:
     type: str                      # bool | int | float | str | str_list | enum
     doc: str                       # human-readable description
     options: Optional[list[str]] = None
+    # Applied to the incoming value before it is written. The pydantic models
+    # validate a *copy* of the document, so any coercion a field_validator performs
+    # is discarded — it can reject a value but cannot clean one. Fields that need
+    # the stored form tidied (rather than merely checked) say so here.
+    normalise: Optional[Callable[[Any], Any]] = None
+
+
+def _clean_path_value(v: Any) -> Any:
+    """Strip the quotes Windows Explorer's "Copy as path" adds, and expand `~`."""
+    if not isinstance(v, str):
+        return v
+    v = v.strip().strip('"').strip("'")
+    return str(Path(v).expanduser()) if v else ""
 
 
 @dataclass
@@ -88,6 +101,12 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 "Which job boards to sweep. Adding workday and bamboohr roughly "
                 "triples the company count and the run time.",
             ),
+            "workspace_dir": FieldSpec(
+                ("settings", "workspace_dir"), "str",
+                "Absolute path to the user's job-search folder. Their resume copy "
+                "and every run's results live under it. Captured once at setup.",
+                normalise=_clean_path_value,
+            ),
         },
     ),
     "matcher": PhaseSpec(
@@ -107,7 +126,10 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 ("settings", "effort"), "enum",
                 "Thinking level for the claude_code provider.", options=EFFORTS,
             ),
-            "resume_path": FieldSpec(("settings", "resume_path"), "str", "Path to the resume PDF."),
+            "resume_path": FieldSpec(
+                ("settings", "resume_path"), "str", "Path to the resume PDF.",
+                normalise=_clean_path_value,
+            ),
             "search_profile_path": FieldSpec(
                 ("settings", "search_profile_path"), "str",
                 "Generated candidate profile used as the reranker query.",
@@ -161,7 +183,10 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 ("settings", "dry_run"), "bool",
                 "Fill every form but never click submit.",
             ),
-            "resume_path": FieldSpec(("settings", "resume_path"), "str", "Resume PDF to upload."),
+            "resume_path": FieldSpec(
+                ("settings", "resume_path"), "str", "Resume PDF to upload.",
+                normalise=_clean_path_value,
+            ),
             "first_name": FieldSpec(("settings", "first_name"), "str", "Applicant first name."),
             "last_name": FieldSpec(("settings", "last_name"), "str", "Applicant last name."),
             "email": FieldSpec(("settings", "email"), "str", "Applicant email."),
@@ -293,7 +318,8 @@ def write_config(phase: str, values: dict[str, Any]) -> dict[str, Any]:
 
     doc = _load_doc(path)
     for key, value in values.items():
-        _set_path(doc, spec.fields[key].path, value)
+        fs = spec.fields[key]
+        _set_path(doc, fs.path, fs.normalise(value) if fs.normalise else value)
 
     try:
         spec.validate(_plain(doc))

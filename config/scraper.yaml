@@ -9,6 +9,15 @@ settings:
   db_path: hireshire.db  # shared SQLite datastore — scraper writes the jobs + run_companies tables
   poll_interval_hours: 4  # how often /hireshire:start-orchestration re-sweeps
 
+  # Your job-search folder, set by /hireshire:setup. Everything you look at lives
+  # under it:
+  #   <workspace_dir>/resume/original/          your resume
+  #   <workspace_dir>/hireshire_run_results/    one folder per run, holding the CSV
+  # Recorded once as an ABSOLUTE path, so a session launched from a different
+  # folder still writes here. Re-run /hireshire:setup to move it.
+  # Empty = results fall back to the plugin's own data directory.
+  workspace_dir: ""
+
   # Which boards to sweep. Greenhouse + Ashby + Lever + the direct portals is
   # ~10,000 companies. Adding workday and bamboohr takes it to ~24,700, but both
   # are slow — Workday is POST-based and BambooHR needs two requests per company —

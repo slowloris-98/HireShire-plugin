@@ -13,6 +13,11 @@ Check that `${CLAUDE_PLUGIN_DATA}/config/matcher.yaml` exists and has a
 `resume_path`. If it does not, the user has not run `/hireshire:setup` — say so
 and stop rather than running with defaults that will match nothing.
 
+`settings.workspace_dir` in `${CLAUDE_PLUGIN_DATA}/config/scraper.yaml` is where
+results go. **An empty value is not an error** — installs that predate the setting
+keep writing to the plugin's own data directory until the user re-runs setup. Note
+it and carry on; only mention it when reporting where the results landed.
+
 ## Run it
 
 ```bash
@@ -39,10 +44,24 @@ budget is spent on the right jobs.
 
 ## Report back
 
-Results land in `${CLAUDE_PLUGIN_DATA}/results/<run_id>/pipeline_results.csv`.
+Results land in the user's own job-search folder:
 
-Read it and show the shortlisted jobs as a table sorted by score — title,
-company, location, score, and the URL. Give them the CSV path too.
+```
+<workspace_dir>/hireshire_run_results/<date>_<time>/<date>_<time>_results.csv
+```
+
+The run prints that exact path on its last line (`Results: …`) — read it from
+there rather than reconstructing it. `${CLAUDE_PLUGIN_DATA}/last_run.json` holds
+the same path if you need it later. If `workspace_dir` is empty, the run wrote to
+`${CLAUDE_PLUGIN_DATA}/results/` instead; say so and mention that re-running
+`/hireshire:setup` moves results into a folder of their own.
+
+Read the CSV and show the shortlisted jobs as a table sorted by score — title,
+company, location, score, and the URL. Give them the path too.
+
+If the run reports it could not write the CSV, the file was locked — almost always
+open in Excel. The results are safe in the database; tell them to close it and
+re-run to get the CSV.
 
 Two things worth surfacing if the numbers warrant it:
 

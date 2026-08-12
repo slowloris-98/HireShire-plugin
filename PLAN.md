@@ -139,8 +139,15 @@ title, company, location, posted_at, job_url, relevance_score, job_id, found_at
 
 Add `location` and `posted_at` to the record dict in `_bypass_tuner` (`orchestrate.py:78`)
 **and** the real tuner result dict, sourced from the `Job` already in hand. Keep the
-tuner/applier columns only when those stages are enabled. Write under
-`${CLAUDE_PLUGIN_DATA}/results/`.
+tuner/applier columns only when those stages are enabled. ~~Write under
+`${CLAUDE_PLUGIN_DATA}/results/`.~~
+
+> **Superseded (0.2.0).** Results are written into the user's own job-search folder
+> — `<workspace>/hireshire_run_results/<stamp>/<stamp>_results.csv` — recorded once
+> at setup as `scraper.workspace_dir`. `${CLAUDE_PLUGIN_DATA}/results/` remains the
+> fallback for installs that predate the setting. Everything else (DB, logs, venv,
+> config, profile) still lives in the data directory. The cwd rule is untouched: the
+> setup skill captures the absolute path, the engine only reads config.
 
 ### 4. Board selection — Workday and BambooHR opt-in
 

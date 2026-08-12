@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "hireshire",
   "displayName": "HireShire",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sweeps 24,000+ company job boards directly, scores every opening against your resume on your own Claude subscription, and fills out the applications.",
   "author": {
     "name": "Udayan Atreya"

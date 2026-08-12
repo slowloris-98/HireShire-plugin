@@ -149,6 +149,26 @@ async def _launch_apply() -> None:
     await _launch_skill("apply")
 
 
+def _run_stamp(now: datetime | None = None) -> str:
+    """The run's display stamp, used for the results folder and the files in it.
+
+    LOCAL time, unlike `run_id`, because this one is read by a human browsing
+    their own folder — a run at 14:30 filed under `090005` would be a bug report.
+    It is never a key: `run_id` stays UTC so it is monotonic and cannot collide
+    when the clock goes back an hour at the end of DST.
+    """
+    now = now or datetime.now(timezone.utc)
+    return now.astimezone().strftime("%Y-%m-%d_%H%M%S")
+
+
+def _csv_name(stamp: str) -> str:
+    return f"{stamp}_results.csv"
+
+
+def _json_name(stamp: str) -> str:
+    return f"{stamp}_results.json"
+
+
 async def _open_csv_append(path: Path, attempts: int = 5, base_delay: float = 0.5):
     """Open `path` in append mode, retrying on a transient Windows lock
     (PermissionError) with exponential backoff. Returns the open file handle,
@@ -167,13 +187,19 @@ async def _open_csv_append(path: Path, attempts: int = 5, base_delay: float = 0.
             await asyncio.sleep(delay)
 
 
-async def _track_results(q: asyncio.Queue, results_dir: Path, run_id: str) -> None:
+async def _track_results(
+    q: asyncio.Queue, results_dir: Path, run_id: str, stamp: str, quiet: bool = False
+) -> None:
     """Persist each pipeline result to the DB (O(1) per row) and append it to the
     per-run CSV. The CSV handle is opened once for the run's lifetime; a transient
     file lock retries with backoff and, if it never clears, degrades to DB-only
-    writes rather than crashing the pipeline (the DB is the source of truth)."""
+    writes rather than crashing the pipeline (the DB is the source of truth).
+
+    That degrade path matters more than it used to: the CSV now sits in a folder
+    the user actively browses and may well have open in Excel, so the lock is a
+    routine event rather than a theoretical one."""
     db = get_db()
-    csv_path = results_dir / "pipeline_results.csv"
+    csv_path = results_dir / _csv_name(stamp)
 
     write_header = not csv_path.exists()
     f = await _open_csv_append(csv_path)
@@ -183,6 +209,15 @@ async def _track_results(q: asyncio.Queue, results_dir: Path, run_id: str) -> No
             "Could not open %s after retries; continuing with DB-only writes",
             csv_path,
         )
+        # The run still "succeeds" with rows only in the DB, so say so where the
+        # user will see it — a logger.error in a file nobody opens is not enough.
+        # Never under quiet: each monitor stdout line becomes a notification.
+        if not quiet:
+            console.print(
+                f"[yellow]Could not write {csv_path} — it looks locked by another "
+                f"program (Excel?). Results are in the database; close the file "
+                f"and re-run to get the CSV.[/yellow]"
+            )
     else:
         writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS, extrasaction="ignore")
         if write_header:
@@ -210,14 +245,42 @@ async def _track_results(q: asyncio.Queue, results_dir: Path, run_id: str) -> No
             f.close()
 
 
-async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str) -> None:
+async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, stamp: str) -> None:
     """Export the run's pipeline results to JSON once from the DB (read by the
     /apply skill) and record the pipeline run's summary row."""
     db = get_db()
     rows = await asyncio.to_thread(db.load_pipeline_results, run_id)
-    (results_dir / "pipeline_results.json").write_text(
-        json.dumps(rows, indent=2), encoding="utf-8"
-    )
+
+    json_path = results_dir / _json_name(stamp)
+    try:
+        json_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    except OSError as exc:
+        # Everything of value — the CSV and every DB row — is already written by
+        # the time we get here, so letting this escape would report a fully
+        # successful run as a failure.
+        logger.error("Could not write %s: %s", json_path, exc)
+
+    # A fixed pointer to the newest run, so /apply does not have to guess where
+    # the results root is or which filename generation a directory holds. Metadata
+    # about a run, not a result of it, so it belongs in the data dir.
+    try:
+        paths.LAST_RUN_PATH.write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "stamp": stamp,
+                    "results_dir": str(results_dir),
+                    "csv": str(results_dir / _csv_name(stamp)),
+                    "json": str(json_path),
+                    "total_results": len(rows),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("Could not write %s: %s", paths.LAST_RUN_PATH, exc)
+
     await asyncio.to_thread(
         db.finalise_run, run_id, PHASE_PIPELINE, started_at, None,
         {"total_results": len(rows)},
@@ -251,14 +314,17 @@ async def run_pipeline(
     `quiet` suppresses the Rich live view entirely — required under the monitor,
     where every stdout line becomes a user-facing notification.
     """
-    run_id = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    started_at = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    run_id = now.strftime("%Y-%m-%dT%H-%M-%SZ")   # DB key across five tables: UTC, monotonic
+    started_at = now.isoformat()
+    stamp = _run_stamp(now)                       # display only — folder and file names
 
-    results_dir = paths.RESULTS_DIR / run_id
-    results_dir.mkdir(parents=True, exist_ok=True)
+    # Never raises while a workspace is configured, so an unreachable output
+    # folder cannot take down a sweep that has not started yet.
+    results_dir = paths.make_run_dir(stamp)
 
     logger.info("=" * 60)
-    logger.info("Pipeline starting — run %s", run_id)
+    logger.info("Pipeline starting — run %s → %s", run_id, results_dir)
     logger.info("=" * 60)
 
     q3: asyncio.Queue = asyncio.Queue()
@@ -297,7 +363,7 @@ async def run_pipeline(
             if skip_matcher:
                 await scraper.main(quiet=True, run_id=run_id, on_company_start=on_company_start)
                 await q3.put(None)
-                await _track_results(q3, results_dir, run_id)
+                await _track_results(q3, results_dir, run_id, stamp, quiet)
             else:
                 tasks["match"] = progress.add_task("[bold]Matching[/bold]", total=None, count_str="0 scored")
                 q1: asyncio.Queue = asyncio.Queue()
@@ -306,10 +372,10 @@ async def run_pipeline(
                     scraper.main(out_queue=q1, quiet=True, run_id=run_id, on_company_start=on_company_start),
                     matcher.main(in_queue=q1, out_queue=q2, quiet=True, run_id=run_id, skip_llm=skip_llm, on_job_score=on_job_score),
                     _collect_results(q2, q3),
-                    _track_results(q3, results_dir, run_id),
+                    _track_results(q3, results_dir, run_id, stamp, quiet),
                 )
 
-            await _finalise_pipeline(run_id, results_dir, started_at)
+            await _finalise_pipeline(run_id, results_dir, started_at, stamp)
 
             # Apply runs inside the same Live so its bar shares this Progress —
             # never a second Live. Needs shortlisted jobs, so skip it when the
@@ -320,6 +386,11 @@ async def run_pipeline(
                 progress.update(apply_task, count_str="done")
 
         logger.info("Pipeline complete — run %s", run_id)
+        # The find-jobs skill reads this line rather than reconstructing the path.
+        # Never under quiet: each monitor stdout line becomes a notification, and
+        # the monitor emits exactly one summary line per cycle.
+        if not quiet:
+            console.print(f"\n[bold]Results:[/bold] {results_dir / _csv_name(stamp)}")
         return run_id
     except Exception:
         logger.exception("Pipeline failed — run %s", run_id)

@@ -4,6 +4,50 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.2.0] — unreleased
+
+### Added
+
+- **A job-search folder that belongs to the user.** Make a folder, put your resume
+  in `resume/original/`, open Claude Code there, and every run's results are written
+  back into it. `/hireshire:setup` adopts the folder it was launched from, creates
+  the layout if it does not exist, and copies in a resume from anywhere else on disk
+  so the whole search is one directory to back up or delete.
+- `scraper.workspace_dir` — the folder's absolute path, captured **once** at setup.
+  It is stored rather than derived from the working directory because a plugin's cwd
+  is whatever project the user is in: a session launched from somewhere else must
+  still write to the folder they chose. It sits in `scraper.yaml` for the same
+  reason `poll_interval_hours` does — the monitor needs it and cannot reference
+  `${user_config.*}`.
+- `hireshire/workspace.py` — creates the workspace and installs the resume. It
+  validates the PDF *before* copying, so a scan fails while the user can still pick
+  another file instead of leaving a rejected file in their folder; it never
+  overwrites an existing resume; and it refuses a workspace inside the install or
+  data directories, which would be silently erased on the next update.
+- `${CLAUDE_PLUGIN_DATA}/last_run.json` — a fixed pointer to the newest run, so
+  `/hireshire:apply` no longer has to guess where the results root is.
+- `FieldSpec.normalise` in the config writer. The pydantic models validate a copy of
+  the document, so a `field_validator` could reject a value but never clean one —
+  which meant a path pasted with the quotes Windows' "Copy as path" adds was stored
+  with them. Path fields now normalise on the way in.
+
+### Changed
+
+- Results move from `${CLAUDE_PLUGIN_DATA}/results/<run_id>/pipeline_results.csv` to
+  `<workspace_dir>/hireshire_run_results/<stamp>/<stamp>_results.csv`, and the JSON
+  alongside it likewise. **Existing installs are unaffected until they re-run
+  `/hireshire:setup`** — an empty `workspace_dir` still writes to the data directory.
+- The per-run folder and the files in it are stamped `YYYY-MM-DD_HHMMSS` in **local**
+  time, because a human reads them off a directory listing. `run_id` is unchanged
+  (UTC): it keys five tables, and a local-time key goes backwards for an hour at the
+  end of DST.
+- A locked CSV now says so on the console instead of only in the log. The file lives
+  somewhere users actually open it, so Excel holding it is routine rather than
+  theoretical; results still go to the database and the run still completes.
+- `_finalise_pipeline` no longer fails a run that succeeded — its JSON write is
+  guarded, where before an `OSError` after every row was already written reported the
+  whole sweep as failed.
+
 ## [0.1.0] — unreleased
 
 First release. Repackages the HireShire pipeline as a Claude Code plugin.

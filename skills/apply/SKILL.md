@@ -24,8 +24,15 @@ Read `${CLAUDE_PLUGIN_DATA}/config/applier.yaml` for `dry_run`, `first_name`,
 `last_name`, `email`, `phone`, `resume_path`, `inter_job_delay_s`,
 `applied_dir`, `generate_cover_letter` and `exclude_companies`.
 
-List the directories under `${CLAUDE_PLUGIN_DATA}/results/`, sort by name, take
-the last one, and read its `pipeline_results.json`.
+Read `${CLAUDE_PLUGIN_DATA}/last_run.json` and open the file its `json` field
+points at. That pointer exists because the results root is now a folder the user
+chose and can move — do not go looking for the directory yourself.
+
+If `last_run.json` is missing (no run since the plugin was updated), fall back:
+take `settings.workspace_dir` from `${CLAUDE_PLUGIN_DATA}/config/scraper.yaml` and
+list `<workspace_dir>/hireshire_run_results/`, or `${CLAUDE_PLUGIN_DATA}/results/`
+when it is empty; sort by name, take the last, and read the `*_results.json` in it
+— named `pipeline_results.json` for runs made before this layout.
 
 Get the already-applied job ids:
 

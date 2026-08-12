@@ -156,6 +156,22 @@ def test_no_mutable_state_is_written_into_the_install_dir():
     assert scraper.SEED_BAD_SLUGS_PATH.parent == paths.SHIPPED_CONFIG
 
 
+def test_results_leave_the_data_dir_only_for_a_folder_the_user_chose():
+    """Results are the one artifact allowed outside DATA — they belong to the user.
+
+    The rule they must still obey is the one above: never inside ROOT, which is
+    replaced wholesale on update. With no workspace configured the fallback keeps
+    them in DATA, which is what installs predating the setting continue to do.
+    """
+    from hireshire import workspace
+
+    assert paths.results_root() == paths.RESULTS_DIR
+    assert paths.DATA in paths.RESULTS_DIR.parents
+
+    with pytest.raises(workspace.WorkspaceError):
+        workspace.init_workspace(paths.ROOT / "hireshire_job_search")
+
+
 def test_requirements_exclude_the_dropped_heavy_dependencies():
     reqs = (ROOT / "requirements-core.txt").read_text(encoding="utf-8").lower()
     for dropped in ("browser-use", "fastapi", "uvicorn", "langgraph",
