@@ -1,0 +1,23 @@
+settings:
+  # The applier submits REAL applications. Two independent gates, both of which
+  # /hireshire:setup leaves in the safe position:
+  enable_applier: false   # the applier phase does not run at all
+  dry_run: true           # fills every form but never clicks submit
+
+  db_path: hireshire.db   # shared SQLite datastore — reads shortlisted matches, writes `applied`
+  applied_dir: applied    # on-disk home for screenshots/ (records go to the applied table)
+  resume_path: ""         # your resume PDF, set by /hireshire:setup
+  inter_job_delay_s: 10   # seconds to wait between applications
+
+  # Career portals that require an account login before showing the form. The
+  # applier cannot get past those, so skip them rather than burn a browser
+  # session — apply to these manually.
+  exclude_companies: [google, apple, meta, microsoft, intuit]
+
+  # Your details — used to fill standard application fields. Set at setup.
+  first_name: ""
+  last_name: ""
+  email: ""
+  phone: ""
+
+  generate_cover_letter: false

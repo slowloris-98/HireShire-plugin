@@ -1,0 +1,19 @@
+# HireShire plugin — core runtime. Installed into ${CLAUDE_PLUGIN_DATA}/venv by
+# scripts/bootstrap.py on SessionStart.
+#
+# sentence-transformers pulls PyTorch (~2.5 GB) and is the whole reason the first
+# install is slow. It powers both funnel stages: the MiniLM bi-encoder that gates
+# titles and the cross-encoder that ranks descriptions before the LLM budget is
+# spent. Neither model is downloaded until first use.
+
+httpx>=0.27
+pydantic>=2.7
+PyYAML>=6.0
+tenacity>=8.3
+beautifulsoup4>=4.12
+lxml>=5.2                    # bs4's parser — named explicitly at every call site
+rich>=13.7
+python-dotenv>=1.0
+pdfplumber>=0.11             # resume PDF -> text
+ruamel.yaml>=0.18            # comment-preserving YAML writes for /hireshire:setup
+sentence-transformers>=2.7   # funnel encoder + cross-encoder reranker

@@ -1,0 +1,11 @@
+# Runtime state. In a plugin install this all lives in ${CLAUDE_PLUGIN_DATA};
+# from a checkout it falls back to ./data, which must never be committed —
+# it holds the user's resume, config and scraped jobs.
+data/
+venv/
+.env
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/

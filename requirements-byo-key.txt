@@ -1,0 +1,7 @@
+# Optional. Only needed if you chose an API-key provider at setup instead of
+# scoring on your Claude subscription. Install the one matching
+# `provider` in matcher.yaml.
+
+openai>=1.0
+# anthropic>=0.40
+# google-genai[aiohttp]>=1.0

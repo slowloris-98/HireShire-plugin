@@ -1,0 +1,69 @@
+settings:
+  concurrency: 20  # fallback company-worker / limiter width for any board not listed below
+  request_timeout_s: 30  # per-call (httpx) timeout — the real per-API-call bound; floored at 10s
+  retry_attempts: 3
+  company_timeout_s: 600  # SAFETY-NET backstop only (clock starts at worker pickup, not queue-wait);
+                          # the per-call request_timeout_s is the primary bound. Rarely fires.
+  max_age_hours: 24  # only keep jobs updated in the last N hours; remove this line to fetch all
+  location_filter: []  # case-insensitive substring match; empty = every location. Set at setup.
+  db_path: hireshire.db  # shared SQLite datastore — scraper writes the jobs + run_companies tables
+  poll_interval_hours: 4  # how often /hireshire:start-orchestration re-sweeps
+
+  # Which boards to sweep. Greenhouse + Ashby + Lever + the direct portals is
+  # ~10,000 companies. Adding workday and bamboohr takes it to ~24,700, but both
+  # are slow — Workday is POST-based and BambooHR needs two requests per company —
+  # so a full sweep takes considerably longer. A disabled board's slug file is
+  # never even opened.
+  enabled_platforms:
+    - greenhouse
+    - ashby
+    - lever
+    - direct
+
+  # Per-board count of in-flight company workers. Each board's queue is drained by this many
+  # long-lived workers; a company waiting its turn sits in an UNTIMED queue (this is what stops
+  # the timeout budget from being burned on queue-wait). Keep roughly aligned with each board's
+  # `rate_limits.concurrency` below — raise together to speed a board up (watch for 429/403).
+  company_concurrency:
+    greenhouse: 50
+    lever: 15
+    ashby: 10
+    bamboohr: 50
+    workday: 20
+    direct: 3      # only 3 companies (apple/google/intuit) — one worker each
+
+  # Per-tenant detail-fetch fan-out (shared by the Workday + BambooHR list->detail boards):
+  # caps concurrent detail requests per tenant and jitters them to avoid tripping per-tenant throttles.
+  detail_concurrency: 10
+  detail_jitter_s: 0.3
+
+  # List->detail boards (Workday, BambooHR): false = scrape list-only and DEFER the
+  # per-job description fetch to the matcher funnel, which hydrates only jobs that pass
+  # its title/relevance gate (big traffic saving). COUPLED to config/matcher.yaml's
+  # `funnel.enabled: true` — with the funnel off, these jobs reach the scorer with no
+  # content and get skipped. Set true to fetch descriptions during scraping (old behaviour).
+  scrape_details: false
+
+  # Greenhouse's list API already includes job content, so its per-job detail
+  # fetch only adds application questions (used by Phase 4 applier). false skips
+  # that extra per-job call for a big scrape speedup; set true to keep questions.
+  greenhouse_fetch_questions: false
+
+  # Per-board throttling. `concurrency` caps in-flight requests to that board; `min_interval_s`
+  # spaces successive requests (0 = no spacing). Ashby's 0.5s interval is the dominant run-time
+  # cost (it floors a full run at ~20 min) — lower it toward 0.1/0.0 to speed Ashby up.
+  # NOTE: this block replaces the code defaults wholesale (no merge), so all six boards must be
+  # listed; omitting one makes it fall back to the global `concurrency` above with no spacing.
+  # These are host-safe widths (Greenhouse is cached/unlimited; the others throttle per-tenant).
+  rate_limits:
+    greenhouse: { concurrency: 50, min_interval_s: 0.0 }
+    lever:      { concurrency: 15,  min_interval_s: 0.0 }
+    ashby:      { concurrency: 10,  min_interval_s: 0.0 }
+    bamboohr:   { concurrency: 50,  min_interval_s: 0.0 }
+    workday:    { concurrency: 20,  min_interval_s: 0.0 }
+    # Big-tech portals with no published limits, hit without an API key — stay polite.
+    direct:     { concurrency: 3,   min_interval_s: 0.5 }
+
+  # Pages walked per direct career portal. All are sorted newest-first, so this
+  # plus max_age_hours bounds the cost.
+  direct_max_pages: 5

@@ -1,0 +1,3 @@
+1. plugin should be device agnostic - work on both windows linux/mac
+2. reevaluate the database storage and requirement, should we even introduce database in this plugin as users will have the csv with the shortlisted jobs for them already.
+3. Resume expansion should also have access to the project/work ex bank so that the matcher can score from unlisted projects also. In fact it can also happen that the matcher only has the project bank instead of the resume.

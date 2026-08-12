@@ -1,0 +1,16 @@
+{
+  "name": "hireshire",
+  "owner": {
+    "name": "Udayan Atreya"
+  },
+  "description": "HireShire — an automated job search that runs on your own machine and your own Claude subscription.",
+  "plugins": [
+    {
+      "name": "hireshire",
+      "source": "./",
+      "description": "Sweeps 24,000+ company job boards directly, scores every opening against your resume, and fills out the applications.",
+      "category": "productivity",
+      "tags": ["jobs", "job-search", "ats", "resume"]
+    }
+  ]
+}
