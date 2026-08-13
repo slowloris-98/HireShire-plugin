@@ -124,6 +124,10 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 "Which job boards to sweep. Adding workday and bamboohr roughly "
                 "triples the company count and the run time.",
             ),
+            "poll_interval_hours": FieldSpec(
+                ("settings", "poll_interval_hours"), "float",
+                "How often /hireshire:start-orchestration re-sweeps, in hours.",
+            ),
             "workspace_dir": FieldSpec(
                 ("settings", "workspace_dir"), "str",
                 "Absolute path to the user's job-search folder. Their resume copy "

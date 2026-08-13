@@ -97,6 +97,17 @@ def test_invalid_values_never_reach_disk(data_dir, phase, patch):
     assert path.read_text(encoding="utf-8") == before, "a rejected patch must not write"
 
 
+def test_the_sweep_interval_is_writable(data_dir):
+    """The monitor cannot read `${user_config.*}`, so this value in scraper.yaml is
+    the only channel from the user's answer to the sweep interval. It was missing
+    from the whitelist, so setup asked the question and threw the answer away."""
+    cw.write_config("scraper", {"poll_interval_hours": 6})
+    assert cw.read_config("scraper")["poll_interval_hours"] == 6
+
+    with pytest.raises(cw.ConfigError):
+        cw.write_config("scraper", {"poll_interval_hours": 0})  # a continuous sweep
+
+
 def test_the_funnel_has_no_key_called_threshold(data_dir):
     """Both phases write matcher.yaml and both once had a `threshold`: 0-100 for the
     LLM, 0-1 for the cosine recall net. Writing 85 into the funnel validated cleanly
@@ -126,6 +137,28 @@ def test_skill_documents_only_real_config_keys():
             assert key in cw.PHASE_SPECS[phase].fields, (
                 f"SKILL.md documents {key!r} for phase {phase!r}, which is not writable"
             )
+
+
+def test_skill_never_names_a_dotted_field_that_cannot_be_written():
+    """The table is not the only place the skill names fields.
+
+    `scraper.poll_interval_hours` sat in step 8 for three releases while missing from
+    the whitelist, so setup dutifully tried to write the user's answer, was rejected,
+    and their sweep interval silently stayed at the default. Checking only the table
+    missed it because the table was right.
+    """
+    import re
+    skill = (paths.ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+
+    # `matcher.yaml` and friends are filenames, not field references.
+    extensions = {"yaml", "yml", "json", "py", "md", "sh", "txt", "csv"}
+
+    for phase, key in re.findall(r"`(scraper|matcher|funnel|applier)\.(\w+)`", skill):
+        if key in extensions:
+            continue
+        assert key in cw.PHASE_SPECS[phase].fields, (
+            f"SKILL.md tells setup to write {phase}.{key}, which write_config rejects"
+        )
 
 
 def test_funnel_and_matcher_share_one_file(data_dir):

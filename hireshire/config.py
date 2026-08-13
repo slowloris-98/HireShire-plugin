@@ -74,7 +74,9 @@ class ScraperSettings(BaseModel):
     # How often the orchestrator re-sweeps, in hours. Read by the monitor wrapper
     # (monitor commands cannot reference ${user_config.*} — Claude Code rejects
     # the monitor rather than substituting — so the value has to come from here).
-    poll_interval_hours: float = 4.0
+    # Bounded below: a zero or negative interval turns the monitor into a continuous
+    # sweep, which is how you get rate-limited off the boards the plugin depends on.
+    poll_interval_hours: float = Field(4.0, gt=0)
 
     # The user's own job-search folder, captured ONCE by /hireshire:setup. Results
     # go to <workspace_dir>/hireshire_run_results/ and their resume is kept in

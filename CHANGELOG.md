@@ -8,6 +8,16 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Fixed
 
+- **The sweep interval could not be saved.** Setup asked "how often should this
+  re-run?" and then discarded the answer: `poll_interval_hours` is a real
+  `ScraperSettings` field, shipped in `scraper.yaml` and read at runtime by
+  `scripts/run_orchestration.py` — but it was missing from the config writer's
+  whitelist, so the write was rejected and every install swept on the default 4 hours
+  no matter what the user chose. It is now writable, and bounded above zero so a
+  continuous sweep cannot be configured. A new test rejects any `phase.field` the
+  setup skill names that `write_config` would refuse; the existing drift guard only
+  checked the skill's field table, which was correct, and so missed this.
+
 - **The 0.2.1 data rescue could move files out of unrelated directories.** Mandatory
   upgrade for anyone running the plugin from a directory rather than the marketplace.
   `legacy_data_dirs()` scanned every sibling of the install directory for a stranded

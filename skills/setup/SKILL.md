@@ -118,7 +118,7 @@ below are the keys; where they sit in the file is the writer's business:
 
 | phase | keys |
 |---|---|
-| `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `workspace_dir` |
+| `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `poll_interval_hours`, `workspace_dir` |
 | `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
 | `funnel` | `targets`, `top_k` |
 | `applier` | `enable_applier`, `dry_run`, `resume_path`, `first_name`, `last_name`, `email`, `phone` |
@@ -238,7 +238,10 @@ Three things that trip people up:
    multiplier for the extra time — nobody has timed it yet. Say "considerably
    longer" until a real timed run exists.
 
-8. **How often to re-run** → `scraper.poll_interval_hours`, default 4.
+8. **How often to re-run**, in hours → `poll_interval_hours` on the **`scraper`**
+   phase, default 4. This is what `/hireshire:start-orchestration` sweeps on; the
+   monitor cannot read `${user_config.*}`, so this value is the only way the user's
+   answer reaches it.
 
 9. **Scoring backend** → `matcher.provider`.
    - **Their Claude subscription** (`claude_code`) — the default, and the reason
