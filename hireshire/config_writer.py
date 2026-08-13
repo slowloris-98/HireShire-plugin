@@ -46,10 +46,11 @@ class FieldSpec:
     type: str                      # bool | int | float | str | str_list | enum
     doc: str                       # human-readable description
     options: Optional[list[str]] = None
-    # Applied to the incoming value before it is written. The pydantic models
-    # validate a *copy* of the document, so any coercion a field_validator performs
-    # is discarded — it can reject a value but cannot clean one. Fields that need
-    # the stored form tidied (rather than merely checked) say so here.
+    # Applied to the incoming value before it is written, after the `type`-driven
+    # coercion in _COERCIONS. The pydantic models validate a *copy* of the document,
+    # so any coercion a field_validator performs is discarded — it can reject a value
+    # but cannot clean one. Fields that need the stored form tidied (rather than
+    # merely checked) say so here; anything a whole type needs goes in _COERCIONS.
     normalise: Optional[Callable[[Any], Any]] = None
 
 
@@ -59,6 +60,28 @@ def _clean_path_value(v: Any) -> Any:
         return v
     v = v.strip().strip('"').strip("'")
     return str(Path(v).expanduser()) if v else ""
+
+
+def _as_str_list(v: Any) -> Any:
+    """Wrap a bare string in a list.
+
+    Setup asks for locations and job titles in plain English, so "united states" is
+    the natural thing to pass, and pydantic can reject it but not clean it. Anything
+    that is not a string is left alone, so a genuinely wrong type still fails
+    validation rather than being silently coerced into something plausible.
+
+    Deliberately does NOT split on commas: "San Francisco, CA" is one location, and
+    guessing otherwise would quietly turn it into two that match nothing.
+    """
+    if isinstance(v, str):
+        return [v] if v.strip() else []
+    return v
+
+
+# Coercions keyed by FieldSpec.type, applied before the per-field `normalise`. This
+# is what makes `type` load-bearing rather than documentation: a list field added
+# later gets the same treatment without anyone having to remember.
+_COERCIONS: dict[str, Callable[[Any], Any]] = {"str_list": _as_str_list}
 
 
 @dataclass
@@ -157,9 +180,15 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 ("funnel", "encoder", "targets"), "str_list",
                 "Adjacent job titles the candidate is qualified for.",
             ),
-            "threshold": FieldSpec(
+            # Named `encoder_threshold`, not `threshold`, on purpose. The matcher
+            # phase has a `threshold` too — a 0-100 LLM cut-off, in the same file,
+            # asked two steps apart during setup. Both are floats to pydantic, so
+            # writing the LLM's 85 here would validate cleanly and silently destroy
+            # the recall net. Distinct names make that mistake impossible to make.
+            "encoder_threshold": FieldSpec(
                 ("funnel", "encoder", "threshold"), "float",
-                "Minimum title cosine similarity. Keep low — this is a recall net.",
+                "Minimum title cosine similarity, 0-1. Keep low — this is a recall net, "
+                "not the matcher's 0-100 relevance threshold.",
             ),
             "rerank_enabled": FieldSpec(
                 ("funnel", "rerank", "enabled"), "bool",
@@ -306,9 +335,25 @@ def write_config(phase: str, values: dict[str, Any]) -> dict[str, Any]:
 
     unknown = [k for k in values if k not in spec.fields]
     if unknown:
+        # A rejected key whose value is a dict of *valid* keys means the caller passed
+        # the YAML nesting — `{"title_filter": {"exclude_keywords": [...]}}` instead of
+        # `{"exclude_keywords": [...]}`. That is the shape the setup skill's own field
+        # names suggest, so name the right call rather than only the wrong one.
+        nested = sorted({
+            child
+            for k in unknown if isinstance(values[k], dict)
+            for child in values[k] if child in spec.fields
+        })
+        hint = ""
+        if nested:
+            args = ", ".join(f"{c!r}: ..." for c in nested)
+            hint = (
+                f" These take flat keys, not the YAML nesting: "
+                f"write_config({phase!r}, {{{args}}})."
+            )
         raise ConfigError(
             f"Not editable for phase {phase!r}: {unknown}. "
-            f"Allowed: {sorted(spec.fields)}"
+            f"Allowed: {sorted(spec.fields)}.{hint}"
         )
 
     install_user_config()
@@ -319,6 +364,9 @@ def write_config(phase: str, values: dict[str, Any]) -> dict[str, Any]:
     doc = _load_doc(path)
     for key, value in values.items():
         fs = spec.fields[key]
+        coerce = _COERCIONS.get(fs.type)
+        if coerce is not None:
+            value = coerce(value)
         _set_path(doc, fs.path, fs.normalise(value) if fs.normalise else value)
 
     try:

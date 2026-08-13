@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from hireshire.matcher.scorer import SCORING_ERROR_SKIP_REASONS
 from hireshire.storage.db import Database, get_db
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,13 @@ class SeenStore:
 
     def __init__(self, db: Optional[Database] = None) -> None:
         self._db = db or get_db()
+        # Release jobs retired by a scoring failure before snapshotting the set —
+        # afterwards would silently no-op for this run. Installs that ran while the
+        # claude_code backend was broken have jobs stuck here that no fix could
+        # otherwise reach.
+        freed = self._db.forget_seen_scoring_errors(SCORING_ERROR_SKIP_REASONS)
+        if freed:
+            logger.info("SeenStore: %d job IDs released after earlier scoring errors", freed)
         self._ids: set[str] = self._db.seen_ids()
         self._new: set[str] = set()
         logger.info("SeenStore: %d previously scored job IDs loaded", len(self._ids))

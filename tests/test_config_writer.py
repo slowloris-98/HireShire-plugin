@@ -49,23 +49,83 @@ def test_write_rejects_non_whitelisted_fields(data_dir):
         cw.write_config("matcher", {"db_path": "/etc/passwd"})
 
 
+def test_a_bare_string_is_accepted_for_a_list_field(data_dir):
+    """Setup asks for locations in plain English, so "united states" is the natural
+    answer — and pydantic can reject that but never clean it."""
+    cw.write_config("scraper", {"location_filter": "united states"})
+    assert cw.read_config("scraper")["location_filter"] == ["united states"]
+
+
+def test_an_empty_string_clears_a_list_field(data_dir):
+    cw.write_config("scraper", {"location_filter": "  "})
+    assert cw.read_config("scraper")["location_filter"] == []
+
+
+def test_a_location_containing_a_comma_stays_one_entry(data_dir):
+    """Splitting on commas would quietly turn one real location into two that match
+    nothing."""
+    cw.write_config("scraper", {"location_filter": "San Francisco, CA"})
+    assert cw.read_config("scraper")["location_filter"] == ["San Francisco, CA"]
+
+
+def test_the_yaml_nesting_is_rejected_and_names_the_flat_key(data_dir):
+    """`{"title_filter": {"exclude_keywords": [...]}}` is the shape the field's own
+    name suggests, so the error has to point at the call that works."""
+    with pytest.raises(cw.ConfigError, match="flat keys") as exc:
+        cw.write_config("matcher", {"title_filter": {"exclude_keywords": ["intern"]}})
+    assert "'exclude_keywords'" in str(exc.value)
+
+
 def test_write_rejects_unknown_phase(data_dir):
     with pytest.raises(cw.ConfigError, match="Unknown config phase"):
         cw.write_config("tuner", {"anything": 1})
 
 
-@pytest.mark.parametrize("patch", [
-    {"effort": "turbo"},        # not one of low|medium|high|xhigh|max
-    {"threshold": "very high"},  # not an int
+@pytest.mark.parametrize("phase,patch", [
+    ("matcher", {"effort": "turbo"}),          # not one of low|medium|high|xhigh|max
+    ("matcher", {"threshold": "very high"}),   # not an int
+    ("matcher", {"threshold": 150}),           # outside 0-100
+    ("funnel", {"encoder_threshold": 85}),     # the matcher's scale, not the cosine one
 ])
-def test_invalid_values_never_reach_disk(data_dir, patch):
+def test_invalid_values_never_reach_disk(data_dir, phase, patch):
     path = data_dir / "config" / "matcher.yaml"
     before = path.read_text(encoding="utf-8")
 
     with pytest.raises(cw.ConfigError):
-        cw.write_config("matcher", patch)
+        cw.write_config(phase, patch)
 
     assert path.read_text(encoding="utf-8") == before, "a rejected patch must not write"
+
+
+def test_the_funnel_has_no_key_called_threshold(data_dir):
+    """Both phases write matcher.yaml and both once had a `threshold`: 0-100 for the
+    LLM, 0-1 for the cosine recall net. Writing 85 into the funnel validated cleanly
+    and silently rejected every job in the sweep. Distinct names prevent it."""
+    with pytest.raises(cw.ConfigError, match="Not editable"):
+        cw.write_config("funnel", {"threshold": 85})
+
+    cw.write_config("funnel", {"encoder_threshold": 0.3})
+    assert cw.read_config("funnel")["encoder_threshold"] == 0.3
+
+
+def test_skill_documents_only_real_config_keys():
+    """The setup skill lists the flat keys in a table. A rename that misses it would
+    leave the skill teaching a call that fails at runtime, in front of the user."""
+    import re
+    skill = (paths.ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+    table = re.search(r"\| phase \| keys \|.*?\n\n", skill, re.DOTALL)
+    assert table, "the phase/keys table is gone — did the skill get rewritten?"
+
+    for line in table.group(0).splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) != 2 or not cells[0].startswith("`"):
+            continue
+        phase = cells[0].strip("`")
+        assert phase in cw.PHASE_SPECS, f"SKILL.md names unknown phase {phase!r}"
+        for key in re.findall(r"`([^`]+)`", cells[1]):
+            assert key in cw.PHASE_SPECS[phase].fields, (
+                f"SKILL.md documents {key!r} for phase {phase!r}, which is not writable"
+            )
 
 
 def test_funnel_and_matcher_share_one_file(data_dir):

@@ -19,7 +19,11 @@ class EncoderConfig(BaseModel):
     # matches the rerank stage exists to catch. Note also that max-over-targets
     # rises monotonically with the number of anchors, so a bigger `targets` list
     # loosens this gate further on its own.
-    threshold: float = 0.25
+    #
+    # Bounded to the cosine range so the matcher's 0-100 relevance threshold cannot be
+    # written here by mistake: 85 would validate as a float and silently reject every
+    # job in the sweep.
+    threshold: float = Field(0.25, ge=0.0, le=1.0)
 
 
 class RerankConfig(BaseModel):

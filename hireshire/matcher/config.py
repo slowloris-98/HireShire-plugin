@@ -3,14 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from hireshire import paths
 from hireshire.funnel.config import FunnelConfig
 
 
 class MatcherSettings(BaseModel):
-    threshold: int = 70
+    # Bounded so a value meant for the funnel's 0-1 cosine gate cannot land here, and
+    # vice versa — the two settings live in the same file and read alike.
+    threshold: int = Field(70, ge=0, le=100)  # min relevance_score to shortlist
     concurrency: int = 1
     provider: str | None = None  # None = fall back to LLM_PROVIDER env var
     model: str = "gemini-2.0-flash"

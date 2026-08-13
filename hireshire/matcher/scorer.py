@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Protocol, runtime_checkable
 
@@ -20,6 +19,12 @@ from hireshire.matcher.prompts import SCORER_SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = SCORER_SYSTEM_PROMPT
+
+# `skip_reason` values that mean "the scorer broke", not "this job was judged". They
+# live here beside MatchResult because that is where the vocabulary is defined, and
+# because both matcher.py (which must not retire these jobs) and matcher/seen.py
+# (which releases ones already retired) need them without importing each other.
+SCORING_ERROR_SKIP_REASONS = frozenset({"api_error", "unexpected_error", "backend_unavailable"})
 
 
 class ScoringSchema(BaseModel):
@@ -296,46 +301,44 @@ class ClaudeCodeBackend:
 
     async def call(self, prompt: str, system_prompt: str) -> ScoringSchema:
         async with self._sem:
-            # The schema goes in a temp file: it is a few KB of JSON and CLIs
-            # vary in how much they tolerate on argv.
-            with tempfile.NamedTemporaryFile(
-                "w", suffix=".json", delete=False, encoding="utf-8"
-            ) as fh:
-                fh.write(self._schema)
-                schema_path = fh.name
+            # `--json-schema` takes the schema *itself*, not a path to it — the CLI
+            # parses the argument value as JSON. Passing a filename made every call
+            # fail with "not valid JSON: Unexpected identifier" (the drive letter of
+            # C:\Users\...), which silently scored nothing. The only real bound is
+            # argv length; see test_scoring_resilience.py, which pins the schema well
+            # under it.
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "-p",
+                "--system-prompt", system_prompt,
+                "--model", self._settings.model,
+                "--effort", self._settings.effort,
+                "--output-format", "json",
+                "--json-schema", self._schema,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._env(),
+            )
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    "claude", "-p",
-                    "--system-prompt", system_prompt,
-                    "--model", self._settings.model,
-                    "--effort", self._settings.effort,
-                    "--output-format", "json",
-                    "--json-schema", schema_path,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=self._env(),
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode()),
+                    timeout=self._timeout,
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(input=prompt.encode()),
-                        timeout=self._timeout,
-                    )
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.communicate()
-                    raise RuntimeError(f"claude CLI timed out after {self._timeout}s")
-                if proc.returncode != 0:
-                    raise RuntimeError(
-                        f"claude CLI exited {proc.returncode}: {stderr.decode()[:500]}"
-                    )
-                if self._settings.request_interval_s > 0:
-                    await asyncio.sleep(self._settings.request_interval_s)
-            finally:
-                try:
-                    os.unlink(schema_path)
-                except OSError:
-                    pass
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                raise RuntimeError(f"claude CLI timed out after {self._timeout}s")
+            if proc.returncode != 0:
+                # The CLI reports some failures (a bad --model, for one) on stdout and
+                # leaves stderr empty. Falling back keeps the circuit breaker's summary
+                # from reading "claude CLI exited 1:" with nothing after the colon.
+                detail = stderr.decode(errors="replace").strip() or \
+                    stdout.decode(errors="replace").strip() or "(no output)"
+                raise RuntimeError(
+                    f"claude CLI exited {proc.returncode}: {detail[:500]}"
+                )
+            if self._settings.request_interval_s > 0:
+                await asyncio.sleep(self._settings.request_interval_s)
 
         # Raise on anything unparseable rather than returning a half-built result:
         # JobScorer.score catches it and records a per-job skip, which is a far
@@ -396,6 +399,12 @@ class JobScorer:
     def __init__(self, settings: MatcherSettings, backend: LLMBackend) -> None:
         self._settings = settings
         self._backend = backend
+        # Text of the most recent backend failure. `score` deliberately converts a
+        # failed call into an `api_error` result rather than raising, so this is the
+        # only channel by which the reason reaches the caller — matcher.py's circuit
+        # breaker quotes it, which is the difference between "0 new matches" and
+        # "the scorer is broken, here is why".
+        self.last_error: str | None = None
 
     async def score(self, job: Job, resume_text: str, run_id: str, projects_text: str = "") -> MatchResult:
         base = MatchResult(
@@ -431,6 +440,7 @@ class JobScorer:
             result = await self._backend.call(prompt, SYSTEM_PROMPT)
         except Exception as exc:
             logger.warning("LLM call failed for job %s/%s: %s", job.board_token, job.job_id, exc)
+            self.last_error = str(exc)
             return base.model_copy(update={"skipped": True, "skip_reason": "api_error"})
 
         relevance_score = min(100, result.core_skills_score + result.experience_score + result.education_bonus_score)

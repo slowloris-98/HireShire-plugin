@@ -75,6 +75,31 @@ move it; results already written stay where they are.
 Ask these **conversationally and in small groups** — two or three at a time, not
 as a ten-item form. Confirm what you understood before writing.
 
+### How to write a value
+
+`write_config(phase, {...})` takes **flat keys**, never the YAML nesting. The names
+below are the keys; where they sit in the file is the writer's business:
+
+| phase | keys |
+|---|---|
+| `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `workspace_dir` |
+| `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
+| `funnel` | `targets`, `top_k` |
+| `applier` | `enable_applier`, `dry_run`, `resume_path`, `first_name`, `last_name`, `email`, `phone` |
+
+So it is `write_config("matcher", {"exclude_keywords": [...]})` — **not**
+`{"title_filter": {"exclude_keywords": [...]}}`, which is rejected.
+
+Three things that trip people up:
+
+- `matcher` and `funnel` are two whitelists over the *same* `matcher.yaml`. Writing
+  one never disturbs the other, but the phase has to match the key.
+- List keys (`location_filter`, `enabled_platforms`, `include_keywords`,
+  `exclude_keywords`, `targets`) want a **list**, even for one item. A bare string
+  is wrapped for you, but write the list.
+- `config_writer.field_docs(phase)` returns the live keys and what they mean. Use it
+  if this table and the code ever disagree.
+
 1. **Resume** → `matcher.resume_path`, and the same path to `applier.resume_path`.
 
    Look in the workspace first with `workspace.find_resumes(ws)`. A PDF already
@@ -98,17 +123,22 @@ as a ten-item form. Confirm what you understood before writing.
 
    **Write the path it returns**, which is the copy's, not the one they typed.
 
-2. **Locations** → `scraper.location_filter`. Case-insensitive substring match,
-   so "united states", "remote", "london" all work. Empty means everywhere.
+2. **Locations** → `scraper.location_filter`, a **list**. Case-insensitive substring
+   match, so `["united states"]`, `["remote"]`, `["london", "berlin"]` all work. One
+   location is still a list. Empty list means everywhere.
 
 3. **Posting age**, in days → `scraper.max_age_hours` (multiply by 24).
 
-4. **Match threshold, as a number from 0 to 100** → `matcher.threshold`.
-   Ask for the number directly. Validate the range. Suggest 75 if they want a
-   recommendation. Do not offer word-based tiers.
+4. **Match threshold, as a number from 0 to 100** → `threshold` on the **`matcher`**
+   phase. Ask for the number directly. Suggest 75 if they want a recommendation. Do
+   not offer word-based tiers.
 
-5. **How many jobs to score per run** → `funnel.top_k`. Default 100. Explain the
-   real trade-off:
+   The funnel has its own `encoder_threshold` — a 0-1 cosine recall net, an unrelated
+   setting that setup must never touch. It is deliberately loose; raising it throws
+   away the differently-worded jobs the reranker exists to catch.
+
+5. **How many jobs to score per run** → `top_k` on the **`funnel`** phase. Default
+   100. Explain the real trade-off:
    - On a **Claude subscription** the limit is prompts per 5-hour window, not
      money, so a few hundred per run is the practical ceiling.
    - On a **paid API key** it is a straight cost dial and can go higher.
@@ -116,31 +146,52 @@ as a ten-item form. Confirm what you understood before writing.
    Jobs that miss the cut are recorded, not discarded, and stay eligible for the
    next run — so this is safe to raise later.
 
-6. **Target roles, in plain English** — then generate three things from their
-   answer *and their resume text*. This single step is what makes the plugin work
-   for any field, and it is the main defence against missing jobs that are a real
-   fit but worded differently:
+6. **Target roles.** This single step is what makes the plugin work for any field,
+   and it is the main defence against missing jobs that are a real fit but worded
+   differently.
 
-   - `title_filter.exclude_keywords` — hard no's (wrong seniority, wrong
-     specialisation, anything they say they don't want).
-   - `funnel.encoder.targets` — an **exhaustive** list of adjacent and synonymous
+   **Draft first, then ask.** By this point their resume is installed and readable —
+   `extract_resume_text(dest)` from `hireshire.matcher.resume`. Read it and propose
+   concrete target roles and hard exclusions, then let them correct you:
+
+   > From your resume this looks like mid-level Account Management / Customer
+   > Success in SaaS. Is that the target, and is there anything you'd rule out —
+   > seniority, industries, a specialisation you're done with?
+
+   That is a far better question than asking cold, and it is faster for them. If the
+   answer really has only one option, state it as an assumption and move on — never
+   pad a question out to two choices so it fits a multiple-choice tool.
+
+   Then generate three things from their answer *and* the resume text:
+
+   - `exclude_keywords` (phase `matcher`) — hard no's: wrong seniority, wrong
+     specialisation, anything they said they don't want.
+   - `targets` (phase `funnel`) — an **exhaustive** list of adjacent and synonymous
      **job titles** they are qualified for. Aim for dozens. This is a recall net;
      over-inclusion is cheap and under-inclusion loses jobs permanently.
-   - `matcher.search_profile_path` — write a dense ~200-word "ideal candidate"
-     profile to `${CLAUDE_PLUGIN_DATA}/profile.md` and store the filename.
-     Describe the **underlying transferable skills**, in the vocabulary employers
-     use, not just the literal nouns on the resume — "React" should also appear
-     as "component-based UI development" and "frontend state management". This
-     text is the reranker's query and is what closes the vocabulary gap.
+   - `search_profile_path` (phase `matcher`) — write a dense ~200-word "ideal
+     candidate" profile to `${CLAUDE_PLUGIN_DATA}/profile.md` and store the
+     filename. Describe the **underlying transferable skills**, in the vocabulary
+     employers use, not just the literal nouns on the resume — "React" should also
+     appear as "component-based UI development" and "frontend state management".
+     This text is the reranker's query and is what closes the vocabulary gap.
 
-   `title_filter.include_keywords` is optional: leave it empty unless the user
-   wants a hard keyword requirement. An empty include list means the semantic
-   gate decides, which is usually what they want.
+   `include_keywords` is optional: leave it empty unless the user wants a hard
+   keyword requirement. An empty include list means the semantic gate decides, which
+   is usually what they want.
 
-   **Show all three back and let them edit before you write anything.**
+   **Show all three back and let them edit before you write anything.** Then:
 
-7. **Which job boards** → `scraper.enabled_platforms`. Present as a time
-   trade-off, not a list of vendor names:
+   - ```python
+     config_writer.write_config("matcher", {
+         "exclude_keywords": [...],
+         "search_profile_path": "profile.md",
+     })
+     config_writer.write_config("funnel", {"targets": [...]})
+     ```
+
+7. **Which job boards** → `enabled_platforms` (phase `scraper`), a list. Present as
+   a time trade-off, not a list of vendor names:
 
    > The default sweep covers about 10,000 employers. Turning on the two slower
    > board types adds roughly 15,000 more, but each run takes considerably

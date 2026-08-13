@@ -1,3 +1,8 @@
+1. a way to show progress of the scrapping so that user can see how much is done
+2. The claude code matching leads to the chat history being created for every match, how to deal with that?
+2. does setup clears ths db and sets everything again? what if a different person comes and wants a new profile.
+3. When using the skill hireshire should not ask user to start debugging if anything fails, as it starts talking why it broke and which part of code is incorrect.
+
 1. When applier enabled:
     - the hireshire_job_search/hireshire_run_results/<datetime>/ folder should contain folder for each application, inside which the resume used for applying should be stored and if possible also the job description. The result csv should have if the job was already applied for or not.
 
@@ -9,9 +14,33 @@
 
 5. install python and node directly from the single command.
 
+6. How does plugin update work?
 
 user flow:
 
-1. create new folder, add resume -> csv's should be saved here?
-2. open claude code from this folder
+1. create new folder, add resume
+2. open claude code terminal from this folder -> and run:
+
+/plugin marketplace add slowloris-98/HireShire-plugin
+/plugin install hireshire@hireshire
+
+3. Accept all permmisions
+4. open / restart claude app -> go to code -> select your folder and run following command:
+
+/hireshire:setup
+
+accept all commands to be run
+
+(You can use this to change the config again)
+
+
 3. setup -> orchestrate
+
+
+Mention that user have to run the command in the terminal.
+There are a lot of approvals required during Setup.
+name, number should also be extracted from the resume and confirmed for auto apply
+
+
+
+gaurdrail if the funnel passes a lot of jobs, so that the user does not lose there 

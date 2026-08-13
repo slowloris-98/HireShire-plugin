@@ -29,7 +29,12 @@ from hireshire.funnel.rerank import Reranker
 from hireshire.matcher.config import load_matcher_config
 from hireshire.matcher.loader import load_jobs
 from hireshire.matcher.resume import extract_resume_text
-from hireshire.matcher.scorer import JobScorer, MatchResult, make_backend
+from hireshire.matcher.scorer import (
+    SCORING_ERROR_SKIP_REASONS,
+    JobScorer,
+    MatchResult,
+    make_backend,
+)
 from hireshire.matcher.seen import SeenStore
 from hireshire.matcher.store import MatchStore, is_shortlisted
 from hireshire.matcher.title_filter import apply_title_filter, filtered_result
@@ -53,7 +58,61 @@ BUDGET_SKIP_REASON = "rerank_below_top_k"
 # and one that just missed the cut should get another shot when it is up against
 # weaker competition. Marking it seen would retire it permanently on the strength
 # of one crowded run.
-_RETRYABLE_SKIP_REASONS = {BUDGET_SKIP_REASON}
+#
+# The general rule: a job may be retired on a *verdict*, never on an *error*. The
+# scoring-failure reasons below are here because they once weren't — a broken
+# `--json-schema` argument failed all 100 scoring calls in a run and permanently
+# retired every one of them, so fixing the flag would not have brought them back.
+# `no_content_text` and `llm_skipped` stay retiring: those are facts about the job.
+_RETRYABLE_SKIP_REASONS = {BUDGET_SKIP_REASON} | set(SCORING_ERROR_SKIP_REASONS)
+
+
+# Consecutive scoring failures after which the run stops calling the backend.
+_BREAKER_LIMIT = 5
+
+
+class _ScoringBreaker:
+    """Stops a run once the scoring backend is clearly broken rather than dead.
+
+    A misused `--json-schema` argument once failed all 100 scoring calls in a sweep;
+    the run still reported "0 new matches", which reads as "nothing was good enough".
+    Twenty minutes of scraping produced nothing and said nothing.
+
+    It counts *results*, not exceptions: `JobScorer.score` converts a failed backend
+    call into an `api_error` result and never raises. Once tripped it makes the
+    remaining jobs return immediately instead of raising, which needs no asyncio
+    cancellation, spends none of the remaining budget, and — because both
+    `api_error` and `backend_unavailable` are in `_RETRYABLE_SKIP_REASONS` — leaves
+    every unscored job eligible for the next run.
+    """
+
+    def __init__(self, limit: int = _BREAKER_LIMIT) -> None:
+        self._limit = limit
+        self._consecutive = 0
+        self.tripped = False
+        self.last_error: str | None = None
+
+    # `backend_unavailable` is excluded: it is this class's own output, not evidence.
+    _FAILURE_REASONS = {"api_error", "unexpected_error"}
+
+    def record(self, result: MatchResult) -> None:
+        if result.skip_reason in self._FAILURE_REASONS:
+            self._consecutive += 1
+            if self._consecutive >= self._limit and not self.tripped:
+                self.tripped = True
+                logger.error(
+                    "Scoring backend failed %d times in a row — aborting scoring for "
+                    "this run. Last error: %s", self._limit, self.last_error,
+                )
+        elif not result.skipped:
+            self._consecutive = 0
+
+    def summary(self) -> str:
+        return (
+            f"Scoring aborted after {self._limit} consecutive backend failures. "
+            f"Last error: {self.last_error or 'unknown'}. "
+            "No jobs were retired — they will be rescored on the next run."
+        )
 
 
 class _NoopProgress:
@@ -218,6 +277,7 @@ async def main(
     store = MatchStore(run_id=run_id, threshold=settings.threshold, db=db)
 
     seen = SeenStore(db=db)
+    breaker = _ScoringBreaker()
 
     results: list[MatchResult] = []
 
@@ -225,13 +285,8 @@ async def main(
     top_k = config.funnel.top_k
 
     async def score_one(job, rerank_score: float | None = None) -> MatchResult:
-        if on_job_score:
-            on_job_score(job.board_token, job.title)
-        try:
-            result = await scorer.score(job, resume_text, run_id, projects_text)
-        except Exception:
-            logger.exception("Unexpected error scoring job %s/%s", job.board_token, job.job_id)
-            result = MatchResult(
+        def _failed(reason: str) -> MatchResult:
+            return MatchResult(
                 job_id=job.job_id,
                 board_token=job.board_token,
                 title=job.title,
@@ -242,10 +297,27 @@ async def main(
                 disqualifiers=[],
                 recommend=False,
                 skipped=True,
-                skip_reason="unexpected_error",
+                skip_reason=reason,
                 scored_at=datetime.now(timezone.utc),
                 source_run_id=run_id,
             )
+
+        if breaker.tripped:
+            # Don't call a backend already known to be failing. Recorded rather than
+            # dropped so the user can see how much of the budget went unspent.
+            result = _failed("backend_unavailable")
+        else:
+            if on_job_score:
+                on_job_score(job.board_token, job.title)
+            try:
+                result = await scorer.score(job, resume_text, run_id, projects_text)
+            except Exception as exc:
+                logger.exception("Unexpected error scoring job %s/%s", job.board_token, job.job_id)
+                breaker.last_error = str(exc)
+                result = _failed("unexpected_error")
+            else:
+                breaker.last_error = scorer.last_error or breaker.last_error
+            breaker.record(result)
         result.rerank_score = rerank_score
         await store.append_result(result)
         # In queue mode, forward shortlisted (result, job) pairs immediately
@@ -337,6 +409,12 @@ async def main(
                 rejected = [r for r in results if not is_shortlisted(r, settings.threshold)]
                 shortlisted.sort(key=lambda r: (r.relevance_score or 0), reverse=True)
                 store.finalise(shortlisted, rejected, started_at, settings.threshold, settings.model, len(results))
+                if breaker.tripped:
+                    # Queue mode is what the monitor runs, where a "0 shortlisted"
+                    # line would otherwise be the only trace of a dead backend.
+                    logger.error("Matcher: %s", breaker.summary())
+                    if not quiet:
+                        console.print(f"[red]{breaker.summary()}[/red]")
                 logger.info(
                     "Matcher done: %d shortlisted, %d rejected (run %s)",
                     len(shortlisted), len(rejected), run_id,
@@ -434,8 +512,13 @@ async def main(
                 seen.add(r.job_id)
         seen.save()
 
+        if breaker.tripped:
+            logger.error("Matcher: %s", breaker.summary())
+
         if not quiet:
             console.print()
+            if breaker.tripped:
+                console.print(f"[red]{breaker.summary()}[/red]\n")
             if shortlisted:
                 table = Table(title=f"Shortlisted Jobs (score >= {settings.threshold})", show_lines=True)
                 table.add_column("Score", style="bold green", width=7)
@@ -452,7 +535,8 @@ async def main(
                         "[green]Yes[/green]" if r.recommend else "[yellow]Maybe[/yellow]",
                     )
                 console.print(table)
-            else:
+            elif not breaker.tripped:
+                # Never say "nothing met the threshold" when nothing was scored.
                 console.print("[yellow]No jobs met the threshold. Try lowering it in config/matcher.yaml.[/yellow]")
 
             _FUNNEL_REASONS = ("title_excluded", "title_no_include_match", "title_low_relevance")

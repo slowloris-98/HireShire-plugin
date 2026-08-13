@@ -389,6 +389,31 @@ class Database:
                 "INSERT OR IGNORE INTO seen_jobs(job_id, first_seen) VALUES (?, ?)", rows
             )
 
+    def forget_seen_scoring_errors(self, reasons: Iterable[str]) -> int:
+        """Un-retire jobs whose only recorded outcome was a scoring failure.
+
+        A job is retired into `seen_jobs` once it has an outcome, so a broken backend
+        used to retire everything it failed on — permanently, and invisibly, since
+        fixing the backend could not bring them back. This releases exactly those
+        jobs: ones with a skip row for one of `reasons` and no successful score in
+        any run. Returns how many were freed.
+        """
+        reasons = list(reasons)
+        if not reasons:
+            return 0
+        placeholders = ",".join("?" for _ in reasons)
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM seen_jobs WHERE job_id IN ("
+                "  SELECT job_id FROM matches"
+                f"  WHERE skipped = 1 AND skip_reason IN ({placeholders})"
+                "  EXCEPT"
+                "  SELECT job_id FROM matches WHERE skipped = 0"
+                ")",
+                reasons,
+            )
+            return cur.rowcount
+
     # -- pipeline ------------------------------------------------------------
 
     def load_pipeline_results(self, run_id: str) -> list[dict]:

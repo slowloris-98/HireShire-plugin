@@ -118,23 +118,8 @@ discovers is kept separately so an update never erases it.
 
 ## Where your data lives
 
-**Your job search is one folder, and it is yours.** Your resume and every run's
-results live in the folder you chose at setup:
-
-```
-hireshire_job_search/
-├── resume/original/your_resume.pdf
-└── hireshire_run_results/
-    ├── 2026-08-12_143005/2026-08-12_143005_results.csv
-    └── 2026-08-12_183012/2026-08-12_183012_results.csv
-```
-
-One directory to back up, sync or delete. The folder's absolute path is recorded
-at setup, so results land there whether or not you launched Claude Code from it.
-Re-run `/hireshire:setup` to move it; runs already written stay where they are.
-
-**The plugin's own state** — the SQLite database, your config, the venv, logs —
-stays in `~/.claude/plugins/data/hireshire-hireshire/`. That directory survives
+Everything mutable — the SQLite database, your config, your results, the venv —
+lives in `~/.claude/plugins/data/hireshire-hireshire/`. That directory survives
 plugin updates. The install directory is replaced wholesale on every update and
 holds only shipped, read-only content.
 
