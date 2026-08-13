@@ -17,14 +17,19 @@
 # Usage:
 #   hireshire.sh --check                  session-start probe; installs nothing
 #   hireshire.sh --paths                  print ROOT= and DATA=; installs nothing
+#   hireshire.sh --status                 is a recurring sweep running? installs nothing
 #   hireshire.sh --bootstrap              create/refresh the venv
-#   hireshire.sh --monitor                run the recurring sweep
+#   hireshire.sh --monitor                run the recurring sweep (start in background)
 #   hireshire.sh <script.py> [args...]    run an engine entrypoint in the venv
 #
 # --paths exists because skills must not name the data directory themselves.
 # `${CLAUDE_PLUGIN_DATA}` expands to a different directory in the Claude desktop
 # app than in the terminal or the VS Code extension, so a skill that substitutes
 # it writes somewhere the engine never reads.
+#
+# --status exists because a skill must not claim a sweep is running without asking.
+# --monitor is the only entrypoint that honours the user's poll_interval_hours;
+# `orchestrate.py` defaults to 4 hours and never reads their config.
 #
 # --check is what the SessionStart hook runs. It must stay fast: a hook blocks the
 # user's first turn, so anything slow there is silence they cannot explain. The
@@ -57,8 +62,9 @@ PY=$(find_python) || {
 case "$1" in
     --check)     exec "$PY" "$ROOT/scripts/bootstrap.py" --check ;;
     --paths)     exec "$PY" "$ROOT/scripts/bootstrap.py" --paths ;;
+    --status)    exec "$PY" "$ROOT/scripts/bootstrap.py" --status ;;
     --bootstrap) exec "$PY" "$ROOT/scripts/bootstrap.py" ;;
     --monitor)   exec "$PY" "$ROOT/scripts/run_orchestration.py" ;;
-    "")          echo "usage: hireshire.sh [--check|--paths|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
+    "")          echo "usage: hireshire.sh [--check|--paths|--status|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
     *)           exec "$PY" "$ROOT/scripts/run_engine.py" "$@" ;;
 esac

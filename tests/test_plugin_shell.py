@@ -33,12 +33,15 @@ def test_plugin_manifest_is_valid_and_versioned():
     assert m["version"].count(".") == 2
 
 
-def test_monitors_are_declared_under_experimental():
-    """Top-level `monitors` still loads but warns, and a future release will
-    require the nested form."""
+def test_the_plugin_declares_no_monitors():
+    """Dropped in 0.2.4. Plugin monitors are experimental and are skipped on hosts
+    where the Monitor tool is unavailable, so the orchestration skill's promise that
+    sweeps had started was sometimes false and it had no way to notice. The skill now
+    starts the sweeper itself and confirms with `--status`."""
     m = _json(".claude-plugin/plugin.json")
     assert "monitors" not in m
-    assert m["experimental"]["monitors"].startswith("./")
+    assert "monitors" not in m.get("experimental", {})
+    assert not (ROOT / "monitors").exists()
 
 
 def test_marketplace_points_at_this_repo():
@@ -46,22 +49,6 @@ def test_marketplace_points_at_this_repo():
     entry = next(p for p in mk["plugins"] if p["name"] == "hireshire")
     # Self-hosting: the plugin IS the repo root.
     assert entry["source"] == "./"
-
-
-def test_monitor_config_is_a_bare_array_with_a_named_entry():
-    mons = _json("monitors/monitors.json")
-    assert isinstance(mons, list), "monitors.json is an array, not an object"
-    entry = mons[0]
-    # The name is what stops a second skill invocation spawning a duplicate sweep.
-    assert entry["name"] == "orchestration"
-    assert entry["when"] == "on-skill-invoke:start-orchestration"
-
-
-def test_monitor_command_cannot_reference_user_config():
-    """Claude Code rejects the whole monitor rather than substituting, so the
-    interval has to be read from the user's config by the wrapper instead."""
-    raw = (ROOT / "monitors" / "monitors.json").read_text(encoding="utf-8")
-    assert "${user_config" not in raw
 
 
 def test_session_start_hook_probes_but_never_installs():
@@ -96,14 +83,19 @@ def test_check_mode_cannot_install_anything():
     assert called == [], f"check() must not build or install, but ran {called}"
 
 
-def test_the_launcher_exposes_check_paths_and_bootstrap_separately():
+def test_the_launcher_exposes_its_read_only_modes_separately():
     sh = (ROOT / "scripts" / "hireshire.sh").read_text(encoding="utf-8")
-    assert "--check)" in sh and "--bootstrap)" in sh
-    # --paths is how a skill learns where DATA is without naming it; see the test below.
+    assert "--check)" in sh and "--bootstrap)" in sh and "--monitor)" in sh
+    # The two questions a skill must ask rather than assume: where DATA is, and whether
+    # a sweep is already running. See the tests below for both.
     assert "--paths)" in sh
+    assert "--status)" in sh
 
 
-def test_paths_mode_reports_both_directories_and_installs_nothing():
+@pytest.mark.parametrize("mode", ["paths", "status"])
+def test_the_read_only_modes_answer_without_building_anything(mode):
+    """Both are questions a skill asks before it can do or say anything, so both must
+    return on a machine where the venv does not exist yet."""
     import bootstrap
 
     called: list[str] = []
@@ -111,11 +103,51 @@ def test_paths_mode_reports_both_directories_and_installs_nothing():
     bootstrap.venv.EnvBuilder = lambda *a, **k: called.append("venv")  # type: ignore[assignment]
     bootstrap.subprocess.run = lambda *a, **k: called.append("pip")    # type: ignore[assignment]
     try:
-        assert bootstrap.paths() == 0
+        assert getattr(bootstrap, mode)() == 0
     finally:
         bootstrap.venv.EnvBuilder, bootstrap.subprocess.run = original_env, original_run
 
-    assert called == [], "--paths must answer a question, not build anything"
+    assert called == [], f"--{mode} must answer a question, not build anything"
+
+
+def test_the_orchestration_skill_verifies_before_it_reports():
+    """It used to announce that sweeps had started purely because it had been invoked,
+    so users were told a sweep was live when nothing was running."""
+    text = (ROOT / "skills" / "start-orchestration" / "SKILL.md").read_text(encoding="utf-8")
+    assert "--status" in text, "the skill must check the state it reports"
+
+
+def _shell_blocks(text: str) -> str:
+    """The ```bash fences only. Prose is exempt on purpose: the skills state these
+    rules by naming the thing they forbid, and a check over the whole file would fail
+    on its own instructions."""
+    out, inside = [], False
+    for line in text.splitlines():
+        if line.strip().startswith("```"):
+            inside = line.strip().startswith(("```bash", "```sh"))
+            continue
+        if inside:
+            out.append(line)
+    return "\n".join(out).lower()
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+def test_no_skill_runs_a_command_that_detaches_a_process(skill):
+    """A session that improvised `nohup … & disown` left a sweeper running after the
+    session closed — while telling the user it would stop with the session. Anything
+    the plugin starts has to be a child of the session that started it."""
+    blocks = _shell_blocks((ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8"))
+    for detach in ("nohup", "disown", "setsid", "start /b"):
+        assert detach not in blocks, (
+            f"{skill}: background it through the harness, not by detaching ({detach})"
+        )
+
+
+def test_the_setup_skill_asks_for_selectable_options():
+    """Left to judgment, the same skill text produced tappable options in some runs and
+    a wall of numbered prose in others."""
+    text = (ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+    assert "AskUserQuestion" in text
 
 
 @pytest.mark.parametrize("skill", SKILLS)
@@ -146,11 +178,9 @@ def test_every_launch_path_goes_through_the_one_launcher():
     `command -v python3` picks the broken one while the real `python` sits next
     to it."""
     hook = _json("hooks/hooks.json")["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-    monitor = _json("monitors/monitors.json")[0]["command"]
 
-    for cmd in (hook, monitor):
-        assert "hireshire.sh" in cmd
-        assert "python" not in cmd, "interpreter choice belongs in the launcher"
+    assert "hireshire.sh" in hook
+    assert "python" not in hook, "interpreter choice belongs in the launcher"
 
 
 def test_launcher_probes_by_execution_not_by_existence():

@@ -4,6 +4,48 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.2.4] — unreleased
+
+### Fixed
+
+- **`/hireshire:start-orchestration` reported sweeps that were not running.** The skill
+  announced that orchestration had started on the strength of having been invoked,
+  because a plugin monitor was supposed to start it. Monitors are an experimental
+  component that is skipped on hosts where the Monitor tool is unavailable, so on some
+  interfaces nothing started — and the skill had no way to notice. Users were told a
+  sweep was live while the log directory stayed empty.
+
+  Told to start one anyway, a session improvised a detached
+  `nohup … orchestrate.py --now & disown`, which was wrong three ways: it ignored the
+  user's `poll_interval_hours` (`orchestrate.py --interval` defaults to 4 hours and
+  never reads their config), it outlived the session it had just promised to stop with,
+  and nothing stopped a second copy — one test machine ended with two sweepers writing
+  the same SQLite database.
+
+  The monitor is gone. `/hireshire:start-orchestration` now starts
+  `hireshire.sh --monitor` as a background task, **confirms it with `--status`**, and
+  reports only what that returned — including saying plainly when it could not start
+  one. Same behaviour on the terminal, the Claude app and the VS Code extension.
+
+### Added
+
+- **`hireshire.sh --status`** — whether a recurring sweep is running, its interval, its
+  last sweep and when the next is due. Answers the question the skill used to guess at,
+  and is there for the user to ask directly at any point.
+- **A single-instance guard.** `hireshire/orchestration_status.py` records a heartbeat
+  in the data directory; a second `--monitor` reports the running one and exits instead
+  of duplicating the sweep. Liveness is heartbeat freshness, not a PID probe —
+  `os.kill(pid, 0)` is not portable to Windows and a recycled PID reads as alive.
+
+### Changed
+
+- **Setup asks with selectable options.** Nothing in the skill named `AskUserQuestion`,
+  so whether a user got tappable choices or a wall of numbered prose was left to
+  judgment and varied between runs of the same skill. Locations, posting age, threshold,
+  jobs per run, job boards, scoring backend, effort, poll interval and auto-apply now
+  specify it, recommended option first. The resume path and the target-role correction
+  stay free text, where a menu would constrain a genuinely open answer.
+
 ## [0.2.3] — unreleased
 
 ### Fixed

@@ -1,8 +1,0 @@
-[
-  {
-    "name": "orchestration",
-    "description": "HireShire recurring job sweep",
-    "when": "on-skill-invoke:start-orchestration",
-    "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh\" --monitor"
-  }
-]

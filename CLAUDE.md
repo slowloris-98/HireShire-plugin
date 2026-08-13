@@ -28,6 +28,7 @@ pytest                                # 158 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_top_k_keeps_the_highest_scoring_jobs
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
+sh scripts/hireshire.sh --status      # is a recurring sweep running?
 
 # Engine, from a checkout (falls back to ./data when the plugin env vars are unset)
 python scraper.py                     # sweep the enabled boards
@@ -82,11 +83,19 @@ Consequences already worked out, which should not be re-derived:
   `seed ∪ user_bad − user_recovered`, so a release can add dead slugs without
   erasing local learning, and `verify_bad_slugs.py --prune` writes recoveries as a
   delta rather than editing a file that is about to be replaced.
-- **Monitors are session-scoped, not daemons.** They stop when the session ends and
-  **cannot reference `${user_config.*}`** — Claude Code rejects the monitor rather
-  than substituting — so `scripts/run_orchestration.py` reads `poll_interval_hours`
-  out of the user's config itself. Every stdout line becomes a notification, so it
-  emits exactly one summary line per cycle and logs everything else to a file.
+- **The recurring sweep is session-scoped, and the skill must verify it.** 0.2.4
+  dropped the plugin monitor that used to start it: monitors are experimental and are
+  skipped on hosts where the Monitor tool is unavailable, so the skill's claim that
+  sweeps had begun was sometimes false with nothing to catch it. `start-orchestration`
+  now launches `hireshire.sh --monitor` as a background task and confirms with
+  `--status` before saying anything. Three rules survive from that design and still
+  bind: `scripts/run_orchestration.py` reads `poll_interval_hours` out of the user's
+  config itself (`orchestrate.py --interval` defaults to 4 and never looks); every
+  stdout line reaches the agent, so it emits one summary line per cycle and logs the
+  rest to a file; and nothing may detach the process, because the user is told it
+  stops with the session. `hireshire/orchestration_status.py` is the single source of
+  truth for "is it running", by heartbeat freshness rather than PID probing — `os.kill(pid, 0)`
+  is not portable to Windows and a recycled PID reads as alive.
 - **Setup never shows YAML.** `hireshire/config_writer.py` is a whitelisted,
   ruamel-based writer that preserves comments and CRLF and validates the patched
   document against the phase's pydantic model *before* writing.
@@ -176,6 +185,11 @@ suppresses Rich in favour of `logging` — required under the monitor.
   `.cmd`/`.bat` shims Windows installs.
 - **Plugin-bundled MCP tools are namespaced** `mcp__plugin_hireshire_playwright__*`,
   not `mcp__playwright__*`. A rule written against the bare server key never fires.
+- **A skill must not state runtime facts it has not asked for.** Both live failures of
+  this kind cost a user real trust: one skill announced a running sweep that did not
+  exist, another wrote the search profile to a directory it had guessed. The launcher
+  answers both questions — `--status` and `--paths` — and the skills are required to
+  ask. `tests/test_plugin_shell.py` greps for the regressions.
 - **A skill may write `${CLAUDE_PLUGIN_ROOT}`; it must never write
   `${CLAUDE_PLUGIN_DATA}`.** Claude Code expands both inside skill content, but the
   data one resolves differently per interface (see the ROOT/DATA split above), so a

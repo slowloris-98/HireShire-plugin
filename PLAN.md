@@ -202,6 +202,13 @@ requirements differ from `${CLAUDE_PLUGIN_DATA}/requirements.lock`, create the v
 then copy the manifest across. Idempotent, with a file-hash compare on the happy path so it
 costs nothing per session. Point `db_path` at `${CLAUDE_PLUGIN_DATA}/hireshire.db`.
 
+> **Superseded in 0.2.4 — the monitor was removed.** The first constraint below turned
+> out to be the fatal one: on interfaces where monitors are skipped, nothing started and
+> `/hireshire:start-orchestration` still told the user sweeps were running. The skill now
+> launches `hireshire.sh --monitor` as a background task and verifies with `--status`
+> before reporting. Everything else in this section still holds — it is the wrapper
+> script's contract, and that script is now the only recurring entrypoint.
+
 `monitors/monitors.json` — `name: orchestration`,
 `"when": "on-skill-invoke:start-orchestration"`, command runs `orchestrate.py --now --interval N`
 through the bootstrapped venv.

@@ -24,6 +24,7 @@ import venv
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from hireshire import orchestration_status  # noqa: E402
 from hireshire.plugin_dirs import MIGRATABLE, legacy_data_dirs, resolve_dirs  # noqa: E402
 
 ROOT, DATA = resolve_dirs()
@@ -104,6 +105,21 @@ def paths() -> int:
     return 0
 
 
+def status() -> int:
+    """Print whether a recurring sweep is running.
+
+    This exists so `/hireshire:start-orchestration` can *verify* instead of assert.
+    The skill used to announce that sweeps had begun on the strength of having been
+    invoked; when the mechanism behind that did not fire, the user was told a live
+    sweep was running and nothing contradicted it.
+
+    Installs nothing and imports nothing outside the stdlib, so it answers on a fresh
+    machine as readily as a warm one.
+    """
+    print(orchestration_status.describe(DATA))
+    return 0
+
+
 def check() -> int:
     """Session-start probe. Recovers stranded data, reports readiness, installs nothing.
 
@@ -173,4 +189,6 @@ if __name__ == "__main__":
     argv = sys.argv[1:]
     if "--paths" in argv:
         sys.exit(paths())
+    if "--status" in argv:
+        sys.exit(status())
     sys.exit(check() if "--check" in argv else main())

@@ -120,6 +120,17 @@ move it; results already written stay where they are.
 Ask these **conversationally and in small groups** — two or three at a time, not
 as a ten-item form. Confirm what you understood before writing.
 
+**Use `AskUserQuestion` for every question below that has a small set of sensible
+answers**: locations, posting age, match threshold, jobs per run, job boards, scoring
+backend, scoring effort, poll interval, and auto-apply. This skill already names a
+default or a recommendation for almost all of them — put that option first and mark it
+recommended. The user gets one tap instead of typing, and "Other" is always there for
+anyone who wants something else, so offering options never narrows what they can say.
+
+Two questions stay free text, because their answers are open-ended and a menu would
+constrain them: the path to their resume, and correcting the target roles you drafted
+in question 6.
+
 ### How to write a value
 
 `write_config(phase, {...})` takes **flat keys**, never the YAML nesting. The names
@@ -175,8 +186,10 @@ Three things that trip people up:
 3. **Posting age**, in days → `scraper.max_age_hours` (multiply by 24).
 
 4. **Match threshold, as a number from 0 to 100** → `threshold` on the **`matcher`**
-   phase. Ask for the number directly. Suggest 75 if they want a recommendation. Do
-   not offer word-based tiers.
+   phase. Offer numbers — 75 recommended, plus a couple either side — and let "Other"
+   take any value they prefer. **Never offer word-based tiers** like "strict" or
+   "relaxed": the setting is a number, the user should see the number they are
+   choosing, and a label hides how much a step actually moves the filter.
 
    The funnel has its own `encoder_threshold` — a 0-1 cosine recall net, an unrelated
    setting that setup must never touch. It is deliberately loose; raising it throws
@@ -203,9 +216,11 @@ Three things that trip people up:
    > Success in SaaS. Is that the target, and is there anything you'd rule out —
    > seniority, industries, a specialisation you're done with?
 
-   That is a far better question than asking cold, and it is faster for them. If the
-   answer really has only one option, state it as an assumption and move on — never
-   pad a question out to two choices so it fits a multiple-choice tool.
+   That is a far better question than asking cold, and it is faster for them. Ask this
+   one as free text — the useful answer is a correction in their own words, which no
+   menu can anticipate. And if a question turns out to have only one real answer, state
+   it as an assumption and move on rather than inventing a second option to pad it out
+   into a choice. That is a rule against fake choices, not against offering real ones.
 
    Then generate three things from their answer *and* the resume text:
 

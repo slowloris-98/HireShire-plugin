@@ -53,7 +53,7 @@ and no shell-specific engine code — the venv is built at
 later invocation uses that interpreter by absolute path.
 
 The Git Bash requirement on Windows is the one real constraint: the startup hook
-and the background monitor are POSIX shell one-liners that probe for
+and the recurring sweep are POSIX shell one-liners that probe for
 `python3`, then `python`, then `py`. That probe is what makes the same command
 work on a Mac, where there is no bare `python` at all.
 
