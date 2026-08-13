@@ -17,12 +17,32 @@ PATH but does not work. The launcher resolves a real interpreter, bootstraps the
 venv if needed, and re-execs inside it.
 
 ```bash
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" <script.py> [args]
+sh "<plugin root>/scripts/hireshire.sh" <script.py> [args]
 ```
 
-For one-off Python, use the venv interpreter directly —
-`${CLAUDE_PLUGIN_DATA}/venv/bin/python`, or
-`${CLAUDE_PLUGIN_DATA}/venv/Scripts/python.exe` on Windows.
+**One-off Python goes through the same launcher.** Write the snippet to a file and
+pass its absolute path — the launcher accepts one, and this is the only way the
+child gets a correct `CLAUDE_PLUGIN_DATA` and `PYTHONPATH`:
+
+```bash
+cat > /tmp/snippet.py <<'EOF'
+from hireshire import config_writer
+config_writer.install_user_config()
+EOF
+sh "<plugin root>/scripts/hireshire.sh" /tmp/snippet.py
+```
+
+Two rules behind that, both learned the hard way:
+
+- **Never invoke the venv interpreter yourself.** It skips `run_engine.py`, which
+  is what sets `PYTHONPATH` — so `import hireshire` fails — and what pins the data
+  directory. Hand-rolled `export` lines get one of the two wrong.
+- **`${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` do not exist in your shell.**
+  Claude Code sets them for hooks, not for the Bash calls you make. Substitute the
+  plugin's real install path yourself, and **never guess a data directory** — a
+  machine can have more than one (a marketplace install and a local load keep
+  separate ones), and picking the wrong one makes a configured install look empty.
+  The launcher works this out; you should not.
 
 ## Step 0 — set expectations, then install
 
