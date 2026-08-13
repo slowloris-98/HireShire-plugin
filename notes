@@ -1,5 +1,8 @@
 1. a way to show progress of the scrapping so that user can see how much is done
 2. The claude code matching leads to the chat history being created for every match, how to deal with that?
+3. Update readme:
+    Simplify the user installation steps, as minimum as possible
+    How to stay updated
 2. does setup clears ths db and sets everything again? what if a different person comes and wants a new profile.
 3. When using the skill hireshire should not ask user to start debugging if anything fails, as it starts talking why it broke and which part of code is incorrect.
 

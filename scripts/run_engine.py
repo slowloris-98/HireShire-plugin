@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bootstrap import ROOT, is_current, main as bootstrap_main, venv_python  # noqa: E402
+from bootstrap import DATA, ROOT, is_current, main as bootstrap_main, venv_python  # noqa: E402
 
 
 def run(argv: list[str]) -> int:
@@ -40,8 +40,11 @@ def run(argv: list[str]) -> int:
 
     env = dict(os.environ)
     # The engine resolves every path off these, and a subprocess started by a
-    # monitor may not inherit them, so pin both explicitly.
+    # monitor may not inherit them, so pin both explicitly. DATA especially: the
+    # child would otherwise re-derive it, and any disagreement puts the database
+    # somewhere the parent is not looking.
     env.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
+    env["CLAUDE_PLUGIN_DATA"] = str(DATA)
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
 
     return subprocess.run(

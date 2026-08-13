@@ -17,13 +17,16 @@ venv exists, so it may only import the standard library.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import venv
 from pathlib import Path
 
-ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
-DATA = Path(os.environ.get("CLAUDE_PLUGIN_DATA") or (ROOT / "data"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from hireshire.plugin_dirs import legacy_data_dirs, resolve_dirs  # noqa: E402
+
+ROOT, DATA = resolve_dirs()
 
 VENV_DIR = DATA / "venv"
 REQUIREMENTS = ROOT / "requirements-core.txt"
@@ -51,7 +54,38 @@ def is_current() -> bool:
     return LOCK.read_bytes() == REQUIREMENTS.read_bytes()
 
 
+def rescue_stranded_data() -> None:
+    """Move config, database and logs out of an install directory into DATA.
+
+    Until 0.2.1 the engine resolved DATA to `ROOT/data` whenever the environment
+    did not name one, which is the case for everything the skills run. The install
+    directory is replaced on every update, so a user's answers to setup and their
+    whole job history sat somewhere that was going to be deleted — and the update
+    carrying this fix is exactly the event that would have deleted them.
+
+    Runs before the venv check, so it happens even on an install with nothing else
+    to do. Never overwrites: a file already in DATA is the newer one, because DATA
+    is where the fixed code writes.
+    """
+    for legacy in legacy_data_dirs(ROOT, DATA):
+        for entry in sorted(legacy.iterdir()):
+            if entry.name in ("venv", "requirements.lock"):
+                continue  # rebuilt from the shipped requirements; paths are absolute
+            target = DATA / entry.name
+            if target.exists():
+                continue
+            DATA.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.move(str(entry), str(target))
+                print(f"HireShire: recovered {entry.name} from a previous install", flush=True)
+            except OSError as exc:
+                # Better to leave a copy behind than to fail the session start.
+                print(f"HireShire: could not move {entry}: {exc}", file=sys.stderr)
+
+
 def main() -> int:
+    rescue_stranded_data()
+
     if is_current():
         return 0
 

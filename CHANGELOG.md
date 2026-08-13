@@ -4,7 +4,49 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
-## [0.2.0] — unreleased
+## [0.2.1] — unreleased
+
+Scoring never worked in 0.2.0. Every run scraped normally, sent its budget of jobs
+to the scorer, failed all of them, and reported "0 new matches" — so this release is
+mandatory for anyone who installed 0.2.0.
+
+### Fixed
+
+- **Scoring on a Claude subscription never worked.** The `claude_code` backend passed
+  `--json-schema` the *path* to a temp file, but the flag parses its argument as JSON
+  — so every call failed with `not valid JSON: Unexpected identifier "C"` (the drive
+  letter of `C:\Users\...`). The schema is now passed inline.
+- **A broken backend permanently retired the jobs it failed on.** `api_error` was not
+  in `_RETRYABLE_SKIP_REASONS`, so every job a failed scoring call touched was written
+  to `seen_jobs` and would never be scored again — fixing the backend could not bring
+  them back. Scoring failures are now retryable, and `SeenStore` releases jobs retired
+  this way on the next run, so installs affected by the bug above recover on their own.
+- **A dead backend now says so.** A circuit breaker stops the run after five
+  consecutive scoring failures and reports the error text, instead of spending the
+  whole budget on a backend failing every call and finishing with a summary that reads
+  like a normal empty result.
+- **Everything the skills wrote was going into the install directory.** Claude Code
+  sets `CLAUDE_PLUGIN_DATA` for hooks but not for the Bash calls a skill makes, so the
+  engine resolved DATA to `ROOT/data` for every path the skills took: the user's
+  config, the SQLite DB, the generated profile, the logs — all in a directory replaced
+  wholesale on the next update. DATA is now *derived* from the install path when the
+  environment is silent (`hireshire/plugin_dirs.py`), and `scripts/bootstrap.py` moves
+  anything stranded by an earlier version into the real data directory at session
+  start. **Nobody loses their setup answers or their job history on this update.**
+- A `str_list` config field now accepts a bare string, so a location given as
+  `"united states"` is read as a one-item list instead of being rejected. Commas are
+  deliberately not split on: "San Francisco, CA" is one location.
+- `funnel`'s writable `threshold` key is renamed `encoder_threshold`. Both phases
+  write `matcher.yaml` and both had a `threshold` — 0-100 for the LLM, 0-1 for the
+  cosine recall net — asked two steps apart during setup. Writing the LLM's value into
+  the funnel validated cleanly and silently rejected every job in the sweep. Both
+  settings are range-bound now, so a hand-edited YAML is caught too.
+- The config writer rejects a nested patch (`{"title_filter": {...}}`) with an error
+  naming the flat call that works, and `skills/setup/SKILL.md` documents the flat keys
+  it actually takes rather than the dotted YAML paths — which is what produced the
+  failed writes users saw during setup.
+
+## [0.2.0] — 2026-08-12
 
 ### Added
 
@@ -26,42 +68,10 @@ All notable changes to this plugin are documented here. Versions follow
   data directories, which would be silently erased on the next update.
 - `${CLAUDE_PLUGIN_DATA}/last_run.json` — a fixed pointer to the newest run, so
   `/hireshire:apply` no longer has to guess where the results root is.
-- `FieldSpec.normalise` in the config writer, plus a `type`-driven coercion layer in
-  front of it. The pydantic models validate a copy of the document, so a
-  `field_validator` could reject a value but never clean one — which meant a path
-  pasted with the quotes Windows' "Copy as path" adds was stored with them, and a
-  location given as `"united states"` was rejected outright instead of being read as
-  a one-item list. Paths normalise on the way in; every `str_list` field now accepts
-  a bare string. Commas are deliberately not split on: "San Francisco, CA" is one
-  location.
-
-### Fixed
-
-- **Scoring on a Claude subscription never worked.** The `claude_code` backend passed
-  `--json-schema` the *path* to a temp file, but the flag parses its argument as JSON
-  — so every call failed with `not valid JSON: Unexpected identifier "C"` (the drive
-  letter of `C:\Users\...`). A full sweep would scrape thousands of jobs, send the
-  top `top_k` for scoring, fail all of them, and report "0 new matches". The schema
-  is now passed inline.
-- **A broken backend permanently retired the jobs it failed on.** `api_error` was not
-  in `_RETRYABLE_SKIP_REASONS`, so every job a failed scoring call touched was
-  written to `seen_jobs` and would never be scored again — fixing the backend could
-  not bring them back. Scoring failures are now retryable, and `SeenStore` releases
-  jobs retired this way on the next run, so installs affected by the bug above
-  recover on their own.
-- **A dead backend now says so.** A new circuit breaker stops the run after five
-  consecutive scoring failures and reports the error text, instead of spending the
-  whole budget on a backend that is failing every call and finishing with a summary
-  that reads like a normal empty result.
-- `funnel`'s writable `threshold` key is renamed `encoder_threshold`. Both phases
-  write `matcher.yaml` and both had a `threshold` — 0-100 for the LLM, 0-1 for the
-  cosine recall net — asked two steps apart during setup. Writing the LLM's value
-  into the funnel validated cleanly and silently rejected every job in the sweep.
-  Both settings are now range-bound as well, so a hand-edited YAML is caught too.
-- The config writer rejects a nested patch (`{"title_filter": {...}}`) with an error
-  naming the flat call that works, and `skills/setup/SKILL.md` documents the flat
-  keys it actually takes rather than the dotted YAML paths, which is what produced
-  the failed writes users saw during setup.
+- `FieldSpec.normalise` in the config writer. The pydantic models validate a copy of
+  the document, so a `field_validator` could reject a value but never clean one —
+  which meant a path pasted with the quotes Windows' "Copy as path" adds was stored
+  with them. Path fields now normalise on the way in.
 
 ### Changed
 

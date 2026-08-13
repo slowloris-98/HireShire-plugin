@@ -23,25 +23,31 @@ There is a third root, and it belongs to the user rather than the plugin:
   working directory and captures it, the engine only ever reads config. A session
   launched from somewhere else still writes to the folder the user chose.
 
-Outside a plugin install — a plain checkout, or pytest — both env vars are absent
-and everything falls back to the repo, so `pytest` and `python scraper.py` keep
+Neither env var can be relied on: Claude Code sets them for **hooks**, but not for
+the Bash calls a skill makes, and the skills are what write every mutable file. So
+DATA is *derived* from ROOT's install path when the environment is silent — see
+`hireshire/plugin_dirs.py`, which owns that reasoning and is shared with
+`scripts/bootstrap.py`.
+
+Outside a plugin install — a plain checkout, or pytest — nothing resolves and
+everything falls back to the repo, so `pytest` and `python scraper.py` keep
 working from a clone.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import yaml
+
+from hireshire.plugin_dirs import resolve_dirs
 
 logger = logging.getLogger(__name__)
 
 _REPO = Path(__file__).resolve().parent.parent
 
-ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or _REPO)
-DATA = Path(os.environ.get("CLAUDE_PLUGIN_DATA") or (_REPO / "data"))
+ROOT, DATA = resolve_dirs()
 
 SHIPPED_CONFIG = ROOT / "config"   # read-only: default YAMLs, company lists, slug seed
 USER_CONFIG = DATA / "config"      # the user's live YAMLs, written by /hireshire:setup

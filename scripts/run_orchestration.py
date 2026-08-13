@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bootstrap import ROOT, is_current, main as bootstrap_main, venv_python  # noqa: E402
+from bootstrap import DATA, ROOT, is_current, main as bootstrap_main, venv_python  # noqa: E402
 
 _CHILD_FLAG = "HIRESHIRE_IN_VENV"
 
@@ -39,6 +39,7 @@ def _reexec_in_venv() -> int:
     env = dict(os.environ)
     env[_CHILD_FLAG] = "1"
     env.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
+    env["CLAUDE_PLUGIN_DATA"] = str(DATA)  # never let the child re-derive a different one
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.run(
         [str(venv_python()), str(Path(__file__).resolve())],
