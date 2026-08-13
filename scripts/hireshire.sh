@@ -16,9 +16,15 @@
 #
 # Usage:
 #   hireshire.sh --check                  session-start probe; installs nothing
+#   hireshire.sh --paths                  print ROOT= and DATA=; installs nothing
 #   hireshire.sh --bootstrap              create/refresh the venv
 #   hireshire.sh --monitor                run the recurring sweep
 #   hireshire.sh <script.py> [args...]    run an engine entrypoint in the venv
+#
+# --paths exists because skills must not name the data directory themselves.
+# `${CLAUDE_PLUGIN_DATA}` expands to a different directory in the Claude desktop
+# app than in the terminal or the VS Code extension, so a skill that substitutes
+# it writes somewhere the engine never reads.
 #
 # --check is what the SessionStart hook runs. It must stay fast: a hook blocks the
 # user's first turn, so anything slow there is silence they cannot explain. The
@@ -50,8 +56,9 @@ PY=$(find_python) || {
 
 case "$1" in
     --check)     exec "$PY" "$ROOT/scripts/bootstrap.py" --check ;;
+    --paths)     exec "$PY" "$ROOT/scripts/bootstrap.py" --paths ;;
     --bootstrap) exec "$PY" "$ROOT/scripts/bootstrap.py" ;;
     --monitor)   exec "$PY" "$ROOT/scripts/run_orchestration.py" ;;
-    "")          echo "usage: hireshire.sh [--check|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
+    "")          echo "usage: hireshire.sh [--check|--paths|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
     *)           exec "$PY" "$ROOT/scripts/run_engine.py" "$@" ;;
 esac

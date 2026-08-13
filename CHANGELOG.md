@@ -4,6 +4,42 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.2.3] — unreleased
+
+### Fixed
+
+- **Setting up in the Claude desktop app configured a different plugin from the one
+  that runs.** Claude Code resolves `${CLAUDE_PLUGIN_DATA}` from the plugin
+  *identifier*, and the identifier is not the same on every interface: the terminal
+  and the VS Code extension report `hireshire@hireshire` and get
+  `data/hireshire-hireshire`, while the desktop app reports the plugin as an inline
+  source and gets `data/hireshire-inline`. Claude Code expands that placeholder
+  inside skill content, so `/hireshire:setup` run in the desktop app wrote the
+  generated search profile into a directory no engine run ever reads.
+
+  Nothing failed. `_load_search_profile` logged one line and returned `""`, which
+  makes `Reranker.usable` False — so the cross-encoder, the funnel's only real
+  precision stage, was skipped for every sweep afterwards and the LLM budget went on
+  unranked jobs. Two changes close it:
+
+  - `resolve_dirs()` now derives DATA from ROOT's install path whenever that layout
+    is provable, **outranking** `CLAUDE_PLUGIN_DATA` instead of deferring to it. ROOT
+    is the same on all three interfaces, so the derivation is too. The environment is
+    still honoured for a ROOT that is not an install — a checkout or a `--plugin-dir`
+    load — where there is nothing to derive from.
+  - Skills no longer name a data directory. `hireshire.sh --paths` prints `ROOT=` and
+    `DATA=`, works before the venv exists, and is now the only supported way for a
+    skill to find DATA. A test fails the build if `${CLAUDE_PLUGIN_DATA}` reappears in
+    any SKILL.md. `${CLAUDE_PLUGIN_ROOT}` is unaffected and still used everywhere.
+
+  The practical effect: setup in the Claude app, then sweep from the terminal, and
+  both use one config, one `profile.md` and one `hireshire.db` — so `seen_jobs` is
+  shared and the second run does not re-score what the first already retired.
+
+  Installs that ran setup from the desktop app before this release should re-run
+  `/hireshire:setup`; a `data/hireshire-inline` directory left behind is inert and
+  can be deleted.
+
 ## [0.2.2] — unreleased
 
 ### Fixed

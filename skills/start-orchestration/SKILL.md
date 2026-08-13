@@ -14,8 +14,15 @@ line per completed sweep.
 The monitor starts automatically when this skill is invoked — you do not need to
 launch anything. Confirm it started, then tell the user, plainly:
 
-- **How often** it will sweep, read from
-  `${CLAUDE_PLUGIN_DATA}/config/scraper.yaml` (`poll_interval_hours`).
+- **How often** it will sweep, read from `<DATA>/config/scraper.yaml`
+  (`poll_interval_hours`). Get `<DATA>` from the launcher — never guess it, and
+  never substitute the CLAUDE_PLUGIN_DATA placeholder, which resolves to a
+  different directory in the Claude desktop app than in the terminal or the VS Code
+  extension:
+
+  ```bash
+  sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --paths
+  ```
 - **That it stops when this session ends.** This is the single most important
   thing to say, because the natural assumption is that it keeps running. It is a
   session watcher, not a background service.
@@ -33,6 +40,5 @@ Each cycle emits one summary line: how many matches were found, the best score,
 and when the next sweep is due. Relay those as they arrive; do not go looking for
 more detail unless the user asks.
 
-Failures print a single line pointing at
-`${CLAUDE_PLUGIN_DATA}/logs/orchestration.log`. Read that file if they want to
-know what went wrong.
+Failures print a single line pointing at `<DATA>/logs/orchestration.log`. Read that
+file if they want to know what went wrong.

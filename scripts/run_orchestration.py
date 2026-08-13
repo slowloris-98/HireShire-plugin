@@ -39,7 +39,7 @@ def _reexec_in_venv() -> int:
     env = dict(os.environ)
     env[_CHILD_FLAG] = "1"
     env.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
-    env["CLAUDE_PLUGIN_DATA"] = str(DATA)  # never let the child re-derive a different one
+    env["CLAUDE_PLUGIN_DATA"] = str(DATA)  # informational; the child derives the same from ROOT
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.run(
         [str(venv_python()), str(Path(__file__).resolve())],

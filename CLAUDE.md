@@ -24,9 +24,10 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 80 tests, no network, no model weights
+pytest                                # 158 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_top_k_keeps_the_highest_scoring_jobs
+sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
 
 # Engine, from a checkout (falls back to ./data when the plugin env vars are unset)
 python scraper.py                     # sweep the enabled boards
@@ -42,17 +43,24 @@ python scripts/run_engine.py orchestrate.py --once
 
 ### The ROOT/DATA/WORKSPACE split governs where every file goes
 
-`${CLAUDE_PLUGIN_ROOT}` is the install dir and is **replaced wholesale on every
-plugin update** — shipped, read-only content only: engine code, default YAMLs,
-company slug lists, the curated bad-slug seed. `${CLAUDE_PLUGIN_DATA}`
-(`~/.claude/plugins/data/hireshire-hireshire/`) **survives updates** — venv, SQLite
-DB, the user's config, generated profile, logs.
+**ROOT** is the install dir and is **replaced wholesale on every plugin update** —
+shipped, read-only content only: engine code, default YAMLs, company slug lists, the
+curated bad-slug seed. **DATA** (`~/.claude/plugins/data/hireshire-hireshire/`)
+**survives updates** — venv, SQLite DB, the user's config, generated profile, logs.
 
 **Putting mutable state in ROOT loses it on the next update.** `hireshire/paths.py`
 is the single place this is decided; nothing else may resolve a path against the
 working directory, because a plugin's cwd is whatever project the user is in.
 `paths.resolve_data()` passes absolute paths through (that is how the user's resume,
 which lives outside the plugin, is addressed) and anchors relative ones under DATA.
+
+**DATA is derived from ROOT, and the derivation outranks `CLAUDE_PLUGIN_DATA`** —
+`hireshire/plugin_dirs.py` owns this. Claude Code resolves that variable from the
+plugin *identifier*, which differs by interface: `cli` and `claude-vscode` report
+`hireshire@hireshire`, `claude-desktop` reports an inline source and yields
+`hireshire-inline`. Following it splits one install's state across two directories.
+ROOT does not have the problem, and the derivation drops the version segment, which
+is what carries the user's database across an update.
 
 The third root belongs to the user, not the plugin. **WORKSPACE** is the folder they
 made for their job search — resume in `resume/original/`, one directory per run in
@@ -168,6 +176,14 @@ suppresses Rich in favour of `logging` — required under the monitor.
   `.cmd`/`.bat` shims Windows installs.
 - **Plugin-bundled MCP tools are namespaced** `mcp__plugin_hireshire_playwright__*`,
   not `mcp__playwright__*`. A rule written against the bare server key never fires.
+- **A skill may write `${CLAUDE_PLUGIN_ROOT}`; it must never write
+  `${CLAUDE_PLUGIN_DATA}`.** Claude Code expands both inside skill content, but the
+  data one resolves differently per interface (see the ROOT/DATA split above), so a
+  skill that substitutes it writes where the engine never reads — and nothing fails
+  loudly. Skills call `hireshire.sh --paths`, which prints `ROOT=` and `DATA=` and
+  works before the venv exists. `tests/test_plugin_shell.py` fails the build if the
+  placeholder reappears. This is the same "solve it in one place" argument as
+  interpreter discovery, applied to directory discovery.
 - **`userConfig` is not used** for anything load-bearing — its enable-time prompt
   has open bugs. The `setup` skill is the source of truth.
 - **Set an explicit `version` in `plugin.json`.** Omitting it pushes every commit at

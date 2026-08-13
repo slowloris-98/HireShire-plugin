@@ -96,9 +96,46 @@ def test_check_mode_cannot_install_anything():
     assert called == [], f"check() must not build or install, but ran {called}"
 
 
-def test_the_launcher_exposes_check_and_bootstrap_separately():
+def test_the_launcher_exposes_check_paths_and_bootstrap_separately():
     sh = (ROOT / "scripts" / "hireshire.sh").read_text(encoding="utf-8")
     assert "--check)" in sh and "--bootstrap)" in sh
+    # --paths is how a skill learns where DATA is without naming it; see the test below.
+    assert "--paths)" in sh
+
+
+def test_paths_mode_reports_both_directories_and_installs_nothing():
+    import bootstrap
+
+    called: list[str] = []
+    original_env, original_run = bootstrap.venv.EnvBuilder, bootstrap.subprocess.run
+    bootstrap.venv.EnvBuilder = lambda *a, **k: called.append("venv")  # type: ignore[assignment]
+    bootstrap.subprocess.run = lambda *a, **k: called.append("pip")    # type: ignore[assignment]
+    try:
+        assert bootstrap.paths() == 0
+    finally:
+        bootstrap.venv.EnvBuilder, bootstrap.subprocess.run = original_env, original_run
+
+    assert called == [], "--paths must answer a question, not build anything"
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+def test_no_skill_substitutes_the_data_placeholder(skill):
+    """Claude Code expands this placeholder in skill content, and it does NOT expand
+    to the same directory on every interface: the terminal and the VS Code extension
+    get `data/hireshire-hireshire`, the Claude desktop app gets `data/hireshire-inline`.
+
+    A skill that writes there is writing somewhere the engine never reads, and nothing
+    reports it — a setup run in the desktop app put the generated search profile in the
+    wrong directory, which silently disabled the reranker for every later sweep. The
+    launcher's `--paths` is the one supported answer.
+
+    `${CLAUDE_PLUGIN_ROOT}` is deliberately still allowed: it is the install directory
+    on all three, and every skill uses it to reach the launcher.
+    """
+    text = (ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    assert "${CLAUDE_PLUGIN_DATA}" not in text, (
+        f"{skill}: ask `hireshire.sh --paths` instead of substituting the placeholder"
+    )
 
 
 def test_every_launch_path_goes_through_the_one_launcher():

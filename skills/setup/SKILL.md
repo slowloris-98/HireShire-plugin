@@ -17,32 +17,41 @@ PATH but does not work. The launcher resolves a real interpreter, bootstraps the
 venv if needed, and re-execs inside it.
 
 ```bash
-sh "<plugin root>/scripts/hireshire.sh" <script.py> [args]
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" <script.py> [args]
 ```
 
 **One-off Python goes through the same launcher.** Write the snippet to a file and
 pass its absolute path — the launcher accepts one, and this is the only way the
-child gets a correct `CLAUDE_PLUGIN_DATA` and `PYTHONPATH`:
+child gets a correct data directory and `PYTHONPATH`:
 
 ```bash
 cat > /tmp/snippet.py <<'EOF'
 from hireshire import config_writer
 config_writer.install_user_config()
 EOF
-sh "<plugin root>/scripts/hireshire.sh" /tmp/snippet.py
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" /tmp/snippet.py
 ```
 
-Two rules behind that, both learned the hard way:
+Three rules behind that, all learned the hard way:
 
 - **Never invoke the venv interpreter yourself.** It skips `run_engine.py`, which
   is what sets `PYTHONPATH` — so `import hireshire` fails — and what pins the data
   directory. Hand-rolled `export` lines get one of the two wrong.
-- **`${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` do not exist in your shell.**
-  Claude Code sets them for hooks, not for the Bash calls you make. Substitute the
-  plugin's real install path yourself, and **never guess a data directory** — a
-  machine can have more than one (a marketplace install and a local load keep
-  separate ones), and picking the wrong one makes a configured install look empty.
-  The launcher works this out; you should not.
+- **`${CLAUDE_PLUGIN_ROOT}` is fine to write. The matching CLAUDE_PLUGIN_DATA
+  placeholder is not** — never put it in a command. Claude Code substitutes both
+  into this file before you read it, but the data one does not resolve to the same
+  directory on every interface: the Claude desktop app gets a different one from the
+  terminal and the VS Code extension. A file written there lands somewhere the
+  engine never looks, and nothing reports the mistake.
+- **Ask for the data directory, never guess it.** One command, and it works before
+  the venv exists:
+
+  ```bash
+  sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --paths
+  ```
+
+  It prints `ROOT=<path>` and `DATA=<path>`. Run it once when you need `DATA` and
+  reuse the value for the rest of the session.
 
 ## Step 0 — set expectations, then install
 
@@ -57,7 +66,7 @@ what happened when this ran from a session hook instead:
 Only then start the install, and say so again when it returns:
 
 ```bash
-sh "<plugin root>/scripts/hireshire.sh" --bootstrap
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --bootstrap
 ```
 
 This is the step that downloads. It is safe to re-run: it compares the shipped
@@ -206,11 +215,17 @@ Three things that trip people up:
      **job titles** they are qualified for. Aim for dozens. This is a recall net;
      over-inclusion is cheap and under-inclusion loses jobs permanently.
    - `search_profile_path` (phase `matcher`) — write a dense ~200-word "ideal
-     candidate" profile to `${CLAUDE_PLUGIN_DATA}/profile.md` and store the
-     filename. Describe the **underlying transferable skills**, in the vocabulary
+     candidate" profile to `<DATA>/profile.md`, taking `<DATA>` from
+     `hireshire.sh --paths` as described above, and store the bare filename in the
+     config. Describe the **underlying transferable skills**, in the vocabulary
      employers use, not just the literal nouns on the resume — "React" should also
      appear as "component-based UI development" and "frontend state management".
      This text is the reranker's query and is what closes the vocabulary gap.
+
+     **Check the file is there before moving on** (`ls` it). If this write lands in
+     the wrong directory the run does not fail — the reranker just has no query, so
+     the cross-encoder is skipped and the LLM budget is spent on unranked jobs. The
+     only symptom is a `search_profile_path set but not found` line in the log.
 
    `include_keywords` is optional: leave it empty unless the user wants a hard
    keyword requirement. An empty include list means the semantic gate decides, which

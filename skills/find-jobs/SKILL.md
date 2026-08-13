@@ -9,14 +9,25 @@ One sweep, scored, ranked, written to a CSV.
 
 ## Preconditions
 
-Check that `${CLAUDE_PLUGIN_DATA}/config/matcher.yaml` exists and has a
-`resume_path`. If it does not, the user has not run `/hireshire:setup` — say so
-and stop rather than running with defaults that will match nothing.
+First find the data directory. Never guess it and never substitute the
+CLAUDE_PLUGIN_DATA placeholder: it does not resolve to the same directory in the
+Claude desktop app as in the terminal or the VS Code extension, so a guess can make
+a configured install look empty. Ask instead, once, and reuse the answer:
 
-`settings.workspace_dir` in `${CLAUDE_PLUGIN_DATA}/config/scraper.yaml` is where
-results go. **An empty value is not an error** — installs that predate the setting
-keep writing to the plugin's own data directory until the user re-runs setup. Note
-it and carry on; only mention it when reporting where the results landed.
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --paths
+```
+
+It prints `ROOT=<path>` and `DATA=<path>`.
+
+Check that `<DATA>/config/matcher.yaml` exists and has a `resume_path`. If it does
+not, the user has not run `/hireshire:setup` — say so and stop rather than running
+with defaults that will match nothing.
+
+`settings.workspace_dir` in `<DATA>/config/scraper.yaml` is where results go.
+**An empty value is not an error** — installs that predate the setting keep writing
+to the plugin's own data directory until the user re-runs setup. Note it and carry
+on; only mention it when reporting where the results landed.
 
 ## Run it
 
@@ -56,10 +67,10 @@ Results land in the user's own job-search folder:
 ```
 
 The run prints that exact path on its last line (`Results: …`) — read it from
-there rather than reconstructing it. `${CLAUDE_PLUGIN_DATA}/last_run.json` holds
-the same path if you need it later. If `workspace_dir` is empty, the run wrote to
-`${CLAUDE_PLUGIN_DATA}/results/` instead; say so and mention that re-running
-`/hireshire:setup` moves results into a folder of their own.
+there rather than reconstructing it. `<DATA>/last_run.json` holds the same path if
+you need it later. If `workspace_dir` is empty, the run wrote to `<DATA>/results/`
+instead; say so and mention that re-running `/hireshire:setup` moves results into a
+folder of their own.
 
 Read the CSV and show the shortlisted jobs as a table sorted by score — title,
 company, location, score, and the URL. Give them the path too.

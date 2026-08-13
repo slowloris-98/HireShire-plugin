@@ -88,6 +88,22 @@ def rescue_stranded_data() -> None:
                 print(f"HireShire: could not move {entry}: {exc}", file=sys.stderr)
 
 
+def paths() -> int:
+    """Print the two directories, one `KEY=value` per line.
+
+    This is how a skill learns where DATA is. It must not work it out itself:
+    `${CLAUDE_PLUGIN_DATA}` expands to a *different* directory in the Claude
+    desktop app than in the terminal or the VS Code extension, so a skill that
+    substitutes the placeholder writes somewhere the engine never reads.
+
+    Installs nothing and imports nothing outside the stdlib, so it answers before
+    the venv exists — which is when the setup skill first needs it.
+    """
+    print(f"ROOT={ROOT}")
+    print(f"DATA={DATA}")
+    return 0
+
+
 def check() -> int:
     """Session-start probe. Recovers stranded data, reports readiness, installs nothing.
 
@@ -154,4 +170,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(check() if "--check" in sys.argv[1:] else main())
+    argv = sys.argv[1:]
+    if "--paths" in argv:
+        sys.exit(paths())
+    sys.exit(check() if "--check" in argv else main())

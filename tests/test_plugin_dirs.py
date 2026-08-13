@@ -25,6 +25,14 @@ def test_data_is_derived_from_an_install_path(tmp_path):
     assert derive_data_dir(root) == tmp_path / "plugins" / "data" / "hireshire-hireshire"
 
 
+def test_the_version_segment_is_not_part_of_the_answer(tmp_path):
+    """An update installs to a new version folder. If the version reached DATA, the
+    user's database and config would be left behind by every release."""
+    assert derive_data_dir(_install(tmp_path, "0.2.2")) == derive_data_dir(
+        _install(tmp_path, "0.2.3")
+    )
+
+
 def test_a_checkout_derives_nothing(tmp_path):
     """A bare clone or a --plugin-dir load must fall back to the repo, not guess."""
     plain = tmp_path / "some" / "checkout"
@@ -32,11 +40,31 @@ def test_a_checkout_derives_nothing(tmp_path):
     assert derive_data_dir(plain) is None
 
 
-def test_the_environment_still_wins(tmp_path, monkeypatch):
+def test_an_install_layout_outranks_a_contradicting_environment(tmp_path, monkeypatch):
+    """`CLAUDE_PLUGIN_DATA` names a different directory depending on the interface.
+
+    The terminal and the VS Code extension report `hireshire@hireshire`; the Claude
+    desktop app reports the plugin as an inline source and gets `hireshire-inline`.
+    Following the variable therefore splits one install's state in two — the profile
+    written by a desktop setup is invisible to every engine run. The derivation from
+    ROOT is the same everywhere, so it wins.
+    """
     root = _install(tmp_path)
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(root))
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "plugins" / "data" / "hireshire-inline"))
+
+    assert resolve_dirs() == (root, tmp_path / "plugins" / "data" / "hireshire-hireshire")
+
+
+def test_the_environment_is_used_when_there_is_no_install_to_derive_from(tmp_path, monkeypatch):
+    """A checkout, a `--plugin-dir` load, a scratch dir under test. Nothing to
+    derive from, so an explicit answer is the best one available."""
+    plain = tmp_path / "checkout"
+    plain.mkdir()
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(plain))
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "explicit"))
-    assert resolve_dirs() == (root, tmp_path / "explicit")
+
+    assert resolve_dirs() == (plain, tmp_path / "explicit")
 
 
 def test_data_is_derived_when_only_root_is_set(tmp_path, monkeypatch):

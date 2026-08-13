@@ -39,10 +39,10 @@ def run(argv: list[str]) -> int:
         return 2
 
     env = dict(os.environ)
-    # The engine resolves every path off these, and a subprocess started by a
-    # monitor may not inherit them, so pin both explicitly. DATA especially: the
-    # child would otherwise re-derive it, and any disagreement puts the database
-    # somewhere the parent is not looking.
+    # ROOT is what matters: the child derives DATA from it, so pinning ROOT is what
+    # guarantees parent and child agree. DATA is passed for legibility — anything
+    # inspecting the child's environment sees where it is writing — but it no longer
+    # decides anything, because `resolve_dirs` prefers the derivation.
     env.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
     env["CLAUDE_PLUGIN_DATA"] = str(DATA)
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")

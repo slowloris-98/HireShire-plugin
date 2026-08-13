@@ -1,23 +1,33 @@
 """Where the plugin's two directories are, without trusting the environment.
 
-`CLAUDE_PLUGIN_ROOT` and `CLAUDE_PLUGIN_DATA` are set for **hooks**, but not for
-the Bash calls a skill makes. A first real install proved the difference the
-expensive way: the SessionStart hook built the venv in the data directory at
-16:56, and three minutes later a skill-driven run — same machine, same session,
-no env vars — resolved DATA to `ROOT/data` and built a *second* venv there. Every
-mutable file the skills then wrote (the user's config, the SQLite DB, the
-generated profile, the logs) landed in the install directory, which is replaced
-wholesale on the next plugin update.
+**`CLAUDE_PLUGIN_DATA` does not name the same directory on every Claude Code
+surface, so it cannot be the authority.** Claude Code resolves it from the plugin
+*identifier*, and the identifier depends on which interface the user is in: the
+terminal and the VS Code extension report `hireshire@hireshire` and get
+`data/hireshire-hireshire`, while the Claude desktop app reports the plugin as an
+inline source and gets `data/hireshire-inline`. A user who ran `/hireshire:setup`
+in the desktop app therefore wrote their generated search profile into one
+directory while every engine run read from the other — the profile silently went
+missing, the reranker had no query, and the funnel's only precision stage stopped
+running. Nothing announces this; the run just gets worse.
 
-So DATA is derived from ROOT's own location when the environment is silent. An
+ROOT does not have that problem: it is the install directory on all three, and an
 installed plugin lives at a known path:
 
     ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/   <- ROOT
     ~/.claude/plugins/data/<plugin>-<marketplace>/              <- DATA
 
-That is a layout owned by Claude Code rather than by us, so every step is guarded
-and the answer falls back to `<repo>/data` — correct for a bare checkout, and no
-worse than the old behaviour if the layout ever changes.
+So DATA is *derived* from ROOT and that derivation wins, even against an explicit
+`CLAUDE_PLUGIN_DATA`. The version segment is deliberately not part of the answer,
+which is what lets an update keep the user's database. That is a layout owned by
+Claude Code rather than by us, so every step is guarded; when it cannot be proven
+the environment is consulted after all, and failing that `<repo>/data` — correct
+for a bare checkout or a `--plugin-dir` load.
+
+The other half of this rule lives in the skills: they may write
+``${CLAUDE_PLUGIN_ROOT}``, which Claude Code expands consistently, but never
+``${CLAUDE_PLUGIN_DATA}``. They ask `hireshire.sh --paths` instead, so exactly one
+implementation of this reasoning exists. `tests/test_plugin_shell.py` enforces it.
 
 Deliberately imports **stdlib only**: `scripts/bootstrap.py` runs on the system
 interpreter before the venv exists and needs this same answer, and it cannot
@@ -60,12 +70,20 @@ def derive_data_dir(root: Path) -> Path | None:
 
 
 def resolve_dirs() -> tuple[Path, Path]:
-    """(ROOT, DATA), preferring the environment and deriving what it omits."""
+    """(ROOT, DATA), deriving DATA from ROOT wherever ROOT is a real install.
+
+    The derivation outranks `CLAUDE_PLUGIN_DATA` on purpose: see the module
+    docstring. The env var is only consulted for a ROOT we cannot recognise — a
+    checkout, a `--plugin-dir` load, a scratch directory under test — where there
+    is nothing to derive from and the caller's explicit answer is the best one
+    available.
+    """
     root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
+    derived = derive_data_dir(root)
+    if derived is not None:
+        return root, derived
     env_data = os.environ.get("CLAUDE_PLUGIN_DATA")
-    if env_data:
-        return root, Path(env_data)
-    return root, (derive_data_dir(root) or (root / "data"))
+    return root, (Path(env_data) if env_data else root / "data")
 
 
 def legacy_data_dirs(root: Path, data: Path) -> list[Path]:
