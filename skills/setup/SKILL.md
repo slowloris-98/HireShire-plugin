@@ -46,15 +46,31 @@ Two rules behind that, both learned the hard way:
 
 ## Step 0 — set expectations, then install
 
-Before anything else, tell the user what this will cost them in time:
+**Say this before you run anything.** The install is minutes of silence otherwise,
+and a user watching a still spinner concludes the plugin has hung — which is exactly
+what happened when this ran from a session hook instead:
 
 > Setup takes about 10-15 minutes, most of it a one-time ~2.5 GB download of the
 > models that decide which jobs are worth scoring. It happens now rather than in
-> the middle of your first search.
+> the middle of your first search. I'll tell you when it's done.
 
-Then run `scripts/bootstrap.py` if the venv isn't ready, and call
-`config_writer.install_user_config()` to copy the default config into the data
-directory. Everything after this edits that copy, so plugin updates never
+Only then start the install, and say so again when it returns:
+
+```bash
+sh "<plugin root>/scripts/hireshire.sh" --bootstrap
+```
+
+This is the step that downloads. It is safe to re-run: it compares the shipped
+requirements against a lock file in the data directory and returns immediately when
+the environment is already current, so on a warm install it costs nothing and you
+can move straight on.
+
+If a session-start message already told you dependencies are missing, that is the
+same fact reaching you early — pass it to the user in your first sentence rather
+than waiting until you are about to install.
+
+Then call `config_writer.install_user_config()` to copy the default config into the
+data directory. Everything after this edits that copy, so plugin updates never
 overwrite their answers.
 
 ## Step 1 — where their job search lives

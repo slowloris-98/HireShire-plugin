@@ -71,6 +71,37 @@ def test_an_empty_install_dir_has_nothing_to_rescue(tmp_path):
     assert legacy_data_dirs(new, derive_data_dir(new)) == []
 
 
+def test_a_checkout_never_looks_at_its_neighbours(tmp_path):
+    """The sibling scan is only meaningful under `cache/<mkt>/<plugin>/<version>`,
+    where every sibling is another version of this plugin.
+
+    Run from a checkout, ROOT's siblings are whatever else the user keeps in that
+    folder. This function once matched a neighbouring project's `data/` directory and
+    a caller moved it away — so a checkout must consider ROOT and nothing else.
+    """
+    projects = tmp_path / "Projects"
+    checkout = projects / "HireShire-plugin"
+    checkout.mkdir(parents=True)
+
+    neighbour = projects / "HireShire" / "data"      # the user's other project
+    neighbour.mkdir(parents=True)
+    (neighbour / "hireshire.db").write_text("someone else's database")
+    (neighbour / "config").mkdir()
+
+    assert legacy_data_dirs(checkout, checkout / "data") == []
+    assert (neighbour / "hireshire.db").exists()
+
+
+def test_an_install_still_scans_its_sibling_versions(tmp_path):
+    """The narrowing above must not cost us the case the scan exists for."""
+    old = _install(tmp_path, "0.2.0")
+    (old / "data").mkdir()
+    (old / "data" / "config").mkdir()
+    new = _install(tmp_path, "0.2.1")
+
+    assert legacy_data_dirs(new, derive_data_dir(new)) == [old / "data"]
+
+
 def test_the_live_data_dir_is_never_reported_as_stranded(tmp_path):
     """A checkout writes to ROOT/data legitimately; migrating it onto itself would
     be a no-op at best and data loss at worst."""
@@ -105,3 +136,31 @@ def test_bootstrap_moves_stranded_files_and_leaves_the_venv(tmp_path, monkeypatc
     assert "threshold: 85" in (data / "config" / "matcher.yaml").read_text()
     assert (legacy / "venv").exists(), "the venv hard-codes paths; it must be rebuilt"
     assert not (legacy / "hireshire.db").exists(), "a move, not a copy"
+
+
+def test_only_the_allowlist_is_ever_moved(tmp_path, monkeypatch):
+    """Moving "everything except the venv" makes the blast radius the contents of a
+    directory we only believe is ours. Anything unrecognised stays put."""
+    old = _install(tmp_path, "0.2.0")
+    legacy = old / "data"
+    legacy.mkdir(parents=True)
+    (legacy / "hireshire.db").write_text("ours")
+    (legacy / "notes.txt").write_text("not ours")
+    (legacy / "someone_elses_project").mkdir()
+    new = _install(tmp_path, "0.2.1")
+
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(new))
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import importlib
+
+    import bootstrap
+    importlib.reload(bootstrap)
+    bootstrap.rescue_stranded_data()
+
+    data = tmp_path / "plugins" / "data" / "hireshire-hireshire"
+    assert (data / "hireshire.db").exists(), "allowlisted files still migrate"
+    assert (legacy / "notes.txt").exists(), "unrecognised files must be left alone"
+    assert (legacy / "someone_elses_project").exists()
+    assert not (data / "notes.txt").exists()

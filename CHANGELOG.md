@@ -4,6 +4,29 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.2.2] — unreleased
+
+### Fixed
+
+- **The 0.2.1 data rescue could move files out of unrelated directories.** Mandatory
+  upgrade for anyone running the plugin from a directory rather than the marketplace.
+  `legacy_data_dirs()` scanned every sibling of the install directory for a stranded
+  `data/` folder — correct when siblings are other version folders under
+  `cache/<marketplace>/<plugin>/<version>`, catastrophic from a checkout or a
+  `--plugin-dir` load, where the siblings are whatever else the user keeps beside it.
+  A neighbouring project with a `data/` directory matched, and `rescue_stranded_data()`
+  — which moved *everything* except the venv rather than the `MIGRATABLE` allowlist it
+  already had — moved it away. Both halves are fixed: the sibling scan now runs only
+  when the install layout is provable, and only allowlisted names are ever moved.
+- **The first session no longer sits silent for minutes.** The SessionStart hook ran
+  `--bootstrap`, so a fresh install spent ~4 minutes downloading 2.5 GB before the user
+  could be told anything — and the warning that explains the wait lives in the setup
+  skill, which cannot run until the hook finishes. The hook now runs a new `--check`
+  mode that recovers stranded data, reports readiness in one line and installs nothing,
+  returning in well under a second. The download moved to the setup skill, which
+  announces it first. `find-jobs` and `apply` carry the same warning, since they can
+  trigger an on-demand install through the launcher.
+
 ## [0.2.1] — unreleased
 
 Scoring never worked in 0.2.0. Every run scraped normally, sent its budget of jobs

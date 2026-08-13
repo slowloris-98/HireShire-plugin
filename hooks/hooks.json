@@ -6,8 +6,8 @@
           {
             "type": "command",
             "shell": "bash",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh\" --bootstrap",
-            "timeout": 1800
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh\" --check",
+            "timeout": 900
           }
         ]
       }

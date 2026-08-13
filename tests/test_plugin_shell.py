@@ -64,13 +64,41 @@ def test_monitor_command_cannot_reference_user_config():
     assert "${user_config" not in raw
 
 
-def test_session_start_hook_is_shaped_correctly():
+def test_session_start_hook_probes_but_never_installs():
+    """The hook blocks the user's first turn, so it must stay fast.
+
+    It used to run `--bootstrap`, which meant a fresh install spent ~4 minutes
+    downloading 2.5 GB before the user could be told anything — and the warning that
+    explains the wait lives in the setup skill, which cannot run until the hook
+    finishes. The download belongs to the skill; the hook only reports.
+    """
     hooks = _json("hooks/hooks.json")["hooks"]["SessionStart"]
     cmd = hooks[0]["hooks"][0]
     assert cmd["type"] == "command"
-    assert "--bootstrap" in cmd["command"]
-    # The install can pull ~2.5 GB; the default 600s timeout is not enough.
+    assert "--check" in cmd["command"]
+    assert "--bootstrap" not in cmd["command"], "the hook must not install"
     assert cmd.get("timeout", 0) >= 900
+
+
+def test_check_mode_cannot_install_anything():
+    """`check()` may recover stranded data and report, nothing else."""
+    import bootstrap
+
+    called: list[str] = []
+    original_env, original_run = bootstrap.venv.EnvBuilder, bootstrap.subprocess.run
+    bootstrap.venv.EnvBuilder = lambda *a, **k: called.append("venv")  # type: ignore[assignment]
+    bootstrap.subprocess.run = lambda *a, **k: called.append("pip")    # type: ignore[assignment]
+    try:
+        assert bootstrap.check() == 0
+    finally:
+        bootstrap.venv.EnvBuilder, bootstrap.subprocess.run = original_env, original_run
+
+    assert called == [], f"check() must not build or install, but ran {called}"
+
+
+def test_the_launcher_exposes_check_and_bootstrap_separately():
+    sh = (ROOT / "scripts" / "hireshire.sh").read_text(encoding="utf-8")
+    assert "--check)" in sh and "--bootstrap)" in sh
 
 
 def test_every_launch_path_goes_through_the_one_launcher():

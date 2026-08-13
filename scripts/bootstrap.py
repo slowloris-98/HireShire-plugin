@@ -24,7 +24,7 @@ import venv
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from hireshire.plugin_dirs import legacy_data_dirs, resolve_dirs  # noqa: E402
+from hireshire.plugin_dirs import MIGRATABLE, legacy_data_dirs, resolve_dirs  # noqa: E402
 
 ROOT, DATA = resolve_dirs()
 
@@ -68,10 +68,15 @@ def rescue_stranded_data() -> None:
     is where the fixed code writes.
     """
     for legacy in legacy_data_dirs(ROOT, DATA):
-        for entry in sorted(legacy.iterdir()):
-            if entry.name in ("venv", "requirements.lock"):
-                continue  # rebuilt from the shipped requirements; paths are absolute
-            target = DATA / entry.name
+        # Only the allowlist moves. Sweeping up "everything except the venv" reads as
+        # thorough and is the opposite: it makes the blast radius whatever happens to
+        # be in a directory we merely believe is ours, and one wrong guess about which
+        # directory that is takes the user's unrelated files with it.
+        for name in MIGRATABLE:
+            entry = legacy / name
+            if not entry.exists():
+                continue
+            target = DATA / name
             if target.exists():
                 continue
             DATA.mkdir(parents=True, exist_ok=True)
@@ -81,6 +86,31 @@ def rescue_stranded_data() -> None:
             except OSError as exc:
                 # Better to leave a copy behind than to fail the session start.
                 print(f"HireShire: could not move {entry}: {exc}", file=sys.stderr)
+
+
+def check() -> int:
+    """Session-start probe. Recovers stranded data, reports readiness, installs nothing.
+
+    Installing from the SessionStart hook looked reasonable and was not: the hook runs
+    before the user has typed anything and blocks their first turn, so a fresh install
+    spent ~4 minutes downloading 2.5 GB in silence while the "this takes 10-15 minutes"
+    warning sat in the setup skill, unable to run until the thing it warns about had
+    finished. The user sees a spinner and concludes the plugin is stuck.
+
+    So the heavy work moved to the skill, which can talk. What is left here is a line
+    of stdout — which SessionStart hands to the agent as context, the one channel that
+    does reach the user.
+    """
+    rescue_stranded_data()
+    if is_current():
+        return 0
+    print(
+        "HireShire: dependencies are not installed yet. Before running anything, tell "
+        "the user that the first /hireshire:setup downloads about 2.5 GB and takes "
+        "10-15 minutes, then start it.",
+        flush=True,
+    )
+    return 0
 
 
 def main() -> int:
@@ -124,4 +154,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(check() if "--check" in sys.argv[1:] else main())

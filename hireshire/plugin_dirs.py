@@ -71,18 +71,25 @@ def resolve_dirs() -> tuple[Path, Path]:
 def legacy_data_dirs(root: Path, data: Path) -> list[Path]:
     """`data/` directories left inside an install dir by the bug described above.
 
-    Checks this ROOT and its sibling version directories, because the update that
-    delivers the fix installs to a *new* version folder — the stranded files are
-    next door under the old version, not underneath us. Newest last, so a caller
-    migrating in order ends on the most recent.
+    Checks this ROOT and its sibling **version** directories, because the update that
+    delivers the fix installs to a new version folder — the stranded files are next
+    door under the old version, not underneath us. Newest last, so a caller migrating
+    in order ends on the most recent.
+
+    The sibling scan only happens when ROOT is a real install
+    (`.../cache/<marketplace>/<plugin>/<version>`), where every sibling is by
+    definition another version of this same plugin. From a checkout — a `--plugin-dir`
+    load, or a developer running from source — ROOT's siblings are whatever else the
+    user keeps in that folder, and treating their `data/` directories as ours to move
+    is how this function once emptied a neighbouring project. If we cannot prove the
+    layout, we look only at ROOT itself.
     """
     candidates = [root]
-    parent = root.parent
-    try:
-        if parent.is_dir():
-            candidates += [d for d in parent.iterdir() if d.is_dir() and d != root]
-    except OSError:
-        pass
+    if derive_data_dir(root) is not None:
+        try:
+            candidates += [d for d in root.parent.iterdir() if d.is_dir() and d != root]
+        except OSError:
+            pass
 
     found = []
     for version_dir in candidates:

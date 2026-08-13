@@ -40,6 +40,10 @@ Get the already-applied job ids:
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/applied_cli.py list
 ```
 
+If the plugin venv is not ready, this first launcher call installs it — a one-time
+~2.5 GB download taking 10-15 minutes. Tell the user before you run it, so the wait
+is expected rather than a hang.
+
 Queue a job when **all** of these hold:
 
 - it is not already in the applied list

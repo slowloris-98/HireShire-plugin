@@ -31,6 +31,11 @@ This takes roughly 20 minutes on the default board set, most of it rate-limited
 waiting on the boards themselves. Tell the user that up front. If they enabled
 Workday and BambooHR at setup, expect considerably longer.
 
+If the plugin venv is not ready — a fresh install, or one whose setup never
+finished — the launcher installs it first, which adds a one-time ~2.5 GB download
+and 10-15 minutes before the sweep even starts. **Say so before you launch**, not
+after they have watched a still spinner for ten minutes.
+
 What happens inside, in case they ask why it is not instant:
 
 1. Every enabled board is swept for postings newer than their age cutoff.

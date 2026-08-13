@@ -15,9 +15,15 @@
 # Hence: execute each candidate and keep the first that reports Python >= 3.10.
 #
 # Usage:
+#   hireshire.sh --check                  session-start probe; installs nothing
 #   hireshire.sh --bootstrap              create/refresh the venv
 #   hireshire.sh --monitor                run the recurring sweep
 #   hireshire.sh <script.py> [args...]    run an engine entrypoint in the venv
+#
+# --check is what the SessionStart hook runs. It must stay fast: a hook blocks the
+# user's first turn, so anything slow there is silence they cannot explain. The
+# 2.5 GB install belongs to --bootstrap, which the setup skill runs *after* telling
+# them how long it will take.
 
 set -e
 
@@ -43,8 +49,9 @@ PY=$(find_python) || {
 }
 
 case "$1" in
+    --check)     exec "$PY" "$ROOT/scripts/bootstrap.py" --check ;;
     --bootstrap) exec "$PY" "$ROOT/scripts/bootstrap.py" ;;
     --monitor)   exec "$PY" "$ROOT/scripts/run_orchestration.py" ;;
-    "")          echo "usage: hireshire.sh [--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
+    "")          echo "usage: hireshire.sh [--check|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
     *)           exec "$PY" "$ROOT/scripts/run_engine.py" "$@" ;;
 esac
