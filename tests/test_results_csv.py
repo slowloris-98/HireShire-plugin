@@ -119,13 +119,17 @@ def test_a_locked_csv_degrades_to_database_only_instead_of_failing_the_run(
 
 
 class _FinaliseDB(_FakeDB):
-    def __init__(self, rows):
+    def __init__(self, rows, all_rows=None):
         super().__init__()
         self._rows = rows
+        self._all_rows = all_rows if all_rows is not None else []
         self.finalised = None
 
     def load_pipeline_results(self, run_id):
         return self._rows
+
+    def load_all_matches(self, run_id):
+        return self._all_rows
 
     def finalise_run(self, run_id, phase, started_at, ended_at, summary):
         self.finalised = (run_id, phase, summary)

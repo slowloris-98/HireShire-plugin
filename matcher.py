@@ -23,6 +23,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 from rich.table import Table
 
 from hireshire import paths
+from hireshire.funnel import cluster
 from hireshire.funnel.detail_fetcher import DETAIL_SOURCES
 from hireshire.funnel.funnel import Funnel
 from hireshire.funnel.rerank import Reranker
@@ -52,6 +53,13 @@ console = Console()
 # be perfectly good and simply ranked 101st. That distinction matters in two
 # places: the run summary, and the seen-jobs write below.
 BUDGET_SKIP_REASON = "rerank_below_top_k"
+
+# A repeat posting of a requisition whose representative WAS scored. Distinct from a
+# budget drop because it is a verdict, not a deferral: the job has been judged, just
+# by proxy, and it carries the representative's score. It must therefore stay OUT of
+# _RETRYABLE_SKIP_REASONS below — re-queuing it next sweep would spend the budget
+# re-deriving a score it already has.
+DUPLICATE_SKIP_REASON = "duplicate_of_cluster"
 
 # Reasons that must NOT retire a job_id into seen_jobs. A budget drop is the whole
 # point here: max_age_hours=24 with a 4h poll means a job resurfaces in ~6 sweeps,
@@ -140,15 +148,14 @@ async def _persist_hydrated_details(db, run_id: str, to_score) -> None:
         await asyncio.to_thread(db.insert_jobs, run_id, changed)
 
 
-def _passthrough_result(job, run_id: str, rerank_score: float | None = None) -> MatchResult:
-    return MatchResult(
+def _passthrough_result(job, run_id: str, score=None) -> MatchResult:
+    result = MatchResult(
         job_id=job.job_id,
         board_token=job.board_token,
         title=job.title,
         location=job.location.name,
         absolute_url=str(job.absolute_url),
         relevance_score=None,
-        rerank_score=rerank_score,
         match_reasons=["LLM scoring skipped"],
         disqualifiers=[],
         recommend=True,
@@ -156,6 +163,17 @@ def _passthrough_result(job, run_id: str, rerank_score: float | None = None) -> 
         scored_at=datetime.now(timezone.utc),
         source_run_id=run_id,
     )
+    return _apply_rerank_scores(result, score)
+
+
+def _apply_rerank_scores(result: MatchResult, score, cluster_size: int = 1) -> MatchResult:
+    """Copy a RerankScores onto a result row, keeping the two stages separate."""
+    if score is not None:
+        result.rerank_score_wide = score.wide
+        result.rerank_score = score.refined
+        result.rerank_stage = score.stage
+    result.cluster_size = cluster_size
+    return result
 
 
 async def _spend_budget(
@@ -163,32 +181,113 @@ async def _spend_budget(
     reranker: Reranker,
     top_k: int,
     run_id: str,
-) -> tuple[list[tuple[Job, float]], list[MatchResult]]:
+    dedupe: bool = True,
+) -> tuple[list[tuple[Job, object]], list[MatchResult], dict[str, list[Job]]]:
     """Rank the whole candidate pool and hand the LLM only what the budget allows.
 
-    Returns `(winners, dropped)` where winners are (job, rerank_score) pairs in
-    descending score order and dropped are skip rows for the rest.
+    Returns `(winners, dropped, siblings)`:
+      - `winners` are (job, RerankScores) pairs in descending rank order,
+      - `dropped` are skip rows for everything the LLM will not see,
+      - `siblings` maps a winning representative's job_id -> the other postings in
+        its cluster paired with their own rerank scores, so the caller can copy the
+        verdict across once it has one.
 
     This is deliberately a *global* decision, which is why it runs once over the
     whole sweep rather than per company batch: a batch is one employer's postings,
     so ranking within it would compare a company against itself and spend the
     budget on whoever happened to be scraped first.
+
+    Ordering uses `RerankScores.sort_key`, never the raw float — the wide and
+    refined passes are different models on different logit scales and sorting them
+    together would silently produce a wrong ranking.
     """
     if not candidates:
-        return [], []
+        return [], [], {}
 
     scores = await reranker.rank(candidates)
-    ranked = sorted(zip(candidates, scores), key=lambda pair: pair[1], reverse=True)
+    by_id = {job.job_id: score for job, score in zip(candidates, scores)}
 
-    if top_k and top_k > 0 and len(ranked) > top_k:
-        winners, losers = ranked[:top_k], ranked[top_k:]
+    # --- Group repeat requisitions so one employer cannot eat the budget --------
+    if dedupe:
+        clusters = list(cluster.group(candidates).values())
     else:
-        winners, losers = ranked, []
+        clusters = [[job] for job in candidates]
 
-    dropped = [filtered_result(job, BUDGET_SKIP_REASON, run_id) for job, _ in losers]
-    for result, (_, score) in zip(dropped, losers):
-        result.rerank_score = score
-    return winners, dropped
+    representatives: list[tuple[Job, list[Job]]] = []
+    for members in clusters:
+        rep = cluster.pick_representative(members, by_id) if len(members) > 1 else members[0]
+        representatives.append((rep, [m for m in members if m.job_id != rep.job_id]))
+
+    # A cluster competes on its representative's score, which is its best member's.
+    representatives.sort(key=lambda pair: by_id[pair[0].job_id].sort_key, reverse=True)
+
+    if top_k and top_k > 0 and len(representatives) > top_k:
+        winning, losing = representatives[:top_k], representatives[top_k:]
+    else:
+        winning, losing = representatives, []
+
+    dropped: list[MatchResult] = []
+    siblings: dict[str, list[tuple[Job, object]]] = {}
+
+    for rep, others in winning:
+        if others:
+            siblings[rep.job_id] = [(job, by_id[job.job_id]) for job in others]
+
+    # Members of losing clusters are budget drops: retryable, so a job that lost one
+    # crowded sweep is up for reconsideration in the next.
+    for rep, others in losing:
+        for job in [rep, *others]:
+            dropped.append(
+                _apply_rerank_scores(
+                    filtered_result(job, BUDGET_SKIP_REASON, run_id),
+                    by_id[job.job_id],
+                    cluster_size=len(others) + 1,
+                )
+            )
+
+    winners = [(rep, by_id[rep.job_id]) for rep, _ in winning]
+    return winners, dropped, siblings
+
+
+def _sibling_result(job: Job, rep: MatchResult, run_id: str, score, cluster_size: int) -> MatchResult:
+    """Build the row for a posting that inherits its representative's score.
+
+    The whole judgement is copied — score, subscores, rationales, recommendation —
+    because it is the same requisition; only the identity, link and location differ.
+    `cluster_representative` records where the verdict came from so nothing in the
+    export looks like an independent second opinion.
+
+    When the representative was not actually judged — a backend error, a scoring
+    crash — its OWN skip reason is inherited instead of `duplicate_of_cluster`. That
+    keeps the general rule intact: a job may be retired on a verdict, never on an
+    error. Stamping the duplicate reason here would retire the whole cluster because
+    one call failed, and `duplicate_of_cluster` is deliberately not retryable.
+    """
+    inherited_reason = (
+        rep.skip_reason
+        if rep.skip_reason in _RETRYABLE_SKIP_REASONS
+        else DUPLICATE_SKIP_REASON
+    )
+    result = rep.model_copy(
+        update={
+            "job_id": job.job_id,
+            "board_token": job.board_token,
+            "title": job.title,
+            "location": job.location.name,
+            "absolute_url": str(job.absolute_url),
+            "cluster_representative": rep.job_id,
+            "cluster_size": cluster_size,
+            "source_run_id": run_id,
+            # Marked skipped so `is_shortlisted` leaves it out of the apply queue:
+            # 31 copies of one requisition must not become 31 applications. The
+            # inherited relevance_score and rationales are kept regardless, so the
+            # row still explains itself in the all-jobs export, and the user can
+            # apply to a specific location by hand from the link it carries.
+            "skipped": True,
+            "skip_reason": inherited_reason,
+        }
+    )
+    return _apply_rerank_scores(result, score, cluster_size)
 
 
 def _load_search_profile(settings) -> str:
@@ -284,7 +383,18 @@ async def main(
     reranker = Reranker(config.funnel.rerank, _load_search_profile(settings))
     top_k = config.funnel.top_k
 
-    async def score_one(job, rerank_score: float | None = None) -> MatchResult:
+    # job_id -> bi-encoder cosine, accumulated across every gated batch. Stamped onto
+    # each result on its way to the database so the number that opened the funnel is
+    # recoverable next to the ones that closed it.
+    encoder_scores: dict[str, float] = {}
+
+    async def persist(result: MatchResult) -> MatchResult:
+        if result.encoder_score is None:
+            result.encoder_score = encoder_scores.get(result.job_id)
+        await store.append_result(result)
+        return result
+
+    async def score_one(job, score=None, cluster_size: int = 1) -> MatchResult:
         def _failed(reason: str) -> MatchResult:
             return MatchResult(
                 job_id=job.job_id,
@@ -318,12 +428,50 @@ async def main(
             else:
                 breaker.last_error = scorer.last_error or breaker.last_error
             breaker.record(result)
-        result.rerank_score = rerank_score
-        await store.append_result(result)
+        _apply_rerank_scores(result, score, cluster_size)
+        await persist(result)
         # In queue mode, forward shortlisted (result, job) pairs immediately
         if out_queue is not None and is_shortlisted(result, settings.threshold):
             await out_queue.put((result, job))
         return result
+
+    async def score_cluster(job, score, siblings: dict[str, list[Job]]) -> list[MatchResult]:
+        """Score a cluster representative, then copy its verdict to the rest.
+
+        One LLM call covers every repeat of the requisition. Siblings are persisted
+        so they appear in the all-jobs export with their own location and link, but
+        are not forwarded to the apply queue — see `_sibling_result`."""
+        others = siblings.get(job.job_id, [])
+        size = len(others) + 1
+        rep = await score_one(job, score, cluster_size=size)
+        return [rep, *await _emit_siblings(rep, others, size)]
+
+    async def _emit_siblings(rep: MatchResult, others, size: int) -> list[MatchResult]:
+        """Persist the copies that inherit `rep`'s verdict.
+
+        Every winning cluster's siblings must come through here. A sibling that is
+        never emitted has no database row, never reaches the all-jobs export and is
+        never marked seen — it simply disappears from the run, which is the one
+        outcome clustering is supposed to make impossible."""
+        out = []
+        for sib, sib_score in others:
+            r = _sibling_result(sib, rep, run_id, sib_score, size)
+            await persist(r)
+            out.append(r)
+        return out
+
+    async def passthrough_cluster(job, score, siblings) -> list[MatchResult]:
+        """skip_llm equivalent of `score_cluster`.
+
+        Without this the siblings of a winning cluster would be dropped on the floor
+        whenever scoring is disabled: they are deliberately absent from
+        `_spend_budget`'s `dropped` list, because normally the scorer emits them."""
+        others = siblings.get(job.job_id, [])
+        size = len(others) + 1
+        rep = _passthrough_result(job, run_id, score)
+        rep.cluster_size = size
+        await persist(rep)
+        return [rep, *await _emit_siblings(rep, others, size)]
 
     # The funnel is the matcher-entry relevance gate (code filter + encoder + detail
     # hydration). When disabled, fall back to the plain code title filter. It owns an
@@ -334,7 +482,8 @@ async def main(
 
     async def gate(job_list):
         if funnel is not None:
-            to_score, filtered = await funnel.process(job_list)
+            to_score, filtered, scores = await funnel.process(job_list)
+            encoder_scores.update(scores)
         else:
             to_score, filtered = apply_title_filter(job_list, config.title_filter, run_id)
         await _persist_hydrated_details(db, run_id, to_score)
@@ -371,7 +520,9 @@ async def main(
                     results.extend(title_filtered)
                     candidates.extend(to_score)
 
-                winners, dropped = await _spend_budget(candidates, reranker, top_k, run_id)
+                winners, dropped, siblings = await _spend_budget(
+                    candidates, reranker, top_k, run_id, config.funnel.dedupe.enabled
+                )
                 results.extend(dropped)
                 # Persist budget drops individually. `finalise` only records summary
                 # stats, so without this the user has no way to see what the budget
@@ -379,9 +530,9 @@ async def main(
                 # Bounded by the candidate pool, unlike the title-gate rejections,
                 # which stay stats-only because there can be tens of thousands.
                 for r in dropped:
-                    await store.append_result(r)
+                    await persist(r)
                 logger.info(
-                    "Budget: %d candidates → %d scored, %d over budget",
+                    "Budget: %d candidates → %d clusters scored, %d over budget",
                     len(candidates), len(winners), len(dropped),
                 )
 
@@ -389,15 +540,17 @@ async def main(
                     for j, score in winners:
                         if on_job_score:
                             on_job_score(j.board_token, j.title)
-                        r = _passthrough_result(j, run_id, score)
-                        await store.append_result(r)
+                        group = await passthrough_cluster(j, score, siblings)
                         if out_queue is not None:
-                            await out_queue.put((r, j))
-                        results.append(r)
+                            # Only the representative is queued for applying — the
+                            # siblings are the same requisition in another location.
+                            await out_queue.put((group[0], j))
+                        results.extend(group)
                 else:
-                    results.extend(
-                        await asyncio.gather(*[score_one(j, s) for j, s in winners])
-                    )
+                    for group in await asyncio.gather(
+                        *[score_cluster(j, s, siblings) for j, s in winners]
+                    ):
+                        results.extend(group)
             except Exception:
                 logger.exception("Matcher queue loop failed")
             finally:
@@ -453,10 +606,12 @@ async def main(
         if dedup_skipped > 0 and not quiet:
             console.print(f"[yellow]Dedup: {dedup_skipped} jobs skipped (already scored in a previous run)[/yellow]\n")
         gated, title_filtered = await gate(unscored)
-        winners, budget_dropped = await _spend_budget(gated, reranker, top_k, run_id)
+        winners, budget_dropped, siblings = await _spend_budget(
+            gated, reranker, top_k, run_id, config.funnel.dedupe.enabled
+        )
         jobs_to_score = winners
         for r in budget_dropped:
-            await store.append_result(r)
+            await persist(r)
         if not quiet:
             console.print(
                 f"Funnel: [yellow]{len(title_filtered)} filtered out[/yellow], "
@@ -487,20 +642,19 @@ async def main(
 
             if effective_skip_llm:
                 for j, score in jobs_to_score:
-                    r = _passthrough_result(j, run_id, score)
-                    await store.append_result(r)
-                    results.append(r)
+                    results.extend(await passthrough_cluster(j, score, siblings))
                     progress.advance(task)
             else:
-                async def score_one_p(job, rerank_score):
+                async def score_cluster_p(job, score):
                     try:
-                        return await score_one(job, rerank_score)
+                        return await score_cluster(job, score, siblings)
                     finally:
                         progress.advance(task)
 
-                results += list(
-                    await asyncio.gather(*[score_one_p(j, s) for j, s in jobs_to_score])
-                )
+                for group in await asyncio.gather(
+                    *[score_cluster_p(j, s) for j, s in jobs_to_score]
+                ):
+                    results += group
 
         shortlisted = [r for r in results if is_shortlisted(r, settings.threshold)]
         rejected = [r for r in results if not is_shortlisted(r, settings.threshold)]

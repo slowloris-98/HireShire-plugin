@@ -86,6 +86,12 @@ CREATE TABLE IF NOT EXISTS matches (
     board_token     TEXT,
     title           TEXT,
     relevance_score INTEGER,
+    -- Three funnel scores on three different scales; see MatchResult for why they
+    -- are never combined. encoder_score is a 0-1 cosine over the title;
+    -- rerank_score_wide and rerank_score are logits from two DIFFERENT models.
+    encoder_score     REAL,
+    rerank_score_wide REAL,
+    rerank_score      REAL,
     shortlisted     INTEGER DEFAULT 0,
     skipped         INTEGER DEFAULT 0,
     skip_reason     TEXT,
@@ -111,7 +117,11 @@ CREATE TABLE IF NOT EXISTS pipeline_results (
     posted_at       TEXT,   -- when the employer posted it
     job_url         TEXT,
     relevance_score INTEGER,
-    rerank_score    REAL,   -- cross-encoder score that won this job its LLM budget slot
+    encoder_score     REAL, -- bi-encoder cosine (0-1) of the title vs target roles
+    rerank_score_wide REAL, -- wide-pass cross-encoder logit, every reranked job
+    rerank_score      REAL, -- refined cross-encoder logit — a DIFFERENT model, so
+                            -- not comparable to rerank_score_wide. This is the one
+                            -- that won the job its LLM budget slot.
     found_at        TEXT,   -- when we processed it
     PRIMARY KEY (run_id, job_id)
 );
@@ -160,14 +170,45 @@ class Database:
         cur.execute("PRAGMA foreign_keys=ON")
         self._conn.commit()
 
+    # Columns added to existing tables after the first release. `CREATE TABLE IF NOT
+    # EXISTS` is a no-op on a database that already has the table, so a new column in
+    # _SCHEMA above never reaches an existing file — the INSERT then fails with an
+    # opaque "no such column". Listed here, they are added on connect instead.
+    _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+        ("matches", "encoder_score", "REAL"),
+        ("matches", "rerank_score_wide", "REAL"),
+        # `matches` never had this one: the rerank score used to live only in
+        # pipeline_results and inside raw_json, so it is new here too.
+        ("matches", "rerank_score", "REAL"),
+        ("pipeline_results", "encoder_score", "REAL"),
+        ("pipeline_results", "rerank_score_wide", "REAL"),
+    )
+
     def _init_schema(self) -> None:
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._add_missing_columns()
             self._conn.execute(
                 "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
             self._conn.commit()
+
+    def _add_missing_columns(self) -> None:
+        """Bring an older database file up to the current column set.
+
+        Deliberately additive only: this never drops or retypes a column, so it
+        cannot lose data. Called under the lock from _init_schema."""
+        for table, column, decl in self._ADDED_COLUMNS:
+            existing = {
+                row["name"]
+                for row in self._conn.execute(f"PRAGMA table_info({table})")
+            }
+            if not existing:
+                continue  # table not created yet — _SCHEMA above already has it
+            if column not in existing:
+                logger.info("Adding column %s.%s to %s", table, column, self.path.name)
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self) -> None:
         with self._lock:
@@ -345,14 +386,19 @@ class Database:
         source_run_id: str,
         scored_at: str,
         raw_json: str,
+        encoder_score: float | None = None,
+        rerank_score_wide: float | None = None,
+        rerank_score: float | None = None,
     ) -> None:
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO matches"
-                "(run_id, job_id, board_token, title, relevance_score, shortlisted, "
+                "(run_id, job_id, board_token, title, relevance_score, encoder_score, "
+                " rerank_score_wide, rerank_score, shortlisted, "
                 " skipped, skip_reason, source_run_id, scored_at, raw_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (run_id, job_id, board_token, title, relevance_score, int(shortlisted),
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, job_id, board_token, title, relevance_score, encoder_score,
+                 rerank_score_wide, rerank_score, int(shortlisted),
                  int(skipped), skip_reason, source_run_id, scored_at, raw_json),
             )
 
@@ -362,6 +408,40 @@ class Database:
                 "SELECT raw_json FROM matches WHERE run_id=?", (run_id,)
             ).fetchall()
         return [json.loads(r["raw_json"]) for r in rows]
+
+    def load_all_matches(self, run_id: str) -> list[dict]:
+        """Every match row for a run, enriched with the job's location and post date.
+
+        Backs the all-jobs export. LEFT JOIN because a match row must survive even if
+        its jobs row is missing — a partial export beats an export that silently
+        drops rows.
+
+        Ordered best-first by the same rule the budget uses: LLM score, then the
+        refined rerank logit, then the wide one. The two rerank columns are sorted
+        in sequence rather than merged because they come from different models.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT m.raw_json, m.relevance_score, m.encoder_score, "
+                "       m.rerank_score_wide, m.rerank_score, m.skipped, m.skip_reason, "
+                "       m.shortlisted, m.scored_at, j.location, j.updated_at "
+                "FROM matches m LEFT JOIN jobs j "
+                "  ON j.run_id = m.run_id AND j.job_id = m.job_id "
+                "WHERE m.run_id=? "
+                "ORDER BY m.relevance_score IS NULL, m.relevance_score DESC, "
+                "         m.rerank_score IS NULL, m.rerank_score DESC, "
+                "         m.rerank_score_wide DESC",
+                (run_id,),
+            ).fetchall()
+
+        out: list[dict] = []
+        for r in rows:
+            record = json.loads(r["raw_json"])
+            record["location"] = r["location"] or record.get("location") or ""
+            record["posted_at"] = r["updated_at"] or ""
+            record["shortlisted"] = bool(r["shortlisted"])
+            out.append(record)
+        return out
 
     def load_shortlisted(self, run_id: str) -> list[dict]:
         with self._lock:
@@ -420,7 +500,8 @@ class Database:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT job_id, company, title, location, posted_at, job_url, "
-                "relevance_score, rerank_score, found_at "
+                "relevance_score, encoder_score, rerank_score_wide, rerank_score, "
+                "found_at "
                 "FROM pipeline_results WHERE run_id=? ORDER BY found_at",
                 (run_id,),
             ).fetchall()
@@ -431,11 +512,13 @@ class Database:
             self._conn.execute(
                 "INSERT OR REPLACE INTO pipeline_results"
                 "(run_id, job_id, company, title, location, posted_at, job_url, "
-                " relevance_score, rerank_score, found_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " relevance_score, encoder_score, rerank_score_wide, rerank_score, "
+                " found_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, record.get("job_id"), record.get("company"), record.get("title"),
                  record.get("location"), record.get("posted_at"), record.get("job_url"),
-                 record.get("relevance_score"), record.get("rerank_score"),
+                 record.get("relevance_score"), record.get("encoder_score"),
+                 record.get("rerank_score_wide"), record.get("rerank_score"),
                  record.get("found_at")),
             )
 

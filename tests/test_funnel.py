@@ -42,9 +42,14 @@ class FakeRelevance:
         self.cfg = cfg
         self.seen: list[str] = []
 
-    async def relevant_mask(self, titles):
+    async def score(self, titles):
         self.seen.extend(titles)
-        return ["developer" in t.lower() for t in titles]
+        # 0.9 clears any sane threshold, 0.1 clears none — so the funnel's own
+        # comparison against cfg.threshold is what is under test, not this stub.
+        return [0.9 if "developer" in t.lower() else 0.1 for t in titles]
+
+    async def relevant_mask(self, titles):
+        return [s >= self.cfg.threshold for s in await self.score(titles)]
 
 
 class FakeDetailFetcher:
@@ -94,10 +99,10 @@ def test_funnel_stages(patched_funnel):
 
     async def go():
         async with Funnel(cfg, title_cfg, RUN_ID) as f:
-            to_score, filtered = await f.process(jobs)
-            return to_score, filtered, f._relevance, f._detail
+            to_score, filtered, scores = await f.process(jobs)
+            return to_score, filtered, scores, f._relevance, f._detail
 
-    to_score, filtered, relevance, detail = _run(go())
+    to_score, filtered, scores, relevance, detail = _run(go())
 
     kept_titles = {j.title for j in to_score}
     assert kept_titles == {"Software Engineer", "Backend Developer"}
@@ -108,8 +113,19 @@ def test_funnel_stages(patched_funnel):
         "Barista": "title_low_relevance",
     }
 
-    # The include fast-pass bypassed the encoder; only the two candidates were scored.
-    assert relevance.seen == ["Backend Developer", "Barista"]
+    # The fast-pass still bypasses the *gate* — "Software Engineer" is kept on the
+    # include keyword alone, and would survive even scoring 0.1. But it is scored
+    # anyway, so the column is never mysteriously blank for fast-passed jobs.
+    assert set(relevance.seen) == {"Software Engineer", "Backend Developer", "Barista"}
+    assert scores["Software Engineer"] == 0.1
+    assert scores["Backend Developer"] == 0.9
+
+    # The score that caused a drop is recorded on the row that records the drop.
+    barista = next(r for r in filtered if r.title == "Barista")
+    assert barista.encoder_score == 0.1
+    # A keyword exclusion never reaches the encoder, so it has no score to carry.
+    excluded = next(r for r in filtered if r.title == "Engineering Manager")
+    assert excluded.encoder_score is None
 
     # Only the surviving list->detail job with no content was hydrated.
     assert detail.hydrated == ["Backend Developer"]
@@ -129,9 +145,11 @@ def test_funnel_no_targets_falls_back_to_include_rule(patched_funnel):
         async with Funnel(cfg, title_cfg, RUN_ID) as f:
             return await f.process(jobs)
 
-    to_score, filtered = _run(go())
+    to_score, filtered, scores = _run(go())
     assert {j.title for j in to_score} == {"Software Engineer"}
     assert [r.skip_reason for r in filtered] == ["title_no_include_match"]
+    # No targets means no encoder ran at all, so there is nothing to record.
+    assert scores == {}
 
 
 # --- List-only scraping + hydration primitives (no network) ---

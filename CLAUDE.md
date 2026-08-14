@@ -110,11 +110,14 @@ location + age      free
 exclude keywords    free                          funnel.py:54
 bi-encoder          cheap, TITLE only             relevance.py — a recall net
 detail hydration    only for DETAIL_SOURCES       detail_fetcher.py:20
-cross-encoder       full description vs profile   rerank.py
+cross-encoder       full description, 2 stages    rerank.py
+  wide   17m        every candidate
+  refine 68m        top `refine.depth` only
+cluster             one call per requisition      cluster.py
 top-K               user-set budget → LLM         matcher.py:_spend_budget
 ```
 
-Three things follow from this that are easy to break:
+Four things follow from this that are easy to break:
 
 - **The bi-encoder threshold is deliberately low (0.25).** It is a recall net, not
   a verdict. Raising it discards exactly the differently-worded jobs the reranker
@@ -129,6 +132,20 @@ Three things follow from this that are easy to break:
   (`greenhouse.py:89`, `ashby.py:54`, `lever.py:59`). Only Workday, BambooHR and the
   direct portals need hydration. That is why full-text reranking is free on the
   default board set, and why the title-only gates exist at all.
+- **The two rerank stages emit incomparable logit scales.** Never sort, average or
+  threshold `rerank_score_wide` against `rerank_score` — they come from different
+  models. `RerankScores.sort_key` is the only sanctioned ordering: refined always
+  outranks unrefined, ties break within one model's scale. This is sound only
+  because `refine.depth >= top_k`, which `FunnelConfig` enforces at load. The
+  original single-stage reranker failed silently for a whole run (correlation with
+  the eventual LLM score: **+0.16**), so a mis-ranking here is not hypothetical —
+  it is the exact bug this design replaced, and it leaves no error behind.
+
+Note also why `max_doc_chars` is generous now: the old 1,200-char cap truncated
+**41% of descriptions before their first requirements heading** (median heading
+offset: character 1,094), so the cross-encoder was scoring company boilerplate.
+Descriptions tokenise at ~5.06 chars/token and the longest measured was 2,693
+tokens, so against an 8,192-token window the setting is a cost dial, not a limit.
 
 ### Two invariants with teeth
 
@@ -143,10 +160,30 @@ Three things follow from this that are easy to break:
   the resume does not evidence. Keep it out of `projects_path`, which *is*
   concatenated into the prompt at `scorer.py`.
 
+- **Duplicate requisitions are grouped, never dropped.** `cluster.py` keys on
+  `(board_token, normalised_title)` — descriptions are deliberately never compared,
+  because similarity thresholds are unauditable after the fact. One representative
+  is scored and the verdict is copied to every sibling, so all 31 copies keep their
+  own location and link in the all-jobs export. Siblings carry
+  `duplicate_of_cluster`, which must stay **out** of `_RETRYABLE_SKIP_REASONS`: they
+  have been judged, just by proxy. Members of a *losing* cluster keep
+  `rerank_below_top_k` and stay retryable. The normaliser is biased toward doing
+  nothing — over-merging costs the user a match they never learn existed, while
+  under-merging costs only a budget slot.
+
 Note that `MatchStore.finalise` records only summary stats — individual rows reach
-the `matches` table via `append_result`. Budget drops are appended explicitly so the
-user can see what the budget cost; title-gate rejections deliberately are not, since
-there can be tens of thousands per run.
+the `matches` table via `append_result`. Budget drops and cluster siblings are
+appended explicitly so the user can see what the budget cost; title-gate rejections
+deliberately are not, since there can be tens of thousands per run.
+
+Two result files come out of a run, and they are not interchangeable.
+`<stamp>_results.csv`/`.json` is the shortlist the apply skill consumes via
+`last_run.json`'s `json` pointer — **one row per cluster**, because 31 siblings
+would otherwise become 31 applications. `<stamp>_results_all_jobs.csv`
+(`results_export.py`) is the diagnostic: every row in `matches`, with the four
+scores in four separate columns. A budget drop renders a **blank** `llm_score`, not
+the `0` that `filtered_result` puts in the model — printing that zero reads as a
+verdict and is what hid the broken reranker for an entire run.
 
 ### Layer 2 — the engine
 

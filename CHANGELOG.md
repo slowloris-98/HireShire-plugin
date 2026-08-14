@@ -4,6 +4,81 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.3.0] — unreleased
+
+### Fixed
+
+- **The reranker was choosing what to score almost at random.** Measured over one
+  real sweep, the correlation between a job's rerank score and the LLM score it
+  eventually received was **+0.16**. Two causes, compounding:
+
+  `max_doc_chars` was 1,200, but **41% of job descriptions do not reach their first
+  requirements heading until after character 1,200** (median offset: 1,094). For
+  those, the cross-encoder scored company boilerplate and never saw the duties.
+  And `cross-encoder/ms-marco-MiniLM-L-6-v2` caps at 512 tokens and is trained on
+  ~6-word search queries, while the query here is a ~1,400-character candidate
+  profile — so the pair overflowed and the document tail was discarded regardless
+  of the setting.
+
+  The cost was concrete: of 100 LLM calls in that sweep, 21 went to plainly
+  off-target engineering roles (all scoring ≤17) and 31 to copies of one
+  requisition, while genuinely good matches sat unscored at ranks 243–266.
+
+  Reranking is now a two-stage cascade of Ettin models (ModernBERT, 8,192-token
+  window, Apache 2.0): `ettin-reranker-17m-v1` reads every description,
+  `ettin-reranker-68m-v1` re-reads the best 500. `max_doc_chars` is 15,000, which
+  covers 99.8% of real postings in full.
+
+  **This costs real time.** Measured on a 16-core CPU over a 7,021-job sweep:
+  ~32 min for stage 1 plus ~9 min for stage 2, against a sweep that is otherwise
+  rate-limit-bound at ~20 min. The published throughput figures for these models
+  are measured on short passages and do not survive contact with 1,200-token job
+  descriptions. `max_doc_chars` is the dial, and it is cheaper to turn down than it
+  looks: 4,000 chars cuts stage 1 to ~12 min while still including the requirements
+  section for 96.9% of postings (3,000 → ~9.5 min / 92.9%; 2,000 → ~6.8 min /
+  82.0%). Stage 1 only has to be right at `refine.depth`, not at `top_k`. Batch
+  size makes no measurable difference.
+
+- **One employer could consume the whole LLM budget.** A single Townsquare Media
+  requisition, posted for 31 locations, took 31 of 100 budget slots. Repeat
+  postings are now grouped by company and normalised title; one representative is
+  scored and the verdict is copied to every sibling. Nothing is discarded — all 31
+  keep their own location and link in the new all-jobs CSV — and the shortlist that
+  `/hireshire:apply` reads carries one row per requisition, so 31 copies cannot
+  become 31 applications. Different titles at one employer stay independent.
+
+### Added
+
+- **`<stamp>_results_all_jobs.csv`** beside the existing results files: every job
+  that reached the matcher, with four score columns kept deliberately separate —
+  `bi_score` (cosine), `cross_score_wide` and `cross_score_refined` (logits from two
+  *different* models), and `llm_score`. Sorted best-first. A budget drop shows a
+  **blank** `llm_score` rather than the `0` stored internally, because printing that
+  zero reads as "the model judged this worthless" and is exactly what disguised the
+  reranker fault. `last_run.json` gains an `all_jobs_csv` pointer; the `json`
+  pointer `/hireshire:apply` reads is unchanged.
+- The bi-encoder score is now persisted. It was previously computed, compared to
+  the threshold and thrown away, which made a `title_low_relevance` drop
+  unexplainable after the fact.
+- `funnel.rerank.refine` and `funnel.dedupe` config blocks. `refine.depth` must be
+  `>= top_k`, validated at config load — below it, the tail of the budget would be
+  filled by comparing the two rerank stages' incomparable scores.
+
+### Changed
+
+- `matches` and `pipeline_results` gain `encoder_score`, `rerank_score_wide` and
+  `rerank_score` columns. Existing databases are migrated additively on connect.
+- `requirements-core.txt` now floors `sentence-transformers>=5.0` and names
+  `transformers>=4.48` explicitly — ModernBERT does not load below it.
+
+### Known issues
+
+- **`threshold: 85` is effectively unreachable and is NOT fixed here.** The scoring
+  rubric caps a category at 50% for each unmet mandatory requirement, so a single
+  missing item puts the ceiling at 80 before anything is credited. In the sweep
+  analysed above, 99 of 100 jobs hit a cap; the one that did not scored 73, the run
+  maximum. Recalibrating the rubric and the threshold is a separate change.
+
 ## [0.2.4] — unreleased
 
 ### Fixed

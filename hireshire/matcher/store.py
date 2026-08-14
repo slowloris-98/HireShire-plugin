@@ -60,6 +60,9 @@ class MatchStore:
             result.source_run_id,
             result.scored_at.isoformat(),
             result.model_dump_json(),
+            result.encoder_score,
+            result.rerank_score_wide,
+            result.rerank_score,
         )
 
     def finalise(

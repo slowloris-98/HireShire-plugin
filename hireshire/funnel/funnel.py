@@ -14,8 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 class Funnel:
-    """Matcher-entry relevance gate. Drop-in for `apply_title_filter`: `process`
-    returns `(to_score, filtered_results)` with the same shape.
+    """Matcher-entry relevance gate, in the spirit of `apply_title_filter` but with
+    a third return value: `process` returns `(to_score, filtered_results,
+    encoder_scores)`, the last mapping job_id -> bi-encoder cosine so the number
+    survives into the results export instead of being discarded at the gate.
 
     Stages, in order:
       1. code exclude filter        → drop as "title_excluded"
@@ -47,31 +49,47 @@ class Funnel:
     async def __aexit__(self, *exc) -> None:
         await self._detail.__aexit__(*exc)
 
-    async def process(self, jobs: list[Job]) -> tuple[list[Job], list[MatchResult]]:
+    async def process(
+        self, jobs: list[Job]
+    ) -> tuple[list[Job], list[MatchResult], dict[str, float]]:
         excludes = [kw.lower() for kw in self._title_cfg.exclude_keywords]
         includes = [kw.lower() for kw in self._title_cfg.include_keywords]
 
         filtered: list[MatchResult] = []
         passed: list[Job] = []       # kept so far (include fast-pass + encoder survivors)
         candidates: list[Job] = []   # not excluded, not fast-passed — go to the encoder
+        fast_passed: list[Job] = []  # include fast-pass: kept regardless, but still scored
+        scores: dict[str, float] = {}
 
         for job in jobs:
             title_lower = job.title.lower()
             if any(kw in title_lower for kw in excludes):
                 filtered.append(filtered_result(job, "title_excluded", self._run_id))
             elif includes and any(kw in title_lower for kw in includes):
+                fast_passed.append(job)
                 passed.append(job)
             else:
                 candidates.append(job)
 
         # --- Relevance stage ---
         if self._cfg.encoder.targets:
-            mask = await self._relevance.relevant_mask([j.title for j in candidates])
-            for job, ok in zip(candidates, mask):
-                if ok:
+            # Fast-passed jobs are scored but NOT gated on the score. The fast pass
+            # exists to be immune to encoder mistuning and stays that way; recording
+            # the number just stops the column being mysteriously blank for them.
+            for job, s in zip(fast_passed, await self._relevance.score([j.title for j in fast_passed])):
+                scores[job.job_id] = s
+
+            candidate_scores = await self._relevance.score([j.title for j in candidates])
+            thr = self._cfg.encoder.threshold
+            for job, s in zip(candidates, candidate_scores):
+                scores[job.job_id] = s
+                if s >= thr:
                     passed.append(job)
                 else:
-                    filtered.append(filtered_result(job, "title_low_relevance", self._run_id))
+                    result = filtered_result(job, "title_low_relevance", self._run_id)
+                    # The score that caused this drop, kept on the row that records it.
+                    result.encoder_score = s
+                    filtered.append(result)
         else:
             # No encoder targets configured → fall back to the classic include rule so
             # behaviour matches the pure code title filter.
@@ -83,4 +101,4 @@ class Funnel:
 
         # --- Detail hydration for list-only Workday/BambooHR survivors ---
         hydrated = await self._detail.hydrate(passed)
-        return hydrated, filtered
+        return hydrated, filtered, scores

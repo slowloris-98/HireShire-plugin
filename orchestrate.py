@@ -30,6 +30,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 import matcher
 import scraper
 from hireshire import paths
+from hireshire.results_export import all_jobs_name, write_all_jobs_csv
 from hireshire.storage.db import PHASE_PIPELINE, get_db
 
 load_dotenv()
@@ -71,7 +72,8 @@ def _setup_logging() -> None:
 # schema carried only the former, under a name that read like the latter.
 _CSV_FIELDS = [
     "title", "company", "location", "posted_at", "job_url",
-    "relevance_score", "rerank_score", "job_id", "found_at",
+    "relevance_score", "rerank_score", "encoder_score",
+    "cluster_size", "job_id", "found_at",
 ]
 
 
@@ -95,6 +97,12 @@ async def _collect_results(in_q: asyncio.Queue, out_q: asyncio.Queue) -> None:
             "job_url": str(match_result.absolute_url),
             "relevance_score": match_result.relevance_score,
             "rerank_score": match_result.rerank_score,
+            "rerank_score_wide": match_result.rerank_score_wide,
+            "encoder_score": match_result.encoder_score,
+            # >1 means this requisition was posted for several locations. Only this
+            # representative is queued for applying; the rest are in the all-jobs
+            # CSV with their own links.
+            "cluster_size": match_result.cluster_size,
             "found_at": datetime.now(timezone.utc).isoformat(),
         })
     await out_q.put(None)
@@ -251,6 +259,14 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
     db = get_db()
     rows = await asyncio.to_thread(db.load_pipeline_results, run_id)
 
+    # The all-jobs diagnostic. Written from the DB at the end rather than streamed
+    # like the shortlist CSV, because it is sorted across the whole run — no row's
+    # position is known until every row exists.
+    all_rows = await asyncio.to_thread(db.load_all_matches, run_id)
+    all_jobs_path = await asyncio.to_thread(
+        write_all_jobs_csv, all_rows, results_dir / all_jobs_name(stamp)
+    )
+
     json_path = results_dir / _json_name(stamp)
     try:
         json_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
@@ -272,7 +288,12 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
                     "results_dir": str(results_dir),
                     "csv": str(results_dir / _csv_name(stamp)),
                     "json": str(json_path),
+                    # Additive: /apply reads `json` and is unaffected. This is here
+                    # so a human (or a later skill) can find the diagnostic without
+                    # guessing at the results root.
+                    "all_jobs_csv": str(all_jobs_path) if all_jobs_path else None,
                     "total_results": len(rows),
+                    "total_jobs_considered": len(all_rows),
                 },
                 indent=2,
             ),

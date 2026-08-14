@@ -48,10 +48,34 @@ class MatchResult(BaseModel):
     absolute_url: str
 
     relevance_score: Optional[int] = None  # None = never scored (skip_llm)
-    # Cross-encoder score from the funnel's rerank stage — the number that decided
-    # whether this job was worth an LLM call. Ordinal only, not comparable to
-    # relevance_score. None when reranking was off.
+
+    # --- Funnel scores -------------------------------------------------------
+    # Four numbers on FOUR DIFFERENT SCALES. Each is ordinal within itself and none
+    # is comparable to any other — a rerank logit is not a percentage and the two
+    # rerank stages do not share a range. Anything that sorts or displays them must
+    # keep them in separate columns.
+    #
+    # Bi-encoder cosine (0-1) of the TITLE against the configured target roles.
+    # The number that explains a `title_low_relevance` drop; it used to be computed
+    # against the threshold and thrown away.
+    encoder_score: Optional[float] = None
+    # Wide-pass cross-encoder logit over the full description. Present for every
+    # reranked job.
+    rerank_score_wide: Optional[float] = None
+    # Refined cross-encoder logit — a different model, so NOT comparable to
+    # rerank_score_wide. Present only for the top `refine.depth`; this is the number
+    # that decided whether the job was worth an LLM call. None when reranking was
+    # off or the job never reached the refine pass.
     rerank_score: Optional[float] = None
+    # Which stage last judged this job: "wide", "refined", or None.
+    rerank_stage: Optional[str] = None
+
+    # --- Clustering ----------------------------------------------------------
+    # Set on jobs that inherited their score from a cluster representative rather
+    # than being scored directly: the representative's job_id. See funnel/cluster.py.
+    cluster_representative: Optional[str] = None
+    # How many postings shared this job's cluster key, including itself.
+    cluster_size: int = 1
     years_experience_required: Optional[float] = None
     core_skills_score: int = 0
     core_skills_rationale: str = ""

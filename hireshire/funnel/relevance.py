@@ -57,6 +57,20 @@ class EncoderRelevance:
         sims = emb @ self._target_emb.T  # (n_titles, n_targets)
         return sims.max(axis=1).tolist()
 
+    async def score(self, titles: list[str]) -> list[float]:
+        """Return the raw max-over-targets cosine per title.
+
+        Exposed separately from `relevant_mask` because the score is worth keeping,
+        not just the verdict it produces: it is the only number that explains why a
+        title was dropped as `title_low_relevance`, and it used to be computed,
+        compared to the threshold and thrown away.
+
+        With no targets configured there is nothing to compare against, so every
+        title scores 0.0 and the caller's gate is a no-op."""
+        if not self._cfg.targets or not titles:
+            return [0.0] * len(titles)
+        return await asyncio.to_thread(self._score_titles, titles)
+
     async def relevant_mask(self, titles: list[str]) -> list[bool]:
         """Return a per-title boolean: True where max cos-sim to any target >= threshold.
 
@@ -66,6 +80,4 @@ class EncoderRelevance:
             return [True] * len(titles)
         if not titles:
             return []
-        scores = await asyncio.to_thread(self._score_titles, titles)
-        thr = self._cfg.threshold
-        return [s >= thr for s in scores]
+        return [s >= self._cfg.threshold for s in await self.score(titles)]

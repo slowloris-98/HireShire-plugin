@@ -16,4 +16,9 @@ rich>=13.7
 python-dotenv>=1.0
 pdfplumber>=0.11             # resume PDF -> text
 ruamel.yaml>=0.18            # comment-preserving YAML writes for /hireshire:setup
-sentence-transformers>=2.7   # funnel encoder + cross-encoder reranker
+sentence-transformers>=5.0   # funnel encoder + cross-encoder rerank cascade
+# The Ettin rerankers are ModernBERT-architecture, which transformers only gained
+# in 4.48. Named explicitly rather than left to sentence-transformers' own floor,
+# because an older resolve fails at model-load time with an unrecognised
+# architecture — deep inside a sweep, not at install.
+transformers>=4.48

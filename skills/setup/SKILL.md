@@ -293,11 +293,16 @@ still expects to be waiting:
 ```python
 from sentence_transformers import SentenceTransformer, CrossEncoder
 SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2").encode(["warmup"])
-CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2").predict([("warmup", "warmup")])
+CrossEncoder("cross-encoder/ettin-reranker-17m-v1").predict([("warmup", "warmup")])
+CrossEncoder("cross-encoder/ettin-reranker-68m-v1").predict([("warmup", "warmup")])
 ```
 
-Both are imported lazily by the engine, so without this the first `/hireshire:find-jobs`
-would stall mid-run on a several-hundred-megabyte download.
+All three are imported lazily by the engine, so without this the first
+`/hireshire:find-jobs` would stall mid-run on a several-hundred-megabyte download.
+There are two cross-encoders because the funnel reranks in two stages: a small
+model reads every description, a larger one re-reads the best few hundred. Warm
+both — the second is only loaded partway through a sweep, which is the worst
+moment to discover it is missing.
 
 ## Step 4 — offer a recurring schedule (optional, opt-in)
 

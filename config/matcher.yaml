@@ -44,11 +44,52 @@ funnel:
     # Adjacent job titles you are qualified for, generated at setup.
     targets: []
     threshold: 0.25   # recall net — deliberately loose
+  # Two-stage cross-encoder cascade over the full job descriptions.
+  #
+  # Stage 1 (`model`) is cheap enough to read every surviving description. Stage 2
+  # (`refine`) is 3x slower but materially more accurate, so it only reads the few
+  # hundred that could still win the budget.
+  #
+  # The two stages emit DIFFERENT LOGIT SCALES. Their scores are never compared or
+  # combined — the ranking puts every refined job above every unrefined one, which
+  # is why `refine.depth` must stay >= top_k (enforced at config load).
+  #
+  # These are Ettin models: ModernBERT-based, 8192-token window, Apache 2.0. The
+  # previous ms-marco-MiniLM capped at 512 tokens and truncated 41% of descriptions
+  # before their requirements section, which made its ranking near-random.
+  # COST, measured on a 16-core CPU over a real 7,021-job sweep: stage 1 ~32 min,
+  # stage 2 ~9 min at depth 500. That is deliberate — no truncation anywhere — but
+  # it roughly triples a ~20 min sweep. `max_doc_chars` is the dial if that is too
+  # slow, and it is far cheaper than it looks to turn down: at 4,000 chars stage 1
+  # drops to ~12 min and still includes the requirements section for 96.9% of
+  # postings (3,000 -> ~9.5 min / 92.9%; 2,000 -> ~6.8 min / 82.0%). For reference
+  # the old broken 1,200 setting reached only 56.8%. Stage 1 only has to be right
+  # at depth `refine.depth`, not at top_k, so it tolerates truncation the final
+  # scorer never could. Batch size makes no measurable difference; do not bother.
   rerank:
     enabled: true
-    model: cross-encoder/ms-marco-MiniLM-L-6-v2
-    max_doc_chars: 1200   # cross-encoders cap the combined query+doc pair
-    batch_size: 32
+    model: cross-encoder/ettin-reranker-17m-v1
+    # ~2,960 tokens at the measured 5.06 chars/token. Covers 99.8% of real
+    # postings in full; the longest ever measured was 25,386 chars / 2,693 tokens,
+    # so the 8192 window is never the limit — this is a cost dial. Cost flattens
+    # above ~10,000 chars because the mean posting is only 6,232, so the last
+    # 5,000 chars of headroom are close to free.
+    max_doc_chars: 15000
+    max_length: 4096      # safety bound on the pair; never binds in practice
+    batch_size: 16
+    refine:
+      enabled: true
+      model: cross-encoder/ettin-reranker-68m-v1
+      depth: 500          # how many of stage 1's best get re-scored. Must be >= top_k.
+      batch_size: 8
+
+  # Repeat postings of one requisition share a single LLM call, and the score is
+  # copied to every copy — nothing is discarded. One employer's job once took 31 of
+  # 100 budget slots. Jobs group only when the company AND the normalised title
+  # match, so several different roles at one employer stay independently eligible.
+  dedupe:
+    enabled: true
+
   detail_fetch:
     concurrency: 10
     jitter_s: 0.3
