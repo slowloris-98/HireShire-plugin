@@ -6,6 +6,9 @@
 2. does setup clears ths db and sets everything again? what if a different person comes and wants a new profile.
 3. When using the skill hireshire should not ask user to start debugging if anything fails, as it starts talking why it broke and which part of code is incorrect.
 
+Juypiter notebook which shoes ths results from the funnel after different configurations 
+
+
 Ranking Evaluation by metrics
 
 1. When applier enabled:
