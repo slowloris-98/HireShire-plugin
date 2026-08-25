@@ -29,6 +29,7 @@ pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_top_k_keeps_the_highest_scoring_jobs
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
 sh scripts/hireshire.sh --status      # is a recurring sweep running?
+sh scripts/hireshire.sh --approve     # PreToolUse guard; hook payload on stdin
 
 # Engine, from a checkout (falls back to ./data when the plugin env vars are unset)
 python scraper.py                     # sweep the enabled boards
@@ -38,6 +39,7 @@ python scripts/verify_bad_slugs.py --prune
 
 # Engine, as the plugin runs it (re-execs into the venv in the data dir)
 python scripts/run_engine.py orchestrate.py --once
+python scripts/setup_cli.py set matcher --json '{"threshold": 75}'
 ```
 
 ## Architecture
@@ -235,6 +237,31 @@ suppresses Rich in favour of `logging` — required under the monitor.
   works before the venv exists. `tests/test_plugin_shell.py` fails the build if the
   placeholder reappears. This is the same "solve it in one place" argument as
   interpreter discovery, applied to directory discovery.
+- **Every command a skill runs must be a fixed shape, because permission rules match
+  the exact command string.** Setup used to run its Python by writing a heredoc to a
+  temp file, so no two calls ever matched, no allowlist rule could cover them, and a
+  first-time user approved ~15 dialogs before seeing a job. `scripts/setup_cli.py`
+  exists to make each action one stable argv; `scripts/approve.py` is a `PreToolUse`
+  hook that recognises those shapes and returns `permissionDecision: "allow"`, which
+  is the supported way for a plugin to stop asking for its own plumbing.
+
+  Three constraints on that guard, which is now a security boundary — whatever it
+  approves runs with no prompt, ever:
+
+  - **Silence is the default.** Unrecognised input produces no output and the user is
+    asked exactly as before, so a bug in the guard costs friction, not authority.
+  - **It never approves the launcher's bare `<script.py>` form**, which runs an
+    arbitrary file. That is why `setup_cli.py` had to come first: nothing legitimate
+    needs the escape hatch any more.
+  - **It must stay stdlib-only and pre-venv**, like `bootstrap.py` — the first command
+    it approves is the install that creates the venv.
+
+  `approve.sh` wraps it with a substring pre-filter so unrelated Bash calls do not pay
+  for the interpreter probe. Note that Windows needs three path spellings compared
+  (`/d/...` from Git Bash, `C:/...`, `C:\...`) or the guard silently never matches.
+  On the `apply` side only `browser_navigate`, `browser_snapshot` and
+  `browser_take_screenshot` are approved: once `dry_run` is off, the prompt on a click
+  or an upload is the last checkpoint before a real application reaches an employer.
 - **`userConfig` is not used** for anything load-bearing — its enable-time prompt
   has open bugs. The `setup` skill is the source of truth.
 - **Set an explicit `version` in `plugin.json`.** Omitting it pushes every commit at

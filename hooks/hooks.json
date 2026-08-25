@@ -11,6 +11,30 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/approve.sh\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_hireshire_playwright__browser_(navigate|snapshot|take_screenshot)",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/approve.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

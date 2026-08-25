@@ -18,6 +18,7 @@
 #   hireshire.sh --check                  session-start probe; installs nothing
 #   hireshire.sh --paths                  print ROOT= and DATA=; installs nothing
 #   hireshire.sh --status                 is a recurring sweep running? installs nothing
+#   hireshire.sh --approve                PreToolUse guard; reads a hook payload on stdin
 #   hireshire.sh --bootstrap              create/refresh the venv
 #   hireshire.sh --monitor                run the recurring sweep (start in background)
 #   hireshire.sh <script.py> [args...]    run an engine entrypoint in the venv
@@ -30,6 +31,12 @@
 # --status exists because a skill must not claim a sweep is running without asking.
 # --monitor is the only entrypoint that honours the user's poll_interval_hours;
 # `orchestrate.py` defaults to 4 hours and never reads their config.
+#
+# --approve is what the PreToolUse hook runs, via scripts/approve.sh. It decides
+# whether a command is one of this plugin's own and can skip the permission prompt,
+# which is what stops setup asking a dozen times for its own plumbing. It installs
+# nothing and imports only the stdlib, because it has to answer on a machine where
+# the venv does not exist yet — the first thing setup runs is the install itself.
 #
 # --check is what the SessionStart hook runs. It must stay fast: a hook blocks the
 # user's first turn, so anything slow there is silence they cannot explain. The
@@ -63,8 +70,9 @@ case "$1" in
     --check)     exec "$PY" "$ROOT/scripts/bootstrap.py" --check ;;
     --paths)     exec "$PY" "$ROOT/scripts/bootstrap.py" --paths ;;
     --status)    exec "$PY" "$ROOT/scripts/bootstrap.py" --status ;;
+    --approve)   exec "$PY" "$ROOT/scripts/approve.py" ;;
     --bootstrap) exec "$PY" "$ROOT/scripts/bootstrap.py" ;;
     --monitor)   exec "$PY" "$ROOT/scripts/run_orchestration.py" ;;
-    "")          echo "usage: hireshire.sh [--check|--paths|--status|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
+    "")          echo "usage: hireshire.sh [--check|--paths|--status|--approve|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
     *)           exec "$PY" "$ROOT/scripts/run_engine.py" "$@" ;;
 esac

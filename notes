@@ -3,6 +3,9 @@
 3. Update readme:
     Simplify the user installation steps, as minimum as possible
     How to stay updated
+4. The cross encoder ranking might make the asyncio queue useless for matcher-tuner hand off as the reranking will take some time, regardless of jobs coming in we will have to wait for all the jobs to be scraped so that they can be ranked.
+
+
 2. does setup clears ths db and sets everything again? what if a different person comes and wants a new profile.
 3. When using the skill hireshire should not ask user to start debugging if anything fails, as it starts talking why it broke and which part of code is incorrect.
 
