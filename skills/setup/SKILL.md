@@ -11,26 +11,35 @@ value below is written for them by `hireshire.config_writer`.
 
 ## Running engine commands
 
-Always go through the bundled launcher. Never call `python` directly: macOS has
-no bare `python`, and on Windows a Microsoft Store stub named `python3` sits on
-PATH but does not work. The launcher resolves a real interpreter, bootstraps the
-venv if needed, and re-execs inside it.
+Every action in this skill is one command. Always go through the bundled launcher:
+macOS has no bare `python`, and on Windows a Microsoft Store stub named `python3`
+sits on PATH but does not work. The launcher resolves a real interpreter,
+bootstraps the venv if needed, and re-execs inside it.
 
 ```bash
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" <script.py> [args]
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py <subcommand> [args]
 ```
 
-**One-off Python goes through the same launcher.** Write the snippet to a file and
-pass its absolute path — the launcher accepts one, and this is the only way the
-child gets a correct data directory and `PYTHONPATH`:
+| what you need | subcommand |
+|---|---|
+| copy the default config into the data dir | `install-config` |
+| create the user's job-search folder | `init-workspace "<path>"` |
+| resumes already sitting in the workspace | `find-resumes "<workspace>"` |
+| validate + copy their resume in | `install-resume "<file>" "<workspace>"` |
+| read the resume, to draft target roles | `resume-text "<file>"` |
+| see a phase's current settings | `get <phase>` |
+| see a phase's editable keys and what they mean | `field-docs <phase>` |
+| write settings | `set <phase> --json '{...}'` |
+| write the search profile | `write-profile --text "..."` |
+| pull the models | `warm-models` |
 
-```bash
-cat > /tmp/snippet.py <<'EOF'
-from hireshire import config_writer
-config_writer.install_user_config()
-EOF
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" /tmp/snippet.py
-```
+**Never write Python to a file and run it.** That is what this skill used to do, and
+it is why setup asked the user's permission a dozen times before showing them a
+single job: Claude Code matches permission rules against the exact command string,
+so a heredoc — whose body differs on every call — can never be approved once. The
+subcommands above are fixed shapes and are approved automatically. If you need
+something the table does not cover, prefer doing without it; a new subcommand
+belongs in `scripts/setup_cli.py`, not in a temp file.
 
 Three rules behind that, all learned the hard way:
 
@@ -50,8 +59,9 @@ Three rules behind that, all learned the hard way:
   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --paths
   ```
 
-  It prints `ROOT=<path>` and `DATA=<path>`. Run it once when you need `DATA` and
-  reuse the value for the rest of the session.
+  It prints `ROOT=<path>` and `DATA=<path>`. You rarely need it now —
+  `write-profile` resolves `DATA` itself and prints where it wrote — but it is the
+  one supported answer when you do.
 
 ## Step 0 — set expectations, then install
 
@@ -78,9 +88,12 @@ If a session-start message already told you dependencies are missing, that is th
 same fact reaching you early — pass it to the user in your first sentence rather
 than waiting until you are about to install.
 
-Then call `config_writer.install_user_config()` to copy the default config into the
-data directory. Everything after this edits that copy, so plugin updates never
-overwrite their answers.
+Then copy the default config into the data directory. Everything after this edits
+that copy, so plugin updates never overwrite their answers.
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py install-config
+```
 
 ## Step 1 — where their job search lives
 
@@ -100,13 +113,19 @@ Default to the folder this session started in. Show it and ask:
 
 Then create the structure and record it:
 
-- ```python
-  from hireshire import workspace, config_writer
-  ws = workspace.init_workspace(r"<their answer, or cwd>")
-  config_writer.write_config("scraper", {"workspace_dir": str(ws)})
-  ```
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+    init-workspace "<their answer, or cwd>"
+```
 
-`init_workspace` creates `resume/original/` and `hireshire_run_results/` if they
+It prints the absolute path it created. Write **that** path back:
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+    set scraper --json '{"workspace_dir": "<the printed path>"}'
+```
+
+`init-workspace` creates `resume/original/` and `hireshire_run_results/` if they
 are missing, so a folder they made thirty seconds ago and left empty is fine. It
 refuses a folder inside the plugin's own directories — those are wiped on update —
 and tells them why.
@@ -133,8 +152,10 @@ in question 6.
 
 ### How to write a value
 
-`write_config(phase, {...})` takes **flat keys**, never the YAML nesting. The names
-below are the keys; where they sit in the file is the writer's business:
+`set <phase> --json '{...}'` takes **flat keys**, never the YAML nesting. The names
+below are the keys; where they sit in the file is the writer's business. One `set`
+can carry several keys for the same phase — batch a group of answers into one call
+rather than one call per question:
 
 | phase | keys |
 |---|---|
@@ -143,8 +164,8 @@ below are the keys; where they sit in the file is the writer's business:
 | `funnel` | `targets`, `top_k` |
 | `applier` | `enable_applier`, `dry_run`, `resume_path`, `first_name`, `last_name`, `email`, `phone` |
 
-So it is `write_config("matcher", {"exclude_keywords": [...]})` — **not**
-`{"title_filter": {"exclude_keywords": [...]}}`, which is rejected.
+So it is `set matcher --json '{"exclude_keywords": [...]}'` — **not**
+`'{"title_filter": {"exclude_keywords": [...]}}'`, which is rejected.
 
 Three things that trip people up:
 
@@ -153,22 +174,35 @@ Three things that trip people up:
 - List keys (`location_filter`, `enabled_platforms`, `include_keywords`,
   `exclude_keywords`, `targets`) want a **list**, even for one item. A bare string
   is wrapped for you, but write the list.
-- `config_writer.field_docs(phase)` returns the live keys and what they mean. Use it
-  if this table and the code ever disagree.
+- `field-docs <phase>` prints the live keys and what they mean. Use it if this table
+  and the code ever disagree.
 
 1. **Resume** → `matcher.resume_path`, and the same path to `applier.resume_path`.
 
-   Look in the workspace first with `workspace.find_resumes(ws)`. A PDF already
-   sitting in `resume/original/` means the documented flow worked — offer it by
-   name and confirm rather than asking for a path.
+   Look in the workspace first. A PDF already sitting in `resume/original/` means
+   the documented flow worked — offer it by name and confirm rather than asking for
+   a path.
 
-   Otherwise ask for the file and call `workspace.install_resume(path, ws)`:
+   ```bash
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+       find-resumes "<workspace>"
+   ```
 
-   - ```python
-     dest = workspace.install_resume(r"<their path>", ws)
-     config_writer.write_config("matcher", {"resume_path": str(dest)})
-     config_writer.write_config("applier", {"resume_path": str(dest)})
-     ```
+   Otherwise ask for the file and install it:
+
+   ```bash
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+       install-resume "<their path>" "<workspace>"
+   ```
+
+   It prints the copy's path. Write that to both phases:
+
+   ```bash
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+       set matcher --json '{"resume_path": "<printed path>"}'
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+       set applier --json '{"resume_path": "<printed path>"}'
+   ```
 
    It validates with `extract_resume_text` **before** copying, so a scanned PDF
    fails now — while they can still pick another file — rather than three minutes
@@ -208,9 +242,15 @@ Three things that trip people up:
    and it is the main defence against missing jobs that are a real fit but worded
    differently.
 
-   **Draft first, then ask.** By this point their resume is installed and readable —
-   `extract_resume_text(dest)` from `hireshire.matcher.resume`. Read it and propose
-   concrete target roles and hard exclusions, then let them correct you:
+   **Draft first, then ask.** By this point their resume is installed and readable:
+
+   ```bash
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+       resume-text "<the installed path>"
+   ```
+
+   Read it and propose concrete target roles and hard exclusions, then let them
+   correct you:
 
    > From your resume this looks like mid-level Account Management / Customer
    > Success in SaaS. Is that the target, and is there anything you'd rule out —
@@ -229,18 +269,18 @@ Three things that trip people up:
    - `targets` (phase `funnel`) — an **exhaustive** list of adjacent and synonymous
      **job titles** they are qualified for. Aim for dozens. This is a recall net;
      over-inclusion is cheap and under-inclusion loses jobs permanently.
-   - `search_profile_path` (phase `matcher`) — write a dense ~200-word "ideal
-     candidate" profile to `<DATA>/profile.md`, taking `<DATA>` from
-     `hireshire.sh --paths` as described above, and store the bare filename in the
-     config. Describe the **underlying transferable skills**, in the vocabulary
+   - `search_profile_path` (phase `matcher`) — a dense ~200-word "ideal candidate"
+     profile. Describe the **underlying transferable skills**, in the vocabulary
      employers use, not just the literal nouns on the resume — "React" should also
      appear as "component-based UI development" and "frontend state management".
      This text is the reranker's query and is what closes the vocabulary gap.
 
-     **Check the file is there before moving on** (`ls` it). If this write lands in
-     the wrong directory the run does not fail — the reranker just has no query, so
-     the cross-encoder is skipped and the LLM budget is spent on unranked jobs. The
-     only symptom is a `search_profile_path set but not found` line in the log.
+     `write-profile` puts it in the right directory and prints where it landed, so
+     you never name `<DATA>` yourself and there is nothing to `ls` afterwards. That
+     matters: a run whose profile went to the wrong directory does not fail — the
+     reranker simply has no query, the cross-encoder is skipped, and the LLM budget
+     is spent on unranked jobs. The only symptom is one
+     `search_profile_path set but not found` line in the log.
 
    `include_keywords` is optional: leave it empty unless the user wants a hard
    keyword requirement. An empty include list means the semantic gate decides, which
@@ -248,13 +288,14 @@ Three things that trip people up:
 
    **Show all three back and let them edit before you write anything.** Then:
 
-   - ```python
-     config_writer.write_config("matcher", {
-         "exclude_keywords": [...],
-         "search_profile_path": "profile.md",
-     })
-     config_writer.write_config("funnel", {"targets": [...]})
-     ```
+   ```bash
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+       write-profile --text "<the ~200-word profile>"
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+       set matcher --json '{"exclude_keywords": [...], "search_profile_path": "profile.md"}'
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+       set funnel --json '{"targets": [...]}'
+   ```
 
 7. **Which job boards** → `enabled_platforms` (phase `scraper`), a list. Present as
    a time trade-off, not a list of vendor names:
@@ -290,11 +331,8 @@ Three things that trip people up:
 Do this before declaring setup finished, so the download happens while the user
 still expects to be waiting:
 
-```python
-from sentence_transformers import SentenceTransformer, CrossEncoder
-SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2").encode(["warmup"])
-CrossEncoder("cross-encoder/ettin-reranker-17m-v1").predict([("warmup", "warmup")])
-CrossEncoder("cross-encoder/ettin-reranker-68m-v1").predict([("warmup", "warmup")])
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py warm-models
 ```
 
 All three are imported lazily by the engine, so without this the first

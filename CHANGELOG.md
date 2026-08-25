@@ -6,6 +6,31 @@ All notable changes to this plugin are documented here. Versions follow
 
 ## [0.3.0] — unreleased
 
+### Changed
+
+- **Setup no longer asks permission for its own plumbing.** A first-time install
+  opened roughly fifteen "Allow this command?" dialogs before the user saw a single
+  job. Claude Code matches permission rules against the exact command string, and
+  setup ran its Python by writing a heredoc to a temp file — so no two calls ever
+  matched, no allowlist rule could cover them, and "don't ask again" never stuck.
+
+  Every setup action is now a fixed-argv subcommand of `scripts/setup_cli.py`, and a
+  `PreToolUse` hook (`scripts/approve.py`) recognises those shapes and approves them.
+  A fresh setup should now prompt for nothing.
+
+  **The questions setup asks are unchanged** — locations, target roles, exclusions,
+  threshold, jobs per run, boards, poll interval, scoring backend, auto-apply — as is
+  the step that shows the generated targets and profile back for editing before
+  anything is written. Only the mechanism that saves the answers changed.
+
+  The guard is deliberately narrow. It refuses anything carrying a shell operator,
+  redirection or substitution; it refuses a launcher that is not this install's; and
+  it never approves the launcher's bare `<script.py>` form, which runs an arbitrary
+  file. Anything it does not recognise prompts exactly as before. In `/hireshire:apply`
+  only the browser tools that *look* — navigate, snapshot, screenshot — are approved;
+  clicking, typing and uploading still ask, because with `dry_run` off those are what
+  send a real application.
+
 ### Fixed
 
 - **The reranker was choosing what to score almost at random.** Measured over one

@@ -90,6 +90,9 @@ def test_the_launcher_exposes_its_read_only_modes_separately():
     # a sweep is already running. See the tests below for both.
     assert "--paths)" in sh
     assert "--status)" in sh
+    # The permission guard runs before the venv exists, so it is a launcher mode
+    # rather than an engine entrypoint. See tests/test_approve.py.
+    assert "--approve)" in sh
 
 
 @pytest.mark.parametrize("mode", ["paths", "status"])
@@ -129,6 +132,19 @@ def _shell_blocks(text: str) -> str:
         if inside:
             out.append(line)
     return "\n".join(out).lower()
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+def test_no_shell_fence_hides_inside_a_list_item(skill):
+    """A fence opened as `- ```bash` does not start with a backtick once stripped, so
+    `_shell_blocks` above — and the approval check in tests/test_approve.py — never
+    see inside it. That is not hypothetical: it hid half of setup's commands from the
+    check that proves they will not prompt the user."""
+    text = (ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    for n, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith(("- ```", "* ```", "+ ```")):
+            pytest.fail(f"{skill}:{n} de-list this fence so the checks can read it")
 
 
 @pytest.mark.parametrize("skill", SKILLS)
@@ -211,6 +227,46 @@ def test_venv_interpreter_path_branches_by_platform():
     assert posix.name in ("python", "python.exe")
     # The branch exists at all — the actual value depends on the host we run on.
     assert "Scripts" in str(posix) or "bin" in str(posix)
+
+
+def test_the_permission_guard_is_wired_to_pretooluse():
+    """Setup used to open a permission dialog for nearly every command it ran, so a
+    first-time user approved a dozen prompts before seeing a single job. The hook is
+    what removes them; without it, the fixed-argv CLI buys nothing."""
+    entries = _json("hooks/hooks.json")["hooks"]["PreToolUse"]
+    matchers = [e.get("matcher", "") for e in entries]
+
+    assert "Bash" in matchers
+    assert any("playwright" in m for m in matchers)
+    for entry in entries:
+        cmd = entry["hooks"][0]["command"]
+        assert "approve.sh" in cmd
+        assert "python" not in cmd, "interpreter choice belongs in the launcher"
+
+
+def test_the_guard_never_covers_a_browser_action_that_submits():
+    """`/hireshire:apply` fills real forms. Once `dry_run` is off, the permission
+    prompt is the last human checkpoint before an application reaches an employer,
+    so only the tools that look are auto-approved."""
+    matcher = next(
+        e["matcher"] for e in _json("hooks/hooks.json")["hooks"]["PreToolUse"]
+        if "playwright" in e.get("matcher", "")
+    )
+    for submitting in ("click", "type", "fill_form", "select_option", "file_upload"):
+        assert submitting not in matcher
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+def test_no_skill_writes_python_to_a_file_and_runs_it(skill):
+    """Claude Code matches permission rules against the exact command string, so a
+    heredoc — whose body differs every call — can never be approved once. That is
+    what made setup ask a dozen times. Fixed-argv subcommands replaced it; this
+    keeps the pattern from creeping back."""
+    blocks = _shell_blocks((ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8"))
+    for pattern in ("cat >", "<<'eof'", "<<eof", "tee "):
+        assert pattern not in blocks, (
+            f"{skill}: add a subcommand to scripts/setup_cli.py instead of {pattern!r}"
+        )
 
 
 def test_mcp_server_is_portable():
