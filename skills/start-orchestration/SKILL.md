@@ -85,6 +85,24 @@ Each cycle emits one summary line: how many matches were found, the best score, 
 the next sweep is due. Relay those as they arrive; do not go looking for more detail
 unless the user asks. `--status` answers "is it still going?" at any point.
 
+**Republish the match report on each of those summary lines, and only then.** The
+engine writes it to `<results root>/latest_matching.html` on every sweep — the
+results root is `<workspace_dir>/hireshire_run_results/`, or `<DATA>/results/`
+when `workspace_dir` is empty, and `<DATA>/last_run.json` carries the exact path
+as `latest_matching_html` once a sweep has finished.
+
+Publish it with the **Artifact** tool, always to the same URL: call the tool with
+`action: "list"` first, find the artifact titled **HireShire Match Report**, and
+pass its `url`. If there is no such artifact yet, the first publish creates it.
+One link, updated every cycle — not one per sweep.
+
+Do not tail the engine log for progress here. A recurring sweep runs unattended
+for hours, and a report republished on every internal milestone would put several
+messages into the session every few hours, indefinitely. One per completed cycle
+is the right rate. Mention the dashboard at `<results root>/dashboard.html`
+instead: it is local, it rewrites itself continuously, and the user can leave it
+open without any of this costing them a notification.
+
 Two log files, which are easy to confuse:
 
 - `<DATA>/logs/orchestration.log` — the recurring loop. Start here.

@@ -24,7 +24,7 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 158 tests, no network, no model weights
+pytest                                # 323 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_top_k_keeps_the_highest_scoring_jobs
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
@@ -186,6 +186,44 @@ would otherwise become 31 applications. `<stamp>_results_all_jobs.csv`
 scores in four separate columns. A budget drop renders a **blank** `llm_score`, not
 the `0` that `filtered_result` puts in the model — printing that zero reads as a
 verdict and is what hid the broken reranker for an entire run.
+
+### The reports are written by the engine and published by the skills
+
+`hireshire/reporting/` renders two HTML pages per sweep: `<stamp>_matching.html`
+in the run folder (the LLM's four rationales per scored job, then every job that
+was never scored) and `dashboard.html` at the results root (every run the install
+has done). Both exist because the reasoning had nowhere to go — it was written to
+`matches.raw_json` and rendered nowhere, so an empty shortlist was indistinguishable
+from a broken threshold.
+
+**The engine writes them; a skill only publishes them.** That is what makes them
+appear on unattended monitor sweeps where no agent turn exists, costs no tokens,
+and keeps the skills reporting numbers they were handed — the same rule as
+`--status` and `--paths`.
+
+Four consequences that should not be re-derived:
+
+- **Two envelopes, and mixing them breaks the page.** The Artifact tool wraps what
+  it publishes in its own `<!doctype html>…<head></head><body>`, so `matching.py`
+  emits **body content only**. `dashboard.py` is local-only and emits a complete
+  document. The matching report therefore renders in quirks mode when opened from
+  disk, which is why the shared CSS sets `box-sizing` explicitly and avoids
+  percentage heights.
+- **`matching.TITLE` is stable across runs and must stay that way.** The skills
+  find the existing artifact by that title (`Artifact action:"list"`) and
+  republish to its URL, which is the entire mechanism behind one rolling link. Put
+  the run date in the title and every sweep creates a new artifact.
+- **Nothing may raise.** `reporting.refresh` swallows everything and the writers
+  return `None` on failure, because it is called from the pipeline's own progress
+  callbacks — the same trade `write_all_jobs_csv` documents.
+- **The dashboard's meta refresh is armed only while the pipeline's `runs` row is
+  absent**, so the final refresh must run *after* `finalise_run`. Refreshing before
+  it leaves a finished run reloading itself forever.
+
+Live updates are bounded by the funnel, not by the renderer: `run_companies` and
+`jobs` fill continuously, but `matches` stays empty until the sentinel because
+top-K is global. So scrape counts stream and rationales arrive in the last two
+minutes. Both pages say so rather than showing "0 scored" as if it were a verdict.
 
 ### Layer 2 — the engine
 

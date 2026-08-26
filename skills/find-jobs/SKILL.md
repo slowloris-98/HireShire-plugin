@@ -31,6 +31,9 @@ on; only mention it when reporting where the results landed.
 
 ## Run it
 
+Start the sweep as a **background** task, so the reports below can be published
+while it is still going:
+
 ```bash
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" orchestrate.py --once
 ```
@@ -41,6 +44,18 @@ interpreter on macOS, Linux and Windows and runs inside the plugin venv.
 This takes roughly 20 minutes on the default board set, most of it rate-limited
 waiting on the boards themselves. Tell the user that up front. If they enabled
 Workday and BambooHR at setup, expect considerably longer.
+
+**Give them the dashboard path in the same breath**, because it is what makes the
+wait legible:
+
+```
+<results root>/dashboard.html
+```
+
+The engine rewrites it every few seconds and it reloads itself while a sweep is
+running, so opening it in a browser shows employers and postings climbing in real
+time. The results root is `<workspace_dir>/hireshire_run_results/`, or
+`<DATA>/results/` when `workspace_dir` is empty.
 
 If the plugin venv is not ready — a fresh install, or one whose setup never
 finished — the launcher installs it first, which adds a one-time ~2.5 GB download
@@ -57,6 +72,42 @@ What happens inside, in case they ask why it is not instant:
 
 Step 5 is why the run is affordable. Everything before it exists to make sure the
 budget is spent on the right jobs.
+
+## While it runs — publish the match report
+
+The engine writes an HTML report of the run to
+`<results root>/latest_matching.html` and keeps it current. Publish that file with
+the **Artifact** tool, and keep republishing it as the sweep advances.
+
+**Always publish to the same URL.** Before the first publish, call the Artifact
+tool with `action: "list"` and look for an artifact titled **HireShire Match
+Report**. If it is there, pass its `url` on every publish so this run replaces the
+last one. If it is not, publish without a `url` — that first call creates it, and
+every later call in this session can just republish the same file path.
+
+Never invent the path. Take it from `latest_matching_html` in `<DATA>/last_run.json`
+once the run has written one, or build it from the results root you already
+resolved above.
+
+To catch the sweep advancing, watch the engine log with the **Monitor** tool:
+
+```bash
+tail -f "<DATA>/logs/orchestrate.log" | grep -E --line-buffered "Sweep progress:|Budget:|Matcher done|Pipeline complete|Pipeline failed|Traceback"
+```
+
+Republish the artifact on each line that arrives, and relay the line to the user in
+a few words. The filter deliberately covers the failure signatures as well as the
+progress ones: a filter that matched only good news would stay silent through a
+crash, and silence looks exactly like a sweep still running.
+
+Expect four or five lines in total. Do not add a poll loop of your own on top of
+this, and do not republish more often than the lines arrive — the page cannot
+change faster than the engine rewrites it.
+
+One thing to say plainly if the user asks why the report shows no scores for most
+of the run: **scoring happens at the end**. Top-K is a decision across the whole
+sweep, so no job can be scored until every job has been seen. The scrape counts are
+live; the reasoning arrives in the last couple of minutes.
 
 ## Report back
 
@@ -75,6 +126,12 @@ folder of their own.
 Read the CSV and show the shortlisted jobs as a table sorted by score — title,
 company, location, score, and the URL. Give them the path too.
 
+Republish the match report one last time now that the run is finished, and give
+them the artifact link alongside the CSV path. That page is where the *reasoning*
+lives — the four rationales behind every score, and the full list of jobs that
+were considered but never scored. It answers "why didn't I see that job?", which
+the CSV cannot. Point them at it especially when the shortlist is empty.
+
 If the run reports it could not write the CSV, the file was locked — almost always
 open in Excel. The results are safe in the database; tell them to close it and
 re-run to get the CSV.
@@ -83,7 +140,8 @@ Two things worth surfacing if the numbers warrant it:
 
 - **Nothing shortlisted?** The threshold may be too high, or the target titles
   too narrow. Both are one `/hireshire:setup` answer away. Do not just report
-  zero and stop.
+  zero and stop — send them to the match report, which shows exactly how close
+  the best jobs came and what the judge held against them.
 - **A lot of jobs over budget?** The run summary reports how many cleared every
   gate but lost the top-K race. Those are recorded with
   `rerank_below_top_k` and stay eligible next run, so raising `top_k` recovers
