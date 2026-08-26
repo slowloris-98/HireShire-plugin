@@ -17,6 +17,7 @@ import json
 import logging
 import logging.handlers
 import os
+import threading
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 import matcher
 import scraper
-from hireshire import paths
+from hireshire import paths, reporting
 from hireshire.results_export import all_jobs_name, write_all_jobs_csv
 from hireshire.storage.db import PHASE_PIPELINE, get_db
 
@@ -268,6 +269,7 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
     )
 
     json_path = results_dir / _json_name(stamp)
+    report_targets = reporting.report_paths(results_dir, stamp)
     try:
         json_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
     except OSError as exc:
@@ -292,6 +294,13 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
                     # so a human (or a later skill) can find the diagnostic without
                     # guessing at the results root.
                     "all_jobs_csv": str(all_jobs_path) if all_jobs_path else None,
+                    # Also additive. `matching_html` is the file the find-jobs and
+                    # start-orchestration skills publish; `latest_matching_html` is
+                    # the fixed path they publish *from*, so every sweep redeploys
+                    # to one artifact URL instead of leaving a trail of stale pages.
+                    "matching_html": str(report_targets["matching"]),
+                    "latest_matching_html": str(report_targets["latest_matching"]),
+                    "dashboard_html": str(report_targets["dashboard"]),
                     "total_results": len(rows),
                     "total_jobs_considered": len(all_rows),
                 },
@@ -306,6 +315,34 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
         db.finalise_run, run_id, PHASE_PIPELINE, started_at, None,
         {"total_results": len(rows)},
     )
+
+    # Last, and deliberately after `finalise_run`: the reports read the pipeline's
+    # own `runs` row to decide whether the sweep is still going, and that is what
+    # arms the dashboard's meta refresh. Refreshing before this line would leave a
+    # finished run reloading itself forever.
+    await asyncio.to_thread(reporting.refresh, run_id, results_dir, stamp, True)
+
+
+# Quarters, not a percentage every company. The find-jobs skill tails the log for
+# these to know when to republish its report artifact, and every line it matches
+# becomes a message in the user's session — so there are four of them for a sweep
+# that visits ~10,000 employers, and they are worded to be readable on their own.
+_SCRAPE_MILESTONES = (25, 50, 75)
+REPORT_MILESTONE_PREFIX = "Sweep progress:"
+
+
+def _log_scrape_milestone(done: int, total: int, seen: set[int]) -> None:
+    """Log a one-line progress marker as the sweep crosses each quarter."""
+    if total <= 0:
+        return
+    pct = 100 * done // total
+    for mark in _SCRAPE_MILESTONES:
+        if pct >= mark and mark not in seen:
+            seen.add(mark)
+            logger.info(
+                "%s %d%% — %d of %d employers swept", REPORT_MILESTONE_PREFIX,
+                mark, done, total,
+            )
 
 
 def _make_progress() -> Progress:
@@ -353,8 +390,32 @@ async def run_pipeline(
     progress = _make_progress()
     tasks: dict[str, int] = {}          # phase → task id (only active phases get one)
     counts = {"match": 0}               # the match phase has no known total → count up
+    milestones: set[int] = set()        # scrape quarters already logged, see below
+
+    # The reports are rebuilt off the event loop and at most one at a time. Both
+    # halves matter: the callbacks below fire thousands of times on a full sweep,
+    # and `reporting.refresh` does blocking SQLite work, so calling it inline would
+    # stall the very loop that is fetching boards. `reporting` throttles on top of
+    # this, so the executor is normally handed a no-op.
+    report_busy = threading.Lock()
+
+    def _refresh_reports() -> None:
+        if not report_busy.acquire(blocking=False):
+            return
+        try:
+            reporting.refresh(run_id, results_dir, stamp)
+        finally:
+            report_busy.release()
+
+    def schedule_report_refresh() -> None:
+        try:
+            asyncio.get_running_loop().run_in_executor(None, _refresh_reports)
+        except RuntimeError:
+            pass  # no loop (never in practice); a missed refresh is not worth raising
 
     def on_company_start(name: str, board: str, done: int, total: int) -> None:
+        schedule_report_refresh()
+        _log_scrape_milestone(done, total, milestones)
         if "scrape" not in tasks:
             tasks["scrape"] = progress.add_task(
                 "[bold]Scraping[/bold]", total=total, count_str=f"0/{total}"
@@ -368,6 +429,7 @@ async def run_pipeline(
         )
 
     def on_job_score(board_token: str, title: str) -> None:
+        schedule_report_refresh()
         counts["match"] += 1
         progress.update(
             tasks["match"],

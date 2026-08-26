@@ -6,6 +6,45 @@ All notable changes to this plugin are documented here. Versions follow
 
 ## [0.3.0] — unreleased
 
+### Added
+
+- **Every sweep now writes two HTML reports, and the skills publish one of them.**
+  The scoring prompt returns four rationales per job — core skills, experience,
+  education, and the reasons for and against — and until now all of it went into
+  the `matches` table's `raw_json` and was never rendered anywhere. A run that
+  shortlisted nothing left the user with a CSV of numbers and no way to see that
+  the best job scored 61 because the judge discounted project work against
+  professional work. That sentence was in the database the whole time.
+
+  `<run>/<stamp>_matching.html` is the reasoning, ranked, followed by every job
+  that was considered and never scored — the all-jobs CSV in a form a person can
+  read, with a filter box over it. `dashboard.html`, at the root of the results
+  folder, is every sweep the install has ever done: employers, postings, reranked,
+  scored, shortlisted, applied.
+
+  The **engine** writes both, not the agent. That is what makes them appear on
+  unattended sweeps too, costs no tokens, and keeps the skills reporting numbers
+  they were handed rather than numbers they assembled.
+
+- **The dashboard is live.** It rewrites itself every few seconds during a sweep
+  and reloads itself in the browser while one is running, so the ~20 minutes of
+  rate-limited waiting is finally legible. The meta refresh is armed only while
+  the pipeline's own run row is absent — a finished run stops reloading rather
+  than looking like one that never ended.
+
+  What can stream is stated honestly on the page: the scrape counts do, the
+  reasoning cannot. Top-K is a decision across the whole sweep, so no job is
+  scored until every job has been seen, and all the rationales land in the last
+  couple of minutes.
+
+- **One rolling artifact instead of a trail of them.** `/hireshire:find-jobs`
+  republishes the match report as the sweep advances (four or five times, off
+  milestone lines in the engine log); `/hireshire:start-orchestration` republishes
+  once per completed cycle, deliberately not on milestones — an unattended sweep
+  running for hours should not put several messages a cycle into the session. Both
+  find the existing artifact by its stable title and republish to the same URL, so
+  the user keeps one bookmark.
+
 ### Changed
 
 - **Setup no longer asks permission for its own plumbing.** A first-time install

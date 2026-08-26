@@ -248,6 +248,105 @@ class Database:
                  json.dumps(stats or {}, default=str)),
             )
 
+    # -- reporting reads -----------------------------------------------------
+    #
+    # The four below back `hireshire.reporting`. They are counts rather than row
+    # loads on purpose: they are called repeatedly *during* a sweep to refresh a
+    # live page, so none of them may pull a run's worth of rows into memory.
+    # `load_all_matches` remains the row-level read, and is called once per
+    # refresh only after the matches actually exist.
+
+    def scrape_counts(self, run_id: str) -> dict[str, int]:
+        """How far the sweep has got. Cheap enough to poll every few seconds.
+
+        `companies` counts what has been *recorded*, which grows through the run —
+        that is the point, and it is why this is not read out of the scrape phase's
+        `stats_json`, which does not exist until the phase finishes.
+        """
+        with self._lock:
+            companies = self._conn.execute(
+                "SELECT COUNT(*) AS n, "
+                "       SUM(CASE WHEN job_count > 0 THEN 1 ELSE 0 END) AS with_jobs, "
+                "       SUM(CASE WHEN error IS NOT NULL AND error != '' THEN 1 ELSE 0 END) AS errors "
+                "FROM run_companies WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            jobs = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM jobs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return {
+            "companies": companies["n"] or 0,
+            "companies_with_jobs": companies["with_jobs"] or 0,
+            "errors": companies["errors"] or 0,
+            "jobs": jobs["n"] or 0,
+        }
+
+    def match_counts(self, run_id: str) -> dict[str, int]:
+        """The funnel's lower half, grouped by what happened to each job.
+
+        `by_reason` is keyed by `skip_reason` with the empty string standing in for
+        NULL, so callers can tell "scored" from "dropped for reason X" without a
+        second query. Note that title-gate rejections are deliberately absent —
+        they are never written per-row (there can be tens of thousands), so the
+        top of the funnel comes from `scrape_counts` instead.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT COALESCE(skip_reason, '') AS reason, COUNT(*) AS n "
+                "FROM matches WHERE run_id=? GROUP BY reason",
+                (run_id,),
+            ).fetchall()
+            totals = self._conn.execute(
+                "SELECT COUNT(*) AS rows_total, "
+                "       SUM(CASE WHEN shortlisted=1 THEN 1 ELSE 0 END) AS shortlisted, "
+                "       SUM(CASE WHEN relevance_score IS NOT NULL AND "
+                "                     (skip_reason IS NULL OR skip_reason='') "
+                "                THEN 1 ELSE 0 END) AS scored, "
+                "       MAX(CASE WHEN skip_reason IS NULL OR skip_reason='' "
+                "                THEN relevance_score END) AS top_score "
+                "FROM matches WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        return {
+            "rows_total": totals["rows_total"] or 0,
+            "scored": totals["scored"] or 0,
+            "shortlisted": totals["shortlisted"] or 0,
+            "top_score": totals["top_score"],
+            "by_reason": {r["reason"]: r["n"] for r in rows},
+        }
+
+    def run_phase_stats(self, run_id: str) -> dict[str, dict]:
+        """The `stats_json` blob for each phase of a run, keyed by phase.
+
+        Only populated once a phase calls `finalise_run`, so a live page must treat
+        every key as absent rather than zero.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT phase, started_at, finished_at, stats_json FROM runs WHERE run_id=?",
+                (run_id,),
+            ).fetchall()
+        out: dict[str, dict] = {}
+        for r in rows:
+            try:
+                stats = json.loads(r["stats_json"] or "{}")
+            except json.JSONDecodeError:
+                stats = {}
+            stats["started_at"] = r["started_at"]
+            stats["finished_at"] = r["finished_at"]
+            out[r["phase"]] = stats
+        return out
+
+    def recent_runs(self, limit: int = 30) -> list[dict]:
+        """Newest-first run index for the dashboard: run_id and its time span."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT run_id, MIN(started_at) AS started_at, MAX(finished_at) AS finished_at "
+                "FROM runs GROUP BY run_id ORDER BY started_at DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     # -- scraper -------------------------------------------------------------
 
     def record_company(
