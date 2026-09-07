@@ -15,8 +15,25 @@ class MatcherSettings(BaseModel):
     threshold: int = Field(70, ge=0, le=100)  # min relevance_score to shortlist
     concurrency: int = 1
     provider: str | None = None  # None = fall back to LLM_PROVIDER env var
-    model: str = "gemini-2.0-flash"
-    effort: str = "medium"  # claude_code thinking level: low|medium|high|xhigh|max
+    # Defaults match the default provider. `provider=None` resolves to claude_code,
+    # so a model name from another vendor here made a fresh install fail on its first
+    # scoring call for no reason the user could see.
+    #
+    # Sonnet rather than Haiku, deliberately, and not only for accuracy: `effort`
+    # is unsupported on Haiku. The model-config docs list Fable, Opus 5/4.8/4.7,
+    # Sonnet 5, Opus 4.6 and Sonnet 4.6, then say "models not listed here do not
+    # support effort" — and it degrades silently, falling back to the highest
+    # supported level at or below the one asked for. Shipping Haiku would mean
+    # shipping an `effort` knob that does nothing. Haiku's 4,096-token minimum
+    # cacheable prefix is the second reason: the rubric-plus-resume prefix built in
+    # scorer.score would likely fall under it and silently never cache.
+    model: str = "sonnet"
+    # Thinking level: low|medium|high|xhigh|max. Thinking tokens bill as output, and
+    # once the resume prefix is cached they are the dominant cost of a sweep — which
+    # matters because scoring draws on the same allowance as the user's own Claude
+    # chat. Medium is the default because no per-level token figure is published, so
+    # the honest way to raise it is to measure a small run at each level first.
+    effort: str = "medium"
     max_content_chars: int = 8000
     resume_path: str = "resume.pdf"
     projects_path: str = ""  # optional markdown file appended to candidate profile

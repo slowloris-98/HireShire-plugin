@@ -24,18 +24,19 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 323 tests, no network, no model weights
+pytest                                # 343 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
-pytest tests/test_budget.py::test_top_k_keeps_the_highest_scoring_jobs
+pytest tests/test_budget.py::test_only_jobs_reaching_the_cutoff_are_judged
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
 sh scripts/hireshire.sh --status      # is a recurring sweep running?
 sh scripts/hireshire.sh --approve     # PreToolUse guard; hook payload on stdin
 
 # Engine, from a checkout (falls back to ./data when the plugin env vars are unset)
 python scraper.py                     # sweep the enabled boards
-python matcher.py                     # gate → rerank → top-K → score
+python matcher.py                     # gate → rerank → cutoff → score
 python orchestrate.py --once          # both, writing a results CSV
 python scripts/verify_bad_slugs.py --prune
+python scripts/calibrate_cutoffs.py   # what rerank.min_score should be, from real runs
 
 # Engine, as the plugin runs it (re-execs into the venv in the data dir)
 python scripts/run_engine.py orchestrate.py --once
@@ -112,36 +113,53 @@ location + age      free
 exclude keywords    free                          funnel.py:54
 bi-encoder          cheap, TITLE only             relevance.py — a recall net
 detail hydration    only for DETAIL_SOURCES       detail_fetcher.py:20
-cross-encoder       full description, 2 stages    rerank.py
-  wide   17m        every candidate
-  refine 68m        top `refine.depth` only
 cluster             one call per requisition      cluster.py
-top-K               user-set budget → LLM         matcher.py:_spend_budget
+cross-encoder 68m   full description → logit      rerank.py
+min_score cutoff    per job, per batch → LLM      matcher.py:_process_batch
+top_k               a fuse on calls, not a gate   matcher.py:_CallBudget
 ```
 
-Four things follow from this that are easy to break:
+**Every stage is a per-job decision, and that is the design.** Selection used to be a
+global top-K over the pooled sweep, which meant no job could be judged until every
+job had been seen — the queue architecture bought nothing for the part the user waits
+on. A cutoff is a statement about one job against one profile, so the whole pipeline
+now streams: scrape → gate → hydrate → cluster → rerank → judge, one employer at a
+time. Applying stays a separate phase; see the note in `orchestrate.py`.
 
-- **The bi-encoder threshold is deliberately low (0.25).** It is a recall net, not
-  a verdict. Raising it discards exactly the differently-worded jobs the reranker
-  exists to catch. Note also that max-over-targets rises with the number of anchors,
-  so a longer `targets` list loosens the gate further on its own.
-- **Top-K is global, so it cannot be computed per batch.** A queue batch is one
-  employer's postings; ranking within it would compare a company against itself.
-  Survivors pool for the whole sweep and the budget is spent once the sentinel
-  arrives. This defers scoring to the end of the run, which costs almost nothing —
-  the sweep is rate-limit-bound at ~20 min, scoring `top_k` jobs is ~1 min.
+Five things follow that are easy to break:
+
+- **Only the cutoff costs money.** Both gates before it run locally. Tightening the
+  bi-encoder buys CPU seconds and skipped detail fetches, never LLM calls, and pays
+  for them in recall at the *title-only* stage. This is the single most common wrong
+  instinct about this funnel.
+- **The bi-encoder threshold is deliberately low (0.25)** and does not transfer
+  between users. Outside tech, titles are branded and generic (Account Manager,
+  Client Partner, Growth Partner), so their cosines bunch into a narrow band and a
+  threshold tuned on engineering titles passes everything or nothing. Note also that
+  max-over-targets rises with the number of anchors, so a longer `targets` list
+  loosens the gate further on its own.
+- **`min_score` is a raw logit and is personal.** Not a probability, not comparable
+  between users, and void the moment `rerank.model` changes. `scripts/calibrate_cutoffs.py`
+  derives it from the user's own `matches` rows; the shipped 0.0 is a defensible
+  starting point (the models' own decision boundary), not a tuned value.
+- **Clustering still works per batch, and this is load-bearing.** `cluster_key` is
+  `(board_token, normalised_title)` and the scraper emits one employer per queue item,
+  so every member of a cluster is in the same batch by construction. That is what let
+  top-K go without 31 copies of a requisition becoming 31 LLM calls.
 - **Greenhouse/Ashby/Lever ship the description in the list response**
   (`greenhouse.py:89`, `ashby.py:54`, `lever.py:59`). Only Workday, BambooHR and the
   direct portals need hydration. That is why full-text reranking is free on the
   default board set, and why the title-only gates exist at all.
-- **The two rerank stages emit incomparable logit scales.** Never sort, average or
-  threshold `rerank_score_wide` against `rerank_score` — they come from different
-  models. `RerankScores.sort_key` is the only sanctioned ordering: refined always
-  outranks unrefined, ties break within one model's scale. This is sound only
-  because `refine.depth >= top_k`, which `FunnelConfig` enforces at load. The
-  original single-stage reranker failed silently for a whole run (correlation with
-  the eventual LLM score: **+0.16**), so a mis-ranking here is not hypothetical —
-  it is the exact bug this design replaced, and it leaves no error behind.
+
+The rerank cascade is gone. A 17m model used to read everything and the 68m re-read
+the top `refine.depth`, which existed solely to make a global top-K affordable — and
+cost a permanent hazard, since the two stages emitted incomparable logit scales that
+any naive sort silently mixed. The 68m model now reads every candidate, spread across
+the sweep rather than run in one block, and there is one scale. `rerank_score_wide`
+survives as a **read-only** column: rows written before the collapse carry it, the
+reports render them, and nothing writes it any more. The single-stage reranker that
+preceded all of this failed silently for a whole run (correlation with the eventual
+LLM score: **+0.16**), which is why `RerankConfig` documents its scale so heavily.
 
 Note also why `max_doc_chars` is generous now: the old 1,200-char cap truncated
 **41% of descriptions before their first requirements heading** (median heading
@@ -151,11 +169,17 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
 
 ### Two invariants with teeth
 
-- **Budget drops must not be marked seen.** `matcher.py` writes every result into
-  `seen_jobs` except `_RETRYABLE_SKIP_REASONS`. A job that misses the cut in one
-  crowded sweep has to stay eligible — `max_age_hours: 24` with a 4-hour poll means
-  it resurfaces ~6 times, and it may win later against weaker competition. Marking
-  it seen retires it permanently on the strength of one run.
+- **A job may be retired on a verdict, never on a deferral or an error**, and the two
+  rerank drops sit on opposite sides of that line. `llm_call_cap_reached` is a
+  deferral — the run ran out of calls, and the job may be the best thing in a quieter
+  sweep — so it stays in `_RETRYABLE_SKIP_REASONS`. `rerank_below_cutoff` is a
+  verdict and is deliberately absent: same profile, same model, same description
+  means the same logit, so with `max_age_hours: 24` and a 4-hour poll, retrying it
+  would re-run one deterministic computation ~6 times a day to reach the same answer,
+  and it has nothing to win against. Getting this backwards in either direction is a
+  real bug: one wastes the funnel, the other permanently discards a job that was only
+  unlucky. `rerank_below_top_k` stays listed as retryable for rows written before the
+  split.
 - **The search profile never reaches the scoring prompt.** It states transferable
   and inferred framing ("React → component-based UI development"). It is the
   reranker's query only. A judge reading it would credit the candidate for skills
@@ -168,10 +192,10 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
   is scored and the verdict is copied to every sibling, so all 31 copies keep their
   own location and link in the all-jobs export. Siblings carry
   `duplicate_of_cluster`, which must stay **out** of `_RETRYABLE_SKIP_REASONS`: they
-  have been judged, just by proxy. Members of a *losing* cluster keep
-  `rerank_below_top_k` and stay retryable. The normaliser is biased toward doing
-  nothing — over-merging costs the user a match they never learn existed, while
-  under-merging costs only a budget slot.
+  have been judged, just by proxy. Members of a cluster that misses the cut inherit
+  the representative's drop reason, so their retryability follows the rule above. The
+  normaliser is biased toward doing nothing — over-merging costs the user a match
+  they never learn existed, while under-merging costs only one LLM call.
 
 Note that `MatchStore.finalise` records only summary stats — individual rows reach
 the `matches` table via `append_result`. Budget drops and cluster siblings are
@@ -220,10 +244,16 @@ Four consequences that should not be re-derived:
   absent**, so the final refresh must run *after* `finalise_run`. Refreshing before
   it leaves a finished run reloading itself forever.
 
-Live updates are bounded by the funnel, not by the renderer: `run_companies` and
-`jobs` fill continuously, but `matches` stays empty until the sentinel because
-top-K is global. So scrape counts stream and rationales arrive in the last two
-minutes. Both pages say so rather than showing "0 scored" as if it were a verdict.
+All three tables now fill continuously — `run_companies`, `jobs` and `matches` — because
+selection is a per-job cutoff and each employer's batch is judged as it arrives. Both
+pages' copy was rewritten for that; it used to explain that nothing could be scored
+until the sentinel, which was true under top-K and is now a lie the reader would catch.
+
+The per-stage counts (`gated → reranked → above cutoff → judged`) exist for a failure
+mode the cutoff introduced: under a ranking, something was always scored, so an empty
+shortlist could only mean weak jobs. Under a cutoff it can equally mean `min_score` is
+wrong for this resume, and the two are indistinguishable without the counts. A large
+"reached the reranker" with zero above the cutoff is the tell.
 
 ### Layer 2 — the engine
 

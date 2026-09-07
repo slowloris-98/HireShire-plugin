@@ -12,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from hireshire.funnel.cluster import cluster_key, group, normalise_title, pick_representative
-from hireshire.funnel.rerank import RerankScores
 from hireshire.models.job import Job
 
 
@@ -124,36 +123,20 @@ def test_representative_is_the_best_scoring_member():
     """The cluster is judged on its strongest copy, not whichever was scraped
     first — otherwise scrape order decides what the LLM sees."""
     members = [make_job("1", "AM"), make_job("2", "AM"), make_job("3", "AM")]
-    scores = {
-        "1": RerankScores(wide=-4.0, refined=-3.0),
-        "2": RerankScores(wide=-1.0, refined=-0.5),  # best
-        "3": RerankScores(wide=-2.0, refined=-2.5),
-    }
+    scores = {"1": -3.0, "2": -0.5, "3": -2.5}  # "2" is best
     assert pick_representative(members, scores).job_id == "2"
-
-
-def test_a_refined_member_beats_an_unrefined_one_with_a_bigger_number():
-    """Same scale trap as the budget: refinement dominates the raw float."""
-    members = [make_job("1", "AM"), make_job("2", "AM")]
-    scores = {
-        "1": RerankScores(wide=-9.0, refined=-8.0),
-        "2": RerankScores(wide=99.0),
-    }
-    assert pick_representative(members, scores).job_id == "1"
 
 
 def test_ties_break_toward_the_most_recent_posting():
     """Equal scores: prefer the freshest, which is likeliest to still be open."""
     old = make_job("old", "AM", age_days=30)
     new = make_job("new", "AM", age_days=1)
-    scores = {
-        "old": RerankScores(wide=-1.0, refined=-1.0),
-        "new": RerankScores(wide=-1.0, refined=-1.0),
-    }
-    assert pick_representative([old, new], scores).job_id == "new"
+    assert pick_representative([old, new], {"old": -1.0, "new": -1.0}).job_id == "new"
 
 
 def test_a_member_with_no_score_never_wins():
+    """Missing means the reranker never saw it, so the cluster should still be
+    represented by a copy that *was* scored — including one with a negative logit,
+    which is why the fallback is -inf rather than 0."""
     members = [make_job("scored", "AM"), make_job("unscored", "AM")]
-    scores = {"scored": RerankScores(wide=-5.0)}
-    assert pick_representative(members, scores).job_id == "scored"
+    assert pick_representative(members, {"scored": -5.0}).job_id == "scored"

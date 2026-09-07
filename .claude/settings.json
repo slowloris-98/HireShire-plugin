@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_budget.py -q)",
+      "Bash(python -c ' *)",
+      "Bash(python -m pytest tests/test_scoring_cost.py -q)",
+      "Bash(cp matcher.py /tmp/matcher.bak)",
+      "Bash(python -m pytest tests/test_skip_llm_run.py::test_results_are_emitted_before_the_sweep_finishes -q)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
+    ]
+  }
+}

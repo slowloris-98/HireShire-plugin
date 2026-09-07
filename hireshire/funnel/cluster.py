@@ -111,19 +111,23 @@ def group(jobs: Iterable[_Clusterable]) -> dict[tuple[str, str], list]:
     return clusters
 
 
-def pick_representative(members: Sequence, scores: dict[str, object]) -> object:
+def pick_representative(members: Sequence, scores: dict[str, float]) -> object:
     """Choose which member of a cluster spends the LLM call.
 
     Best rerank score wins, so the cluster is judged on its strongest copy rather
     than whichever happened to be scraped first. Ties break toward the most recently
     updated posting, which is the one most likely to still be open.
 
-    `scores` maps job_id -> RerankScores; its `sort_key` keeps the two rerank stages
-    on their own scales (see funnel/rerank.py).
+    `scores` maps job_id -> the cross-encoder logit. One model, one scale, so a plain
+    comparison is sound — this used to need `RerankScores.sort_key` to keep a wide
+    and a refined pass from being compared against each other.
+
+    A member missing from `scores` sorts last rather than raising: it means the
+    reranker never saw it, and the cluster should still be represented by whichever
+    copy *was* scored.
     """
     def rank(job):
         score = scores.get(job.job_id)
-        key = score.sort_key if score is not None else (0, float("-inf"))
-        return (key, job.updated_at)
+        return (score if score is not None else float("-inf"), job.updated_at)
 
     return max(members, key=rank)

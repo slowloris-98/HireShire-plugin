@@ -27,6 +27,82 @@ SYSTEM_PROMPT = SCORER_SYSTEM_PROMPT
 SCORING_ERROR_SKIP_REASONS = frozenset({"api_error", "unexpected_error", "backend_unavailable"})
 
 
+class UsageTally:
+    """What a run's scoring actually cost, accumulated across calls.
+
+    Scoring draws on the same allowance as the user's own Claude chat — a 5-hour
+    rolling window plus a weekly one — so "how much did that sweep cost me" is a fair
+    question with, until now, no answer anywhere in the product. The `-p` JSON
+    envelope carries the numbers; this keeps them.
+
+    `cache_read` is the one to watch. The resume and rubric are identical on every
+    call of a run, so from the second judged job onward it should dominate `input`.
+    If it stays at zero, the cached prefix is not byte-identical and the run is paying
+    full price to re-read the same resume 150 times.
+
+    `cost_usd` is the CLI's own client-side estimate, computed from token counts at
+    list price. On a subscription it is not a bill — it is a relative measure, useful
+    for comparing effort levels or model choices, and it must be presented that way.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.input = 0
+        self.output = 0
+        self.cache_read = 0
+        self.cache_write = 0
+        self.cost_usd = 0.0
+
+    def record(self, envelope) -> None:
+        """Add one call's usage. Silent on anything unexpected.
+
+        Never raises and never logs a failure: this is instrumentation hanging off
+        the scoring path, and a CLI version that renames a field must not be able to
+        turn a working sweep into a failed one. Missing numbers show up as a zero in
+        the summary, which is the correct signal that the meters are not being read.
+        """
+        if not isinstance(envelope, dict):
+            return
+        self.calls += 1
+        try:
+            self.cost_usd += float(envelope.get("total_cost_usd") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        usage = envelope.get("usage")
+        if not isinstance(usage, dict):
+            return
+
+        def _n(*keys: str) -> int:
+            for k in keys:
+                v = usage.get(k)
+                if isinstance(v, (int, float)):
+                    return int(v)
+            return 0
+
+        self.input += _n("input_tokens")
+        self.output += _n("output_tokens")
+        self.cache_read += _n("cache_read_input_tokens")
+        # `cache_creation` is an object split by TTL on current versions and was a
+        # flat count before, so accept either shape.
+        created = usage.get("cache_creation")
+        if isinstance(created, dict):
+            self.cache_write += sum(v for v in created.values() if isinstance(v, (int, float)))
+        else:
+            self.cache_write += _n("cache_creation_input_tokens", "cache_creation")
+
+    @property
+    def empty(self) -> bool:
+        return self.calls == 0
+
+    def summary(self) -> str:
+        return (
+            f"Scoring usage: {self.calls} calls, {self.input:,} input + "
+            f"{self.output:,} output tokens, {self.cache_read:,} read from cache, "
+            f"{self.cache_write:,} written to it (~${self.cost_usd:.2f} at list price, "
+            f"an estimate, not a bill)"
+        )
+
+
 class ScoringSchema(BaseModel):
     years_experience_required: Optional[float] = None
     core_skills_score: int
@@ -50,24 +126,24 @@ class MatchResult(BaseModel):
     relevance_score: Optional[int] = None  # None = never scored (skip_llm)
 
     # --- Funnel scores -------------------------------------------------------
-    # Four numbers on FOUR DIFFERENT SCALES. Each is ordinal within itself and none
-    # is comparable to any other — a rerank logit is not a percentage and the two
-    # rerank stages do not share a range. Anything that sorts or displays them must
-    # keep them in separate columns.
+    # Numbers on DIFFERENT SCALES. Each is ordinal within itself and none is
+    # comparable to any other — a rerank logit is not a percentage. Anything that
+    # sorts or displays them must keep them in separate columns.
     #
     # Bi-encoder cosine (0-1) of the TITLE against the configured target roles.
     # The number that explains a `title_low_relevance` drop; it used to be computed
     # against the threshold and thrown away.
     encoder_score: Optional[float] = None
-    # Wide-pass cross-encoder logit over the full description. Present for every
-    # reranked job.
+    # Written only by runs made under the old two-model rerank cascade, where a cheap
+    # pass scored everything and an accurate one re-scored the best few hundred. There
+    # is one model now, so nothing writes this — it stays because the reports render
+    # historical rows and a missing column would break them.
     rerank_score_wide: Optional[float] = None
-    # Refined cross-encoder logit — a different model, so NOT comparable to
-    # rerank_score_wide. Present only for the top `refine.depth`; this is the number
-    # that decided whether the job was worth an LLM call. None when reranking was
-    # off or the job never reached the refine pass.
+    # Cross-encoder logit over the full description: the number that decided whether
+    # the job was worth an LLM call. None when reranking was off or unusable.
     rerank_score: Optional[float] = None
-    # Which stage last judged this job: "wide", "refined", or None.
+    # Which pass produced `rerank_score`: "single" now, "wide" or "refined" on rows
+    # from before the cascade was collapsed.
     rerank_stage: Optional[str] = None
 
     # --- Clustering ----------------------------------------------------------
@@ -302,6 +378,14 @@ class ClaudeCodeBackend:
     one returns raw stdout as a str, while `LLMBackend.call` must return a
     ScoringSchema. Rather than regex-scraping prose we ask the CLI for structured
     output (`--output-format json --json-schema`) and validate the result.
+
+    NOTE for whoever hits it: the headless docs say `--bare` "will become the default
+    for `-p` in a future release", and separately that in bare mode "Claude Code never
+    reads OAuth credentials or the system keychain". If both hold as written, a future
+    CLI release stops `claude -p` from using the subscription — which is the entire
+    basis of free scoring here. How auth is handled in that transition is not
+    documented, so this is a thing to watch, not a thing to pre-empt. Do not add
+    `--bare` to the argv below to "modernise" it; it would break scoring today.
     """
 
     def __init__(self, settings: MatcherSettings, sem: asyncio.Semaphore) -> None:
@@ -311,6 +395,7 @@ class ClaudeCodeBackend:
         self._sem = sem
         self._timeout = settings.claude_cli_timeout_s
         self._schema = json.dumps(ScoringSchema.model_json_schema())
+        self.usage = UsageTally()
 
     @staticmethod
     def _env() -> dict[str, str]:
@@ -331,11 +416,22 @@ class ClaudeCodeBackend:
             # C:\Users\...), which silently scored nothing. The only real bound is
             # argv length; see test_scoring_resilience.py, which pins the schema well
             # under it.
+            #
+            # `--no-session-persistence` (print mode only) stops each scored job
+            # leaving a transcript in ~/.claude/projects/. A 150-job sweep otherwise
+            # writes 150 of them, and — because Claude Code generates a title for
+            # every unnamed session with a background model request — bills the user
+            # ~150 extra calls against the same allowance, for titles nobody opens.
+            # `-p` sessions are already kept out of the /resume picker, so this is
+            # about the litter and the cost, not visibility. The env-var equivalent,
+            # CLAUDE_CODE_SKIP_PROMPT_HISTORY, suppresses transcripts in every mode;
+            # the process environment belongs to the user, so prefer the per-call flag.
             proc = await asyncio.create_subprocess_exec(
                 "claude", "-p",
                 "--system-prompt", system_prompt,
                 "--model", self._settings.model,
                 "--effort", self._settings.effort,
+                "--no-session-persistence",
                 "--output-format", "json",
                 "--json-schema", self._schema,
                 stdin=asyncio.subprocess.PIPE,
@@ -367,19 +463,27 @@ class ClaudeCodeBackend:
         # Raise on anything unparseable rather than returning a half-built result:
         # JobScorer.score catches it and records a per-job skip, which is a far
         # better outcome than a bogus score or a dead run.
-        return self._parse(stdout.decode(errors="replace"))
-
-    @staticmethod
-    def _parse(raw: str) -> ScoringSchema:
+        raw = stdout.decode(errors="replace")
         try:
             envelope = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"claude CLI returned non-JSON: {raw[:300]}") from exc
 
+        # Read the meters before unwrapping — the counts live on the envelope, and
+        # `_payload` throws it away. Recorded before validation deliberately: a call
+        # whose payload fails to parse was still billed.
+        self.usage.record(envelope)
+        return self._payload(envelope)
+
+    @staticmethod
+    def _payload(envelope) -> ScoringSchema:
         # `--output-format json` wraps the answer; the payload has moved between
         # CLI versions, so accept the envelope itself or any of the usual keys.
+        # `structured_output` is where the current CLI puts a `--json-schema`
+        # result — the rest are kept because older versions used them and this
+        # backend has no way to know which version is on PATH.
         if isinstance(envelope, dict):
-            for key in ("result", "response", "content", "output"):
+            for key in ("structured_output", "result", "response", "content", "output"):
                 if key in envelope:
                     envelope = envelope[key]
                     break
@@ -429,6 +533,9 @@ class JobScorer:
         # breaker quotes it, which is the difference between "0 new matches" and
         # "the scorer is broken, here is why".
         self.last_error: str | None = None
+        # Only backends that can read their own meters expose one; the rest leave
+        # this None and the caller says nothing rather than reporting zeros as fact.
+        self.usage: UsageTally | None = getattr(backend, "usage", None)
 
     async def score(self, job: Job, resume_text: str, run_id: str, projects_text: str = "") -> MatchResult:
         base = MatchResult(
@@ -453,15 +560,36 @@ class JobScorer:
         if projects_text:
             candidate_profile += f"\n\n## Additional Projects\n{projects_text}"
 
+        # The resume goes in the SYSTEM PROMPT, not the message. That looks odd —
+        # it is the candidate's data, not an instruction — and it is what makes
+        # scoring affordable.
+        #
+        # Prompt caching is a prefix match, and the request layers as system prompt
+        # then conversation. The rubric, the resume and the tool schema are byte-
+        # identical for every job in a run; only the posting changes. Putting the
+        # resume here makes that whole prefix the cached part, so the API bills it at
+        # roughly a tenth from the second judged job onward instead of reprocessing
+        # the resume 150 times. With the resume in the message, as it was, the
+        # unchanging half sat *behind* changing content and could never be cached.
+        #
+        # Two things this depends on, both worth knowing before rearranging it:
+        #   - Each `claude -p` call is its own conversation, but the API cache is
+        #     keyed by model and prefix, not by session, so separate invocations
+        #     share it. On a subscription the main conversation gets a one-hour TTL,
+        #     comfortably longer than a sweep.
+        #   - There is a minimum cacheable prefix, and it varies by model — 1,024
+        #     tokens on Sonnet 5, but 4,096 on Haiku 4.5. Below it, caching silently
+        #     does not happen. That is one of the reasons the shipped default is
+        #     Sonnet; see MatcherSettings.model.
+        # `UsageTally.cache_read` is how you check it is actually working.
+        system_prompt = f"{SYSTEM_PROMPT}\n## Candidate Resume\n{candidate_profile}"
         prompt = (
-            f"## Candidate Resume\n{candidate_profile}\n\n"
             f"## Job: {job.title} at {job.board_token}\n"
             f"{job.content_text[:self._settings.max_content_chars]}\n\n"
-            #"Score how well this candidate matches this job. Be specific and evidence-based."
         )
 
         try:
-            result = await self._backend.call(prompt, SYSTEM_PROMPT)
+            result = await self._backend.call(prompt, system_prompt)
         except Exception as exc:
             logger.warning("LLM call failed for job %s/%s: %s", job.board_token, job.job_id, exc)
             self.last_error = str(exc)

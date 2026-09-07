@@ -42,6 +42,11 @@ RUBRIC = (
 # a report; the rest are surfaced verbatim.
 REASON_LABELS = {
     "": "Scored by the LLM",
+    "rerank_below_cutoff": "Below the relevance cutoff — the cross-encoder read it and said no",
+    "llm_call_cap_reached": "Reached the run's call cap — still eligible next sweep",
+    # Written by runs made before selection became a cutoff. Nothing produces it any
+    # more, but the reports render historical rows and an unlabelled reason shows up
+    # verbatim, which reads as a bug.
     "rerank_below_top_k": "Over budget — lost the top-K race",
     "duplicate_of_cluster": "Duplicate requisition — verdict copied from its cluster",
     "no_content_text": "No description text to score",
@@ -100,7 +105,22 @@ def run_snapshot(db: Database, run_id: str) -> dict[str, Any]:
         "jobs": jobs,
         "gated_out": gated_out,
         "candidates": candidates,
-        "over_budget": match["by_reason"].get("rerank_below_top_k", 0),
+        # Everything that cleared the title gates and still got no LLM call. Both
+        # current reasons plus the pre-cutoff one, so a dashboard spanning old and
+        # new runs counts the same thing in every row.
+        "over_budget": sum(
+            match["by_reason"].get(r, 0)
+            for r in ("rerank_below_cutoff", "llm_call_cap_reached", "rerank_below_top_k")
+        ),
+        # ...and the two apart, because they mean opposite things to the user. A
+        # cutoff drop is a verdict and the job is retired; a cap drop is a deferral
+        # and it comes back next sweep. Telling someone a retired job is "still
+        # eligible" is worse than saying nothing.
+        "below_cutoff": match["by_reason"].get("rerank_below_cutoff", 0),
+        "cap_reached": sum(
+            match["by_reason"].get(r, 0)
+            for r in ("llm_call_cap_reached", "rerank_below_top_k")
+        ),
         "duplicates": match["by_reason"].get("duplicate_of_cluster", 0),
         "scored": match["scored"],
         "shortlisted": match["shortlisted"],
@@ -129,9 +149,9 @@ def split_matches(records: list[dict]) -> tuple[list[dict], list[dict]]:
     """Partition a run's match rows into (scored, not scored).
 
     `records` arrives from `Database.load_all_matches`, already ordered best-first
-    by LLM score, then the refined rerank logit, then the wide one — three keys
-    applied in sequence rather than merged, because the two rerank columns come
-    from different models and are not comparable.
+    by LLM score, then the cross-encoder logit, then the old wide-pass column —
+    three keys applied in sequence rather than merged, because on rows old enough
+    to carry both rerank columns they came from different models.
     """
     scored = [r for r in records if not _never_scored(r)]
     unscored = [r for r in records if _never_scored(r)]

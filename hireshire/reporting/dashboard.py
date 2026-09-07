@@ -61,10 +61,10 @@ def _live_panel(live: dict[str, Any] | None) -> str:
         funnel_step("Postings found", jobs, max(jobs, 1)),
     ]
     return (
-        '<p class="note"><b>A sweep is running.</b> Scoring is deferred to the end of the '
-        "run — top-K is a decision across the whole sweep — so the scored and shortlisted "
-        "figures below stay at zero until the last couple of minutes. This page reloads "
-        f"itself every {REFRESH_S} seconds while that is true.</p>"
+        '<p class="note"><b>A sweep is running.</b> Jobs are scored as they are found, '
+        "one employer at a time, so the scored and shortlisted figures below climb "
+        "throughout the run rather than arriving all at once at the end. This page "
+        f"reloads itself every {REFRESH_S} seconds while the sweep is going.</p>"
         f'<div class="funnel">{"".join(steps)}</div>'
     )
 

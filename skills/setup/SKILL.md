@@ -69,9 +69,15 @@ Three rules behind that, all learned the hard way:
 and a user watching a still spinner concludes the plugin has hung — which is exactly
 what happened when this ran from a session hook instead:
 
-> Setup takes about 10-15 minutes, most of it a one-time ~2.5 GB download of the
-> models that decide which jobs are worth scoring. It happens now rather than in
-> the middle of your first search. I'll tell you when it's done.
+> Setup takes about 15-20 minutes, most of it a one-time download of the models
+> that decide which jobs are worth scoring. It happens now rather than in the
+> middle of your first search. I'll tell you when it's done.
+
+**Give the time, never the download size.** A number of gigabytes is not something
+the user can act on — they cannot make it smaller, and it lands as a warning about
+their disk rather than an answer to the only question they are asking, which is how
+long they will be sitting there. State the minutes and move on. This applies
+wherever the install is described, including the text `--bootstrap` prints.
 
 Only then start the install, and say so again when it returns:
 
@@ -161,7 +167,7 @@ rather than one call per question:
 |---|---|
 | `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `poll_interval_hours`, `workspace_dir` |
 | `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
-| `funnel` | `targets`, `top_k` |
+| `funnel` | `targets`, `top_k`, `rerank_min_score` |
 | `applier` | `enable_applier`, `dry_run`, `resume_path`, `first_name`, `last_name`, `email`, `phone` |
 
 So it is `set matcher --json '{"exclude_keywords": [...]}'` — **not**
@@ -229,14 +235,19 @@ Three things that trip people up:
    setting that setup must never touch. It is deliberately loose; raising it throws
    away the differently-worded jobs the reranker exists to catch.
 
-5. **How many jobs to score per run** → `top_k` on the **`funnel`** phase. Default
-   100. Explain the real trade-off:
-   - On a **Claude subscription** the limit is prompts per 5-hour window, not
-     money, so a few hundred per run is the practical ceiling.
+5. **A ceiling on jobs scored per run** → `top_k` on the **`funnel`** phase.
+   Default 150. Present it as a safety limit, not as how jobs get chosen — the
+   cross-encoder cutoff does that, and it is not a setup question.
+   - On a **Claude subscription** these calls draw on the **same allowance as
+     their own Claude chat** — a rolling 5-hour window plus a weekly one. Say this
+     plainly; a user who does not know it will be surprised when a sweep eats into
+     their conversations.
    - On a **paid API key** it is a straight cost dial and can go higher.
 
-   Jobs that miss the cut are recorded, not discarded, and stay eligible for the
-   next run — so this is safe to raise later.
+   Jobs that arrive after the ceiling is reached stay eligible for the next run, so
+   this is safe to raise later. Do not ask about `rerank_min_score`: it is a raw
+   model logit with no meaning a user could reason about, and
+   `scripts/calibrate_cutoffs.py` derives it from real runs once they have some.
 
 6. **Target roles.** This single step is what makes the plugin work for any field,
    and it is the main defence against missing jobs that are a real fit but worded
@@ -335,12 +346,11 @@ still expects to be waiting:
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py warm-models
 ```
 
-All three are imported lazily by the engine, so without this the first
-`/hireshire:find-jobs` would stall mid-run on a several-hundred-megabyte download.
-There are two cross-encoders because the funnel reranks in two stages: a small
-model reads every description, a larger one re-reads the best few hundred. Warm
-both — the second is only loaded partway through a sweep, which is the worst
-moment to discover it is missing.
+Both are imported lazily by the engine, so without this the first
+`/hireshire:find-jobs` would stall mid-run while they download. The bi-encoder gates
+job titles; the cross-encoder reads each survivor's full description and decides
+which are worth scoring. The cross-encoder is loaded partway through a sweep, which
+is the worst possible moment to discover it is missing — hence warming it now.
 
 ## Step 4 — offer a recurring schedule (optional, opt-in)
 

@@ -147,20 +147,27 @@ def cmd_write_profile(args: argparse.Namespace) -> int:
 
 
 def cmd_warm_models(args: argparse.Namespace) -> int:
-    """Pull the three models now, while the user still expects to be waiting.
+    """Pull the funnel's models now, while the user still expects to be waiting.
 
-    All three are imported lazily by the engine, so skipping this moves a
-    several-hundred-megabyte download into the middle of the first sweep. Both
-    cross-encoders matter: the funnel reranks in two stages and the larger model is
-    only loaded partway through a run, which is the worst moment to find it missing.
+    Both are imported lazily by the engine, so skipping this moves the download into
+    the middle of the first sweep. The cross-encoder is the one that matters most:
+    it is not loaded until a batch reaches the rerank stage, which is the worst
+    possible moment to discover it is missing.
+
+    The names come from the config rather than being written out here. They were
+    hardcoded, and when the two-stage cascade collapsed to a single model this
+    warmed one model that no longer exists in the pipeline and missed nothing —
+    a failure whose only symptom would have been a stall on the first real run.
     """
     from sentence_transformers import CrossEncoder, SentenceTransformer
+    from hireshire.matcher.config import load_matcher_config
 
-    SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2").encode(["warmup"])
-    print("bi-encoder ready", flush=True)
-    for name in ("cross-encoder/ettin-reranker-17m-v1", "cross-encoder/ettin-reranker-68m-v1"):
-        CrossEncoder(name).predict([("warmup", "warmup")])
-        print(f"{name} ready", flush=True)
+    funnel = load_matcher_config().funnel
+
+    SentenceTransformer(funnel.encoder.model).encode(["warmup"])
+    print(f"{funnel.encoder.model} ready", flush=True)
+    CrossEncoder(funnel.rerank.model).predict([("warmup", "warmup")])
+    print(f"{funnel.rerank.model} ready", flush=True)
     return 0
 
 
@@ -197,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("write-profile", help="Write the search profile into DATA")
     p.add_argument("--text", required=True)
 
-    sub.add_parser("warm-models", help="Download the bi-encoder and both cross-encoders")
+    sub.add_parser("warm-models", help="Download the funnel's bi-encoder and cross-encoder")
     return parser
 
 
