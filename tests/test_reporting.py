@@ -182,15 +182,27 @@ def test_the_rationales_actually_reach_the_page():
 
 
 def test_the_two_rerank_scales_stay_in_separate_columns():
-    """They are logits from two different models. Merging or averaging them is the
-    exact bug `RerankScores.sort_key` exists to prevent."""
+    """Historical rows carry logits from two different models. Merging or averaging
+    them was a real bug; the funnel uses one model now, but rows written before that
+    still render and must keep their two numbers apart."""
     html = matching.build(snapshot(), [scored_record(), dropped_record()],
                           "2026-08-25_153432")
     # Both values present, each under its own label, on the scored entry...
     assert "wide <b>8.88</b>" in html
-    assert "refine <b>7.30</b>" in html
+    assert "cross <b>7.30</b>" in html
     # ...and as two separate columns over the unscored table.
     assert "<th>Refine</th>" in html and "<th>Wide</th>" in html
+
+
+def test_a_single_model_row_shows_no_empty_wide_column():
+    """New rows have no wide score. Rendering a dash where a number used to be reads
+    as a bug rather than as an absence."""
+    row = scored_record()
+    row["rerank_score_wide"] = None
+    html = matching.build(snapshot(), [row], "2026-08-25_153432")
+
+    assert "wide <b>" not in html
+    assert "cross <b>7.30</b>" in html
 
 
 def test_the_unscored_list_scrolls_in_its_own_box():

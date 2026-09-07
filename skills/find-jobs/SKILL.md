@@ -67,11 +67,14 @@ What happens inside, in case they ask why it is not instant:
 1. Every enabled board is swept for postings newer than their age cutoff.
 2. Cheap title gates drop the obvious misses for free.
 3. Descriptions are fetched for the survivors that need one.
-4. A cross-encoder ranks all of them against their candidate profile.
-5. Only the top `funnel.top_k` are sent to the LLM for a real 0-100 score.
+4. A cross-encoder reads each full description against their candidate profile.
+5. Only jobs reaching `funnel.rerank.min_score` are sent to the LLM for a real
+   0-100 score.
 
-Step 5 is why the run is affordable. Everything before it exists to make sure the
-budget is spent on the right jobs.
+Steps 1-4 run on their own machine and cost nothing, so step 5 is the only part
+that spends anything. That is also why results arrive throughout the run rather
+than all at once at the end: each employer's jobs go through every stage as soon
+as they are scraped.
 
 ## While it runs — publish the match report
 
@@ -142,9 +145,17 @@ Two things worth surfacing if the numbers warrant it:
   too narrow. Both are one `/hireshire:setup` answer away. Do not just report
   zero and stop — send them to the match report, which shows exactly how close
   the best jobs came and what the judge held against them.
-- **A lot of jobs over budget?** The run summary reports how many cleared every
-  gate but lost the top-K race. Those are recorded with
-  `rerank_below_top_k` and stay eligible next run, so raising `top_k` recovers
-  them. Mention it when the number is large relative to `top_k`.
+- **A lot of jobs dropped before the judge?** The run summary and the match report
+  break this into two numbers, and they mean opposite things — do not merge them:
+  - `rerank_below_cutoff` means the cross-encoder read the whole description and
+    said no. That is a verdict, so those jobs are retired and will not come back.
+    Lowering `funnel.rerank.min_score` is what lets more through.
+  - `llm_call_cap_reached` means the run hit `funnel.top_k` and simply ran out of
+    calls. Those stay eligible next run, so raising `top_k` recovers them.
+- **Nothing above the cutoff at all?** Read the funnel counts in the match report
+  before concluding the market is quiet. A large "reached the reranker" number with
+  zero above the cutoff means `min_score` is set wrong for this resume, not that
+  there were no jobs. `scripts/calibrate_cutoffs.py` derives the right value from
+  their own past runs.
 
 If auto-apply is enabled, remind them `/hireshire:apply` is the next step.

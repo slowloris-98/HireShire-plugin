@@ -90,6 +90,39 @@ def run_queue_mode(jobs):
     return asyncio.run(go())
 
 
+def test_results_are_emitted_before_the_sweep_finishes(harness):
+    """The streaming claim, and the only test that can catch it regressing.
+
+    The matcher used to pool every candidate until the scraper's sentinel arrived,
+    because top-K was a decision across the whole sweep. With selection now a
+    per-job cutoff, an employer's batch is judged the moment it lands — so results
+    must appear on `out_queue` while later batches are still being scraped.
+
+    The harness feeds one batch, waits, and asserts something has already come out
+    *before* the sentinel goes in. Under the old design this hangs at the `get()`,
+    because nothing is emitted until the run ends.
+    """
+    async def go():
+        in_q: asyncio.Queue = asyncio.Queue()
+        out_q: asyncio.Queue = asyncio.Queue()
+        await in_q.put(("acme", [make_job("j1", "Account Manager")]))
+
+        task = asyncio.create_task(matcher_mod.main(
+            in_queue=in_q, out_queue=out_q, quiet=True, run_id=RUN_ID, skip_llm=True,
+        ))
+        # No sentinel yet: the scraper is still working. A result here means the
+        # first batch was processed on arrival rather than queued for the end.
+        early = await asyncio.wait_for(out_q.get(), timeout=5)
+
+        await in_q.put(None)
+        await asyncio.wait_for(task, timeout=5)
+        return early
+
+    result, job = asyncio.run(go())
+    assert job.job_id == "j1"
+    assert result.job_id == "j1"
+
+
 def test_no_llm_run_emits_every_job_including_cluster_siblings(harness):
     db = harness
     jobs = [
@@ -146,13 +179,18 @@ def test_passthrough_rows_are_shortlisted_despite_a_high_threshold(harness):
     assert rows[0]["shortlisted"] is True
 
 
-def test_top_k_still_bounds_a_no_llm_run(harness):
-    """top_k is 3 in the fixture, and clusters — not postings — are what it counts."""
+def test_the_call_cap_still_bounds_a_no_llm_run(harness):
+    """top_k is 3 in the fixture, and clusters — not postings — are what it counts.
+
+    The cap applies even with `skip_llm`, where no call is made at all. That is
+    deliberate: a --no-llm run exists to exercise the pipeline, and it should exercise
+    the same selection the real one would rather than a more permissive path.
+    """
     jobs = [make_job(f"j{i}", f"Account Manager {i}") for i in range(6)]
     run_queue_mode(jobs)
 
     rows = harness.load_all_matches(RUN_ID)
-    dropped = [r for r in rows if r.get("skip_reason") == matcher_mod.BUDGET_SKIP_REASON]
+    dropped = [r for r in rows if r.get("skip_reason") == matcher_mod.CAP_SKIP_REASON]
     passed = [r for r in rows if r.get("skip_reason") == "llm_skipped"]
     assert len(passed) == 3
     assert len(dropped) == 3

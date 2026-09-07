@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from dataclasses import dataclass
 
 from hireshire.funnel.config import RerankConfig
 from hireshire.models.job import Job
@@ -35,46 +34,14 @@ def _get_model(name: str, max_length: int):
         return model
 
 
-@dataclass(frozen=True)
-class RerankScores:
-    """One job's rerank outcome, keeping the two stages' scores apart.
-
-    `wide` and `refined` come from DIFFERENT MODELS and are therefore on different
-    logit scales. Comparing or averaging them is meaningless, and sorting a mixed
-    list of them silently produces a wrong ranking — the same class of invisible
-    failure that made the previous single-stage reranker useless.
-
-    `sort_key` is the only sanctioned way to order jobs by these numbers. It ranks
-    every refined job above every unrefined one, then breaks ties *within* a single
-    model's scale. That is sound rather than arbitrary because the refined set is by
-    construction the wide pass's own top `depth`, and `depth >= top_k` is enforced
-    in FunnelConfig — so everything still in contention for the budget has been
-    scored by the same model.
-    """
-
-    wide: float
-    refined: float | None = None
-
-    @property
-    def is_refined(self) -> bool:
-        return self.refined is not None
-
-    @property
-    def stage(self) -> str:
-        return "refined" if self.is_refined else "wide"
-
-    @property
-    def best(self) -> float:
-        """The score from whichever stage last judged this job."""
-        return self.refined if self.refined is not None else self.wide
-
-    @property
-    def sort_key(self) -> tuple[int, float]:
-        return (1 if self.is_refined else 0, self.best)
+# The value written to MatchResult.rerank_stage. One model now, so there is one
+# stage; the column is kept because historical rows carry "wide" and "refined" and
+# the reports still render them.
+RERANK_STAGE = "single"
 
 
 class Reranker:
-    """Scores (candidate profile, job description) pairs with a cross-encoder cascade.
+    """Scores (candidate profile, job description) pairs with a cross-encoder.
 
     The query is the expanded "ideal candidate" profile generated at setup — not
     the raw resume. That profile spells out transferable skills in the vocabulary
@@ -82,16 +49,16 @@ class Reranker:
     what closes the gap when a genuinely good job is worded nothing like the
     resume.
 
-    Scores are ORDINAL ONLY. These models are trained on retrieval relevance, not
-    resume fit, so an absolute value means little — which is fine, because the gate
-    downstream is top-K, never a fixed cutoff.
+    Scores are RAW LOGITS from one model against one profile. Ordinal within a run,
+    and meaningless across models or users — which is why `RerankConfig.min_score`
+    has to be calibrated rather than guessed, and why changing `model` invalidates
+    whatever cutoff was calibrated for the old one.
     """
 
     def __init__(self, cfg: RerankConfig, profile: str):
         self._cfg = cfg
         self._profile = (profile or "").strip()
         self._model = None
-        self._refine_model = None
 
     @property
     def usable(self) -> bool:
@@ -110,50 +77,24 @@ class Reranker:
         scores = model.predict(pairs, batch_size=batch_size)
         return [float(s) for s in scores]
 
-    def _score(self, jobs: list[Job]) -> list[RerankScores]:
+    def _score(self, jobs: list[Job]) -> list[float]:
         """Blocking (CPU-bound) predict — call under asyncio.to_thread."""
         if not jobs:
             return []
-
         if self._model is None:
             self._model = _get_model(self._cfg.model, self._cfg.max_length)
-        wide = self._predict(self._model, jobs, self._cfg.batch_size)
-        out = [RerankScores(wide=w) for w in wide]
+        return self._predict(self._model, jobs, self._cfg.batch_size)
 
-        refine = self._cfg.refine
-        if not refine.enabled or not refine.depth:
-            return out
+    async def rank(self, jobs: list[Job]) -> list[float]:
+        """Return one logit per job, in input order.
 
-        # Re-score only the wide pass's best `depth`. Indices, not objects, so the
-        # refined scores land back on the right jobs in the caller's input order.
-        order = sorted(range(len(jobs)), key=lambda i: wide[i], reverse=True)
-        chosen = order[: refine.depth]
-        if not chosen:
-            return out
-
-        if self._refine_model is None:
-            self._refine_model = _get_model(refine.model, self._cfg.max_length)
-        logger.info(
-            "Rerank: refining the top %d of %d with %s",
-            len(chosen), len(jobs), refine.model,
-        )
-        refined = self._predict(
-            self._refine_model, [jobs[i] for i in chosen], refine.batch_size
-        )
-        for i, score in zip(chosen, refined):
-            out[i] = RerankScores(wide=wide[i], refined=score)
-        return out
-
-    async def rank(self, jobs: list[Job]) -> list[RerankScores]:
-        """Return one RerankScores per job, in input order.
-
-        With reranking unusable every job scores 0.0 on the wide stage and none are
-        refined, which leaves the caller's ordering untouched and lets top-K fall
-        back to arbitrary-but-bounded selection rather than silently dropping
-        everything.
-        """
+        With reranking unusable every job scores 0.0. That is NOT a verdict, and
+        callers must not apply `min_score` to it — `usable` is the flag to check.
+        Treating an unusable reranker's zeros as scores would silently drop the
+        whole sweep the moment the profile file went missing, which is the failure
+        the setup skill already warns about."""
         if not jobs:
             return []
         if not self.usable:
-            return [RerankScores(wide=0.0)] * len(jobs)
+            return [0.0] * len(jobs)
         return await asyncio.to_thread(self._score, jobs)

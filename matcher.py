@@ -2,9 +2,13 @@
 Scores the latest scrape run's jobs against the resume.
 
 Cheap title gates and detail hydration run first (see hireshire/funnel/), then a
-cross-encoder ranks the survivors and only the top `funnel.top_k` are sent to the
-LLM — so scoring cost is bounded by a budget rather than by wherever a similarity
-threshold lands.
+cross-encoder reads each survivor's full description and only those reaching
+`funnel.rerank.min_score` are sent to the LLM. `funnel.top_k` caps how many calls one
+run may make, so a mis-set cutoff costs friction rather than the user's whole
+allowance.
+
+Every stage is a per-job decision, which is what lets the orchestrator judge a batch
+the moment it is scraped instead of waiting for the sweep to finish.
 
     python matcher.py
 """
@@ -26,7 +30,7 @@ from hireshire import paths
 from hireshire.funnel import cluster
 from hireshire.funnel.detail_fetcher import DETAIL_SOURCES
 from hireshire.funnel.funnel import Funnel
-from hireshire.funnel.rerank import Reranker
+from hireshire.funnel.rerank import RERANK_STAGE, Reranker
 from hireshire.matcher.config import load_matcher_config
 from hireshire.matcher.loader import load_jobs
 from hireshire.matcher.resume import extract_resume_text
@@ -48,10 +52,22 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 console = Console()
 
-# Jobs that cleared every gate but lost the top-K race. Distinct from the title
-# gates because it is a *budget* outcome, not a relevance judgement — the job may
-# be perfectly good and simply ranked 101st. That distinction matters in two
-# places: the run summary, and the seen-jobs write below.
+# Jobs that cleared the title gates but did not reach `rerank.min_score`. A VERDICT,
+# not a deferral: the cross-encoder read the whole description and said no. Nothing
+# about the next sweep changes that answer — same profile, same model, same text —
+# so unlike a budget drop this one retires the job. Retrying it would re-run the
+# same deterministic computation ~6 times per 24h to reach the same conclusion.
+CUTOFF_SKIP_REASON = "rerank_below_cutoff"
+
+# Jobs above the cutoff that arrived after the run had spent its `top_k` LLM calls.
+# THIS one is a deferral, and the reasoning that used to attach to `rerank_below_top_k`
+# now lives here: the job may be perfectly good and simply late in a busy sweep, so it
+# has to stay eligible. Distinct from the cutoff reason because the two answer
+# different questions — "is this job good enough" versus "was there budget left".
+CAP_SKIP_REASON = "llm_call_cap_reached"
+
+# The pre-cutoff budget drop. Nothing writes it any more; it is kept so the reports
+# can still label rows from runs made before the funnel became a streaming cutoff.
 BUDGET_SKIP_REASON = "rerank_below_top_k"
 
 # A repeat posting of a requisition whose representative WAS scored. Distinct from a
@@ -61,18 +77,24 @@ BUDGET_SKIP_REASON = "rerank_below_top_k"
 # re-deriving a score it already has.
 DUPLICATE_SKIP_REASON = "duplicate_of_cluster"
 
-# Reasons that must NOT retire a job_id into seen_jobs. A budget drop is the whole
+# Reasons that must NOT retire a job_id into seen_jobs. A cap drop is the whole
 # point here: max_age_hours=24 with a 4h poll means a job resurfaces in ~6 sweeps,
-# and one that just missed the cut should get another shot when it is up against
-# weaker competition. Marking it seen would retire it permanently on the strength
-# of one crowded run.
+# and one that arrived after the budget ran out should get another shot in a quieter
+# one. Marking it seen would retire it permanently on the strength of one busy run.
 #
-# The general rule: a job may be retired on a *verdict*, never on an *error*. The
-# scoring-failure reasons below are here because they once weren't — a broken
-# `--json-schema` argument failed all 100 scoring calls in a run and permanently
-# retired every one of them, so fixing the flag would not have brought them back.
-# `no_content_text` and `llm_skipped` stay retiring: those are facts about the job.
-_RETRYABLE_SKIP_REASONS = {BUDGET_SKIP_REASON} | set(SCORING_ERROR_SKIP_REASONS)
+# The general rule: a job may be retired on a *verdict*, never on an *error* or a
+# *deferral*. The scoring-failure reasons below are here because they once weren't —
+# a broken `--json-schema` argument failed all 100 scoring calls in a run and
+# permanently retired every one of them, so fixing the flag would not have brought
+# them back. `no_content_text` and `llm_skipped` stay retiring: those are facts about
+# the job.
+#
+# `CUTOFF_SKIP_REASON` is deliberately absent. It is the one drop that IS a verdict —
+# see its definition above. `BUDGET_SKIP_REASON` stays listed so rows written by
+# older runs, which are deferrals, are not retired now that nothing writes it.
+_RETRYABLE_SKIP_REASONS = (
+    {CAP_SKIP_REASON, BUDGET_SKIP_REASON} | set(SCORING_ERROR_SKIP_REASONS)
+)
 
 
 # Consecutive scoring failures after which the run stops calling the backend.
@@ -166,40 +188,129 @@ def _passthrough_result(job, run_id: str, score=None) -> MatchResult:
     return _apply_rerank_scores(result, score)
 
 
-def _apply_rerank_scores(result: MatchResult, score, cluster_size: int = 1) -> MatchResult:
-    """Copy a RerankScores onto a result row, keeping the two stages separate."""
+def _apply_rerank_scores(
+    result: MatchResult, score: float | None, cluster_size: int = 1
+) -> MatchResult:
+    """Copy a cross-encoder logit onto a result row.
+
+    One model, one scale, so this is a single number now. `rerank_score_wide` is
+    left alone: the column still exists because runs made under the old two-stage
+    cascade wrote to it and the reports render those rows, but nothing writes it
+    any more."""
     if score is not None:
-        result.rerank_score_wide = score.wide
-        result.rerank_score = score.refined
-        result.rerank_stage = score.stage
+        result.rerank_score = score
+        result.rerank_stage = RERANK_STAGE
     result.cluster_size = cluster_size
     return result
 
 
-async def _spend_budget(
+def _log_usage(scorer, quiet: bool) -> None:
+    """Report what the run drew on the user's Claude allowance.
+
+    Scoring shares a rolling 5-hour window and a weekly one with the user's own
+    Claude chat, so "what did that sweep cost me" is a fair question that had no
+    answer anywhere in the product. Only backends that can read their own meters
+    expose a tally; the rest report nothing rather than print zeros as if they were
+    measurements.
+
+    Silent when no call was made, so a `--no-llm` run does not claim to have spent
+    anything."""
+    usage = getattr(scorer, "usage", None)
+    if usage is None or usage.empty:
+        return
+    logger.info(usage.summary())
+    if not quiet:
+        console.print(f"[dim]{usage.summary()}[/dim]")
+    if usage.calls > 1 and usage.cache_read == 0:
+        # The resume and rubric are identical on every call, so this should never
+        # happen. When it does, the run is paying full price to re-read the same
+        # resume once per job — which is invisible without saying so.
+        logger.warning(
+            "No tokens were served from cache across %d scoring calls. The cached "
+            "prefix is not byte-identical between jobs — check that nothing "
+            "per-job has leaked into the system prompt.", usage.calls,
+        )
+
+
+def _funnel_summary(stages: dict[str, int], budget: "_CallBudget") -> str:
+    """One line naming what each stage passed.
+
+    Exists because a fixed cutoff makes "nothing was shortlisted" ambiguous in a way
+    top-K never did: under a ranking, something was always scored, so an empty
+    shortlist could only mean the jobs were weak. Under a cutoff it can equally mean
+    `min_score` is set wrong for this resume, and the two are indistinguishable from
+    the outside. A zero at "above cutoff" while "reranked" is large says which."""
+    line = (
+        f"Funnel: {stages['gated']} gated → {stages['reranked']} reranked → "
+        f"{stages['above_cutoff']} above cutoff → {stages['judged']} judged"
+    )
+    if budget.refused:
+        line += f" ({budget.refused} hit the {budget.spent}-call cap)"
+    return line
+
+
+class _CallBudget:
+    """The run's LLM-call fuse.
+
+    Not the selection mechanism — `rerank.min_score` decides which jobs deserve a
+    call, and this only stops a mis-set cutoff from turning that into an unbounded
+    number of them. Shared across every batch in the run, so it has to be an object
+    rather than a per-batch count.
+    """
+
+    def __init__(self, limit: int) -> None:
+        # 0 or negative disables the cap, matching what `top_k` has always meant.
+        self._limit = limit if limit and limit > 0 else None
+        self.spent = 0
+        self.refused = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self._limit is not None and self.spent >= self._limit
+
+    def take(self) -> bool:
+        """Claim one call. False once the run is out."""
+        if self.exhausted:
+            self.refused += 1
+            return False
+        self.spent += 1
+        return True
+
+
+async def _process_batch(
     candidates: list[Job],
     reranker: Reranker,
-    top_k: int,
+    min_score: float,
+    budget: _CallBudget,
     run_id: str,
     dedupe: bool = True,
-) -> tuple[list[tuple[Job, object]], list[MatchResult], dict[str, list[Job]]]:
-    """Rank the whole candidate pool and hand the LLM only what the budget allows.
+) -> tuple[list[tuple[Job, float]], list[MatchResult], dict[str, list[tuple[Job, float]]]]:
+    """Rerank one batch and decide, per job, whether it is worth an LLM call.
 
     Returns `(winners, dropped, siblings)`:
-      - `winners` are (job, RerankScores) pairs in descending rank order,
+      - `winners` are (job, logit) pairs the caller should judge now,
       - `dropped` are skip rows for everything the LLM will not see,
       - `siblings` maps a winning representative's job_id -> the other postings in
-        its cluster paired with their own rerank scores, so the caller can copy the
-        verdict across once it has one.
+        its cluster paired with their own scores, so the caller can copy the verdict
+        across once it has one.
 
-    This is deliberately a *global* decision, which is why it runs once over the
-    whole sweep rather than per company batch: a batch is one employer's postings,
-    so ranking within it would compare a company against itself and spend the
-    budget on whoever happened to be scraped first.
+    **This runs per batch, and that is the whole point.** Selection used to be a
+    global top-K over the pooled sweep, which meant no job could be judged until
+    every job had been seen. A cutoff is a statement about one job against one
+    profile, so it can be applied the moment the batch arrives — which is what makes
+    the shortlist fill during the sweep instead of in its last two minutes.
 
-    Ordering uses `RerankScores.sort_key`, never the raw float — the wide and
-    refined passes are different models on different logit scales and sorting them
-    together would silently produce a wrong ranking.
+    **Clustering survives the move, and it is load-bearing.** `cluster_key` is
+    (board_token, normalised_title) and the scraper emits one employer per queue
+    item, so every member of a cluster is in this batch by construction. Grouping
+    here still collapses 31 copies of one requisition into one LLM call; no global
+    pass is needed for that. The thing top-K needed globally was *ranking* companies
+    against each other, and nothing does that any more.
+
+    An unusable reranker (no profile, or reranking switched off) must not be gated:
+    it scores everything 0.0, which is an absence of information rather than a
+    verdict. Everything passes to the cap in that case, which is the old
+    arbitrary-but-bounded behaviour.
     """
     if not candidates:
         return [], [], {}
@@ -218,34 +329,40 @@ async def _spend_budget(
         rep = cluster.pick_representative(members, by_id) if len(members) > 1 else members[0]
         representatives.append((rep, [m for m in members if m.job_id != rep.job_id]))
 
-    # A cluster competes on its representative's score, which is its best member's.
-    representatives.sort(key=lambda pair: by_id[pair[0].job_id].sort_key, reverse=True)
+    # Best-first *within the batch*. This no longer decides anything — every
+    # representative is measured against the cutoff on its own — but when the run is
+    # close to its cap it decides who gets the last few calls, and the strongest
+    # candidates should get them.
+    gated = reranker.usable
+    representatives.sort(key=lambda pair: by_id[pair[0].job_id], reverse=True)
 
-    if top_k and top_k > 0 and len(representatives) > top_k:
-        winning, losing = representatives[:top_k], representatives[top_k:]
-    else:
-        winning, losing = representatives, []
-
+    winners: list[tuple[Job, float]] = []
     dropped: list[MatchResult] = []
-    siblings: dict[str, list[tuple[Job, object]]] = {}
+    siblings: dict[str, list[tuple[Job, float]]] = {}
 
-    for rep, others in winning:
-        if others:
-            siblings[rep.job_id] = [(job, by_id[job.job_id]) for job in others]
+    for rep, others in representatives:
+        size = len(others) + 1
+        score = by_id[rep.job_id]
 
-    # Members of losing clusters are budget drops: retryable, so a job that lost one
-    # crowded sweep is up for reconsideration in the next.
-    for rep, others in losing:
-        for job in [rep, *others]:
+        if gated and score < min_score:
+            reason = CUTOFF_SKIP_REASON
+        elif not budget.take():
+            reason = CAP_SKIP_REASON
+        else:
+            winners.append((rep, score))
+            if others:
+                siblings[rep.job_id] = [(job, by_id[job.job_id]) for job in others]
+            continue
+
+        # A whole cluster shares its representative's fate. Every member gets its own
+        # row so the all-jobs export can still show its location and link.
+        for job in (rep, *others):
             dropped.append(
                 _apply_rerank_scores(
-                    filtered_result(job, BUDGET_SKIP_REASON, run_id),
-                    by_id[job.job_id],
-                    cluster_size=len(others) + 1,
+                    filtered_result(job, reason, run_id), by_id[job.job_id], size
                 )
             )
 
-    winners = [(rep, by_id[rep.job_id]) for rep, _ in winning]
     return winners, dropped, siblings
 
 
@@ -381,7 +498,14 @@ async def main(
     results: list[MatchResult] = []
 
     reranker = Reranker(config.funnel.rerank, _load_search_profile(settings))
-    top_k = config.funnel.top_k
+    budget = _CallBudget(config.funnel.top_k)
+    min_score = config.funnel.rerank.min_score
+
+    # Per-stage counts. With selection now a fixed cutoff rather than a ranking, a
+    # run that scores nothing is ambiguous — a bad market and a mis-set `min_score`
+    # look identical from the outside. These are what tell them apart, so they are
+    # reported whether or not anything was shortlisted.
+    stages = {"gated": 0, "reranked": 0, "above_cutoff": 0, "judged": 0}
 
     # job_id -> bi-encoder cosine, accumulated across every gated batch. Stamped onto
     # each result on its way to the database so the number that opened the funnel is
@@ -465,7 +589,7 @@ async def main(
 
         Without this the siblings of a winning cluster would be dropped on the floor
         whenever scoring is disabled: they are deliberately absent from
-        `_spend_budget`'s `dropped` list, because normally the scorer emits them."""
+        `_process_batch`'s `dropped` list, because normally the scorer emits them."""
         others = siblings.get(job.job_id, [])
         size = len(others) + 1
         rep = _passthrough_result(job, run_id, score)
@@ -497,12 +621,11 @@ async def main(
         # Queue mode: consume company batches from in_queue
         # =========================================================
         if in_queue is not None:
-            # The cheap gates and detail hydration run per batch, overlapping with
-            # the sweep. Scoring cannot: top-K is a global decision, so survivors
-            # pool here and the budget is spent once the sentinel arrives. That
-            # defers scoring to the end of the run, which costs little — the sweep
-            # is rate-limit-bound at ~20 min while scoring top_k jobs is ~1 min.
-            candidates: list[Job] = []
+            # Every stage runs per batch now — gate, hydrate, rerank, judge — so a
+            # job can be scraped and shortlisted without waiting for the sweep to
+            # end. This used to pool candidates until the sentinel because top-K was
+            # a decision across the whole run; a cutoff is a decision about one job,
+            # so there is nothing left to wait for.
             try:
                 while True:
                     item = await in_queue.get()
@@ -518,39 +641,43 @@ async def main(
                         )
                     to_score, title_filtered = await gate(unseen)
                     results.extend(title_filtered)
-                    candidates.extend(to_score)
+                    stages["gated"] += len(to_score)
 
-                winners, dropped, siblings = await _spend_budget(
-                    candidates, reranker, top_k, run_id, config.funnel.dedupe.enabled
-                )
-                results.extend(dropped)
-                # Persist budget drops individually. `finalise` only records summary
-                # stats, so without this the user has no way to see what the budget
-                # cost them — and "raise top_k to score them" would be unverifiable.
-                # Bounded by the candidate pool, unlike the title-gate rejections,
-                # which stay stats-only because there can be tens of thousands.
-                for r in dropped:
-                    await persist(r)
-                logger.info(
-                    "Budget: %d candidates → %d clusters scored, %d over budget",
-                    len(candidates), len(winners), len(dropped),
-                )
+                    winners, dropped, siblings = await _process_batch(
+                        to_score, reranker, min_score, budget, run_id,
+                        config.funnel.dedupe.enabled,
+                    )
+                    stages["reranked"] += len(to_score)
+                    stages["above_cutoff"] += len(winners) + sum(
+                        1 for r in dropped if r.skip_reason == CAP_SKIP_REASON
+                    )
+                    stages["judged"] += len(winners)
 
-                if effective_skip_llm:
-                    for j, score in winners:
-                        if on_job_score:
-                            on_job_score(j.board_token, j.title)
-                        group = await passthrough_cluster(j, score, siblings)
-                        if out_queue is not None:
-                            # Only the representative is queued for applying — the
-                            # siblings are the same requisition in another location.
-                            await out_queue.put((group[0], j))
-                        results.extend(group)
-                else:
-                    for group in await asyncio.gather(
-                        *[score_cluster(j, s, siblings) for j, s in winners]
-                    ):
-                        results.extend(group)
+                    results.extend(dropped)
+                    # Persist cutoff and cap drops individually. `finalise` records
+                    # only summary stats, so without this the user cannot see what
+                    # the cutoff cost them — and "lower min_score to score them"
+                    # would be unverifiable. Bounded by the candidate pool, unlike
+                    # the title-gate rejections, which stay stats-only because there
+                    # can be tens of thousands.
+                    for r in dropped:
+                        await persist(r)
+
+                    if effective_skip_llm:
+                        for j, score in winners:
+                            if on_job_score:
+                                on_job_score(j.board_token, j.title)
+                            group = await passthrough_cluster(j, score, siblings)
+                            if out_queue is not None:
+                                # Only the representative is queued for applying —
+                                # the siblings are the same requisition elsewhere.
+                                await out_queue.put((group[0], j))
+                            results.extend(group)
+                    else:
+                        for group in await asyncio.gather(
+                            *[score_cluster(j, s, siblings) for j, s in winners]
+                        ):
+                            results.extend(group)
             except Exception:
                 logger.exception("Matcher queue loop failed")
             finally:
@@ -568,6 +695,8 @@ async def main(
                     logger.error("Matcher: %s", breaker.summary())
                     if not quiet:
                         console.print(f"[red]{breaker.summary()}[/red]")
+                logger.info(_funnel_summary(stages, budget))
+                _log_usage(scorer if not effective_skip_llm else None, quiet)
                 logger.info(
                     "Matcher done: %d shortlisted, %d rejected (run %s)",
                     len(shortlisted), len(rejected), run_id,
@@ -606,24 +735,32 @@ async def main(
         if dedup_skipped > 0 and not quiet:
             console.print(f"[yellow]Dedup: {dedup_skipped} jobs skipped (already scored in a previous run)[/yellow]\n")
         gated, title_filtered = await gate(unscored)
-        winners, budget_dropped, siblings = await _spend_budget(
-            gated, reranker, top_k, run_id, config.funnel.dedupe.enabled
+        # One batch covering the whole run. Standalone mode reads a finished scrape
+        # out of the database, so there is nothing to overlap with and no reason to
+        # chunk it — but it goes through the same helper as the streaming path so the
+        # two cannot drift apart in what they gate, cluster or retire.
+        winners, cut_dropped, siblings = await _process_batch(
+            gated, reranker, min_score, budget, run_id, config.funnel.dedupe.enabled
         )
+        stages["gated"] = stages["reranked"] = len(gated)
+        stages["above_cutoff"] = len(winners) + budget.refused
+        stages["judged"] = len(winners)
         jobs_to_score = winners
-        for r in budget_dropped:
+        for r in cut_dropped:
             await persist(r)
         if not quiet:
             console.print(
                 f"Funnel: [yellow]{len(title_filtered)} filtered out[/yellow], "
                 f"[green]{len(winners)} sent to LLM scoring[/green]"
                 + (
-                    f", [yellow]{len(budget_dropped)} over the top-{top_k} budget[/yellow]"
-                    if budget_dropped else ""
+                    f", [yellow]{len(cut_dropped)} below the {min_score} cutoff or "
+                    f"over the {config.funnel.top_k}-call cap[/yellow]"
+                    if cut_dropped else ""
                 )
                 + "\n"
             )
 
-        results = list(prior_results) + title_filtered + budget_dropped
+        results = list(prior_results) + title_filtered + cut_dropped
 
         prog_ctx = (
             Progress(
@@ -694,22 +831,30 @@ async def main(
                 console.print("[yellow]No jobs met the threshold. Try lowering it in config/matcher.yaml.[/yellow]")
 
             _FUNNEL_REASONS = ("title_excluded", "title_no_include_match", "title_low_relevance")
+            # Both rerank drops, plus the pre-cutoff reason so a resumed run that
+            # loaded older rows still counts them here rather than as "skipped".
+            _RERANK_REASONS = (CUTOFF_SKIP_REASON, CAP_SKIP_REASON, BUDGET_SKIP_REASON)
             title_filtered_count = sum(1 for r in results if r.skip_reason in _FUNNEL_REASONS)
-            budget_count = sum(1 for r in results if r.skip_reason == BUDGET_SKIP_REASON)
+            cutoff_count = sum(1 for r in results if r.skip_reason == CUTOFF_SKIP_REASON)
+            cap_count = sum(1 for r in results if r.skip_reason in (CAP_SKIP_REASON, BUDGET_SKIP_REASON))
+            rerank_count = cutoff_count + cap_count
             other_skipped_count = sum(
                 1 for r in results
                 if r.skipped and r.skip_reason not in _FUNNEL_REASONS
-                and r.skip_reason != BUDGET_SKIP_REASON
+                and r.skip_reason not in _RERANK_REASONS
             )
             llm_skipped_count = sum(1 for r in results if r.skip_reason == "llm_skipped")
             console.print(
                 f"\n[bold]{len(shortlisted)} shortlisted[/bold], "
-                f"{len(rejected) - title_filtered_count - budget_count - other_skipped_count} rejected by LLM, "
+                f"{len(rejected) - title_filtered_count - rerank_count - other_skipped_count} rejected by LLM, "
                 f"{title_filtered_count} funnel-filtered, "
-                + (f"{budget_count} over budget (raise top_k to score them), " if budget_count else "")
+                + (f"{cutoff_count} below the cutoff (lower min_score to score them), " if cutoff_count else "")
+                + (f"{cap_count} over the call cap (raise top_k to score them), " if cap_count else "")
                 + (f"{llm_skipped_count} LLM-skipped (auto-shortlisted), " if llm_skipped_count else "")
                 + f"{other_skipped_count} skipped"
             )
+            console.print(_funnel_summary(stages, budget))
+        _log_usage(scorer if not effective_skip_llm else None, quiet)
 
 
 if __name__ == "__main__":

@@ -196,11 +196,23 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
             ),
             "rerank_enabled": FieldSpec(
                 ("funnel", "rerank", "enabled"), "bool",
-                "Rank candidates with a cross-encoder before spending the LLM budget.",
+                "Read each candidate's full description with a cross-encoder and drop "
+                "the ones that do not reach rerank_min_score.",
+            ),
+            # The cutoff, and the one setting here that is genuinely personal: it is a
+            # raw logit against this user's own search profile, so a value that suits
+            # one person means nothing for another. scripts/calibrate_cutoffs.py
+            # derives it from a real run rather than guessing.
+            "rerank_min_score": FieldSpec(
+                ("funnel", "rerank", "min_score"), "float",
+                "Cross-encoder score a job must reach to be worth an LLM call. Raw "
+                "logit, not a percentage — calibrate it, do not guess. Higher means "
+                "fewer, better-matched jobs scored.",
             ),
             "top_k": FieldSpec(
                 ("funnel", "top_k"), "int",
-                "How many jobs get an LLM score per run. 0 means no cap.",
+                "Maximum LLM calls per run — a cost fuse, not how jobs are chosen "
+                "(rerank_min_score does that). 0 means no cap.",
             ),
         },
     ),

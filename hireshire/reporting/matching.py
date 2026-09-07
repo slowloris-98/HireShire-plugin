@@ -211,8 +211,14 @@ def _scored_entry(index: int, job: dict, threshold: int | None) -> str:
         f'<span class="sep">·</span>{e(years_txt)}{cluster_txt}</p>'
         f'<p class="funnel-scores">'
         f'<span>bi <b>{_fmt(job.get("encoder_score"), 3)}</b></span>'
-        f'<span>wide <b>{_fmt(job.get("rerank_score_wide"), 2)}</b></span>'
-        f'<span>refine <b>{_fmt(job.get("rerank_score"), 2)}</b></span>'
+        # The wide column only appears on rows from before the rerank cascade was
+        # collapsed to one model. Rendering an empty one on every new row would put a
+        # dash where a number used to be and invite the question of what broke.
+        + (
+            f'<span>wide <b>{_fmt(job.get("rerank_score_wide"), 2)}</b></span>'
+            if job.get("rerank_score_wide") is not None else ""
+        )
+        + f'<span>cross <b>{_fmt(job.get("rerank_score"), 2)}</b></span>'
         + (
             '<span class="verdict yes">shortlisted</span>' if shortlisted
             else '<span class="verdict no">not shortlisted</span>'
@@ -341,10 +347,9 @@ def build(snapshot: dict[str, Any], records: list[dict], stamp: str) -> str:
         headline = "This sweep is still running."
         stand = (
             f"<b>{num(snapshot['companies'])}</b> employers swept so far and "
-            f"<b>{num(snapshot['jobs'])}</b> postings found. Scoring happens at the "
-            "end of the run — top-K is a decision across the whole sweep, so no job "
-            "can be scored until every job has been seen. The reasoning appears here "
-            "when it does."
+            f"<b>{num(snapshot['jobs'])}</b> postings found. Each employer's jobs are "
+            "scored as soon as they are scraped, so the reasoning below fills in "
+            "while the sweep runs rather than appearing all at once at the end."
         )
     elif scored:
         top = snapshot.get("top_score")
@@ -387,9 +392,21 @@ def build(snapshot: dict[str, Any], records: list[dict], stamp: str) -> str:
             "Location, age and title keyword filters — no model involved", drop=True,
         ))
     steps.append(funnel_step("Reached the reranker", snapshot["candidates"], jobs))
-    if snapshot["over_budget"]:
+    # Two separate steps, deliberately. They look alike — both are "cleared the gates,
+    # never scored" — but one is a verdict and the other is a deferral, and a user
+    # deciding whether to change a setting needs to know which they are looking at.
+    # A large count here with nothing scored is also the signal that `min_score` is
+    # set wrong for this resume rather than that the market is quiet.
+    if snapshot.get("below_cutoff"):
         steps.append(funnel_step(
-            "Lost the top-K race", snapshot["over_budget"], jobs,
+            "Below the relevance cutoff", snapshot["below_cutoff"], jobs,
+            "The cross-encoder read the full description and said no — lower "
+            "min_score to let more through",
+            drop=True,
+        ))
+    if snapshot.get("cap_reached"):
+        steps.append(funnel_step(
+            "Reached the run's call cap", snapshot["cap_reached"], jobs,
             f"Still eligible next sweep — raising top_k (now {num(snapshot['top_k'])}) recovers them",
             drop=True,
         ))
@@ -431,11 +448,11 @@ def build(snapshot: dict[str, Any], records: list[dict], stamp: str) -> str:
     </table>
   </div>
   <p class="scroll-hint">
-    Ranked by the refined cross-encoder where it ran, then by the wide pass. The two are
-    <b>different models</b>, so they are ordered one after the other rather than merged —
-    a refined score always outranks an unrefined one, and ties break only within a single
-    model's scale. The <b>#</b> column keeps each job's place in that ranking even while
-    you filter.
+    Ranked by the cross-encoder score that decided whether each job was worth scoring.
+    Runs made before the funnel used a single model carry a second score from an earlier
+    pass; the two came from <b>different models</b>, so they are ordered one after the
+    other rather than merged. The <b>#</b> column keeps each job's place in that ranking
+    even while you filter.
   </p>
   <script type="application/json" id="hs-unscored-data">{_unscored_payload(unscored)}</script>"""
 

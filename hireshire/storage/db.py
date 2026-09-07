@@ -86,9 +86,11 @@ CREATE TABLE IF NOT EXISTS matches (
     board_token     TEXT,
     title           TEXT,
     relevance_score INTEGER,
-    -- Three funnel scores on three different scales; see MatchResult for why they
-    -- are never combined. encoder_score is a 0-1 cosine over the title;
-    -- rerank_score_wide and rerank_score are logits from two DIFFERENT models.
+    -- Funnel scores on different scales; see MatchResult for why they are never
+    -- combined. encoder_score is a 0-1 cosine over the title; rerank_score is a
+    -- cross-encoder logit. rerank_score_wide is written only by runs made under the
+    -- old two-model cascade, where it came from a DIFFERENT model and was never
+    -- comparable to rerank_score. Kept so those rows still render.
     encoder_score     REAL,
     rerank_score_wide REAL,
     rerank_score      REAL,
@@ -315,6 +317,33 @@ class Database:
             "by_reason": {r["reason"]: r["n"] for r in rows},
         }
 
+    def calibration_rows(self, run_id: str | None = None) -> list[dict]:
+        """(encoder_score, rerank_score, relevance_score) for every genuinely judged job.
+
+        The input to `scripts/calibrate_cutoffs.py`: each row pairs the funnel scores
+        that let a job through with the verdict that came back, which is what makes a
+        cutoff derivable rather than guessable.
+
+        `skipped = 0` is doing more work than it looks. It excludes cluster siblings,
+        which are written skipped with their representative's score copied onto them —
+        counting those would weight a single LLM verdict by however many locations the
+        requisition was posted in, the exact distortion clustering exists to remove.
+        It also excludes rows whose scoring call failed, whose relevance_score is a
+        placeholder 0 rather than a judgement.
+        """
+        sql = (
+            "SELECT encoder_score, rerank_score, relevance_score FROM matches "
+            "WHERE relevance_score IS NOT NULL AND rerank_score IS NOT NULL "
+            "AND (skipped = 0 OR skipped IS NULL)"
+        )
+        params: tuple = ()
+        if run_id:
+            sql += " AND run_id = ?"
+            params = (run_id,)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     def run_phase_stats(self, run_id: str) -> dict[str, dict]:
         """The `stats_json` blob for each phase of a run, keyed by phase.
 
@@ -515,9 +544,10 @@ class Database:
         its jobs row is missing — a partial export beats an export that silently
         drops rows.
 
-        Ordered best-first by the same rule the budget uses: LLM score, then the
-        refined rerank logit, then the wide one. The two rerank columns are sorted
-        in sequence rather than merged because they come from different models.
+        Ordered best-first: LLM score, then the cross-encoder logit, then the old
+        wide-pass column. The two rerank columns are sorted in sequence rather than
+        merged because on rows old enough to carry both they came from different
+        models and were never comparable.
         """
         with self._lock:
             rows = self._conn.execute(

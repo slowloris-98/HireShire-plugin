@@ -76,19 +76,25 @@ location + age filter    free
 exclude keywords         free
 bi-encoder recall net    cheap semantic check on the job title
 detail hydration         fetches descriptions for the survivors that need one
-cross-encoder rerank     ranks full descriptions against your candidate profile
-top-K                    only the best N get an LLM score
+cross-encoder rerank     reads full descriptions against your candidate profile
+                         and drops the ones that do not clear the cutoff
+LLM score                a real 0-100 verdict on what is left
 ```
+
+Everything above the last line runs on your own machine and costs nothing, so the
+cutoff is the only thing standing between a 10,000-employer sweep and a very large
+bill.
 
 The reranker is the part that matters. It reads your profile and the job
 description *together*, so it recognises that "seeking strong frontend state
 management" is asking for the React work on your resume. Keyword and
 embedding filters miss that; this is built to catch it.
 
-And because the last gate is **top-K rather than a score cutoff**, your LLM cost
-is bounded by a number you chose, not by however many jobs happen to clear a
-threshold. Jobs that miss the cut are recorded, not discarded — raise `top_k` and
-they get scored next run.
+Every stage is a yes/no about one job, which is why results appear **while the
+sweep is still running** rather than all at once at the end. A separate `top_k`
+setting caps how many LLM calls any single run may make — a fuse, not the way jobs
+are chosen — so a badly-set cutoff costs you a quiet run rather than your whole
+Claude allowance.
 
 Setup writes an expanded "ideal candidate" profile from your resume: not just the
 words on it, but the transferable skills underneath, in the vocabulary employers

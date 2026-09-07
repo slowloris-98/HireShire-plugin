@@ -125,9 +125,9 @@ def check() -> int:
 
     Installing from the SessionStart hook looked reasonable and was not: the hook runs
     before the user has typed anything and blocks their first turn, so a fresh install
-    spent ~4 minutes downloading 2.5 GB in silence while the "this takes 10-15 minutes"
-    warning sat in the setup skill, unable to run until the thing it warns about had
-    finished. The user sees a spinner and concludes the plugin is stuck.
+    spent minutes downloading in silence while the "this takes a while" warning sat in
+    the setup skill, unable to run until the thing it warns about had finished. The
+    user sees a spinner and concludes the plugin is stuck.
 
     So the heavy work moved to the skill, which can talk. What is left here is a line
     of stdout — which SessionStart hands to the agent as context, the one channel that
@@ -136,10 +136,13 @@ def check() -> int:
     rescue_stranded_data()
     if is_current():
         return 0
+    # Time, not size. A gigabyte count is not something the user can act on, and it
+    # reads as a warning about their disk rather than an answer to the question they
+    # are actually asking, which is how long they will be waiting.
     print(
         "HireShire: dependencies are not installed yet. Before running anything, tell "
-        "the user that the first /hireshire:setup downloads about 2.5 GB and takes "
-        "10-15 minutes, then start it.",
+        "the user that the first /hireshire:setup takes about 15-20 minutes, then "
+        "start it.",
         flush=True,
     )
     return 0
@@ -164,7 +167,7 @@ def main() -> int:
 
     print(
         "HireShire: installing dependencies. The first run downloads PyTorch and "
-        "two small transformer models (~2.5 GB) and can take several minutes.",
+        "two small transformer models, and takes about 15-20 minutes.",
         flush=True,
     )
     result = subprocess.run(

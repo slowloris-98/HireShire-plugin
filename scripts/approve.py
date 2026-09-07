@@ -61,6 +61,12 @@ _FLAG_MODES = frozenset({"--check", "--paths", "--status", "--bootstrap", "--mon
 _SCRIPTS: dict[str, frozenset[str] | None] = {
     "orchestrate.py": frozenset({"--once"}),
     "scripts/verify_bad_slugs.py": frozenset({"--prune"}),
+    # Read-only: reads past runs out of the database, prints a table, writes
+    # nothing. Empty set means the bare form only — `--run-id` and `--recall` take
+    # values, and allowing a flag that carries an argument means allowing the
+    # argument too, which is a wider hole than a diagnostic is worth. Someone
+    # narrowing the calibration to one run can answer one prompt.
+    "scripts/calibrate_cutoffs.py": frozenset(),
     "scripts/setup_cli.py": None,
     "scripts/applied_cli.py": None,
 }

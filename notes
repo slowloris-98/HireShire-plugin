@@ -1,3 +1,12 @@
+Add this point to the plan as well:
+- Do not share teh size of model being downloaded in the setup and installation. Only discuss the time it can take to setup like 15-20 min for the initial first time setup.
+- change the scoring model to haiku with high thinking
+- make the applier also asynchronous (maybe batch by batch)
+
+
+- User can add more compines like google/microsoft (basically that have their own career website) which should be scrapped along the given boards. Similar to what orchestrate in HireShire original is doing currently.
+
+
 1. a way to show progress of the scrapping so that user can see how much is done
 2. The claude code matching leads to the chat history being created for every match, how to deal with that?
 3. Update readme:
@@ -5,6 +14,12 @@
     How to stay updated
     The setup should not mention the size of the model in gb's but just say that fetching the models and setting up the db can take some time for the first time setup.
 4. The cross encoder ranking might make the asyncio queue useless for matcher-tuner hand off as the reranking will take some time, regardless of jobs coming in we will have to wait for all the jobs to be scraped so that they can be ranked.
+5. negative keywording, auto generated, confirm during setup
+
+
+Bug:
+1. killing the process in windows, does not work as expected.
+2. improve the scoring mechanism, currently claude is very strict but openai was a bit linent.
 
 
 2. does setup clears ths db and sets everything again? what if a different person comes and wants a new profile.

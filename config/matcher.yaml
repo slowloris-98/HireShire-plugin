@@ -2,8 +2,17 @@ settings:
   threshold: 75              # min relevance_score (0-100) to shortlist a job
   concurrency: 4             # parallel LLM calls
   provider: claude_code      # claude_code (your Claude subscription) / openai / anthropic / gemini
+  # Sonnet, not Haiku, and the reason is not only accuracy: `effort` below is
+  # unsupported on Haiku and degrades silently, falling back to the highest level the
+  # model does support. Switching to Haiku would leave you with a thinking dial that
+  # does nothing. It also has a much larger minimum cacheable prefix, which would
+  # stop your resume being cached between jobs and make every call pay full price.
   model: claude-sonnet-5     # model name for the chosen provider
-  effort: medium             # thinking level for claude_code: low / medium / high / xhigh / max
+  # Thinking level: low / medium / high / xhigh / max. Thinking tokens bill as
+  # output, and once your resume is cached they are most of what a sweep costs — so
+  # this is the main dial on how much of your Claude allowance a run consumes.
+  # Raise it if matches look shallow; measure a small run first (set top_k low).
+  effort: medium
   request_interval_s: 0      # seconds between requests; raise if you hit rate limits
   claude_cli_timeout_s: 600  # per-call bound for the claude_code provider
   max_content_chars: 8000    # truncate the job description to this length before sending
@@ -30,13 +39,17 @@ title_filter:
 #   2. include fast-pass    free, keeps obvious hits
 #   3. encoder              cheap semantic check on the TITLE — a recall net
 #   4. detail hydration     fetches descriptions for surviving list-only jobs
-#   5. rerank + top_k       cross-encoder over the full description; only the
-#                           best `top_k` are scored by the LLM
+#   5. rerank               cross-encoder over the full description; only jobs
+#                           reaching `rerank.min_score` are scored by the LLM
+#
+# Every stage is a yes/no about one job, which is what lets a job be scraped and
+# shortlisted without waiting for the sweep to end.
 #
 # Stages 1-3 see only the title, which is all that exists for Workday/BambooHR
 # before hydration. Real precision comes from the reranker in stage 5, so keep the
 # encoder threshold low: raising it throws away exactly the differently-worded
-# jobs the reranker exists to catch.
+# jobs the reranker exists to catch, and it saves you nothing — every stage here
+# runs on your own machine. Only `rerank.min_score` decides what costs money.
 funnel:
   enabled: true
   encoder:
@@ -44,31 +57,38 @@ funnel:
     # Adjacent job titles you are qualified for, generated at setup.
     targets: []
     threshold: 0.25   # recall net — deliberately loose
-  # Two-stage cross-encoder cascade over the full job descriptions.
+  # One cross-encoder, reading every surviving description in full.
   #
-  # Stage 1 (`model`) is cheap enough to read every surviving description. Stage 2
-  # (`refine`) is 3x slower but materially more accurate, so it only reads the few
-  # hundred that could still win the budget.
+  # This used to be a two-model cascade — a cheap model read everything, an accurate
+  # one re-read the best few hundred — which existed only to make a global top-K
+  # affordable. Selection is a per-job cutoff now, so the cheap pass had nothing to
+  # shortlist for, and removing it also removed a real hazard: the two models emitted
+  # different logit scales that were meaningless to compare.
   #
-  # The two stages emit DIFFERENT LOGIT SCALES. Their scores are never compared or
-  # combined — the ranking puts every refined job above every unrefined one, which
-  # is why `refine.depth` must stay >= top_k (enforced at config load).
+  # An Ettin model: ModernBERT-based, 8192-token window, Apache 2.0. The previous
+  # ms-marco-MiniLM capped at 512 tokens and truncated 41% of descriptions before
+  # their requirements section, which made its ranking near-random.
   #
-  # These are Ettin models: ModernBERT-based, 8192-token window, Apache 2.0. The
-  # previous ms-marco-MiniLM capped at 512 tokens and truncated 41% of descriptions
-  # before their requirements section, which made its ranking near-random.
-  # COST, measured on a 16-core CPU over a real 7,021-job sweep: stage 1 ~32 min,
-  # stage 2 ~9 min at depth 500. That is deliberate — no truncation anywhere — but
-  # it roughly triples a ~20 min sweep. `max_doc_chars` is the dial if that is too
-  # slow, and it is far cheaper than it looks to turn down: at 4,000 chars stage 1
-  # drops to ~12 min and still includes the requirements section for 96.9% of
-  # postings (3,000 -> ~9.5 min / 92.9%; 2,000 -> ~6.8 min / 82.0%). For reference
-  # the old broken 1,200 setting reached only 56.8%. Stage 1 only has to be right
-  # at depth `refine.depth`, not at top_k, so it tolerates truncation the final
-  # scorer never could. Batch size makes no measurable difference; do not bother.
+  # COST, measured on a 16-core CPU over a real 7,021-job sweep: ~9 min for 500
+  # documents, so reading everything is the expensive part of a run. It is spread
+  # across the sweep rather than run in one block at the end, which hides most of it
+  # behind the ~20 min the scrape spends rate-limited. `max_doc_chars` is the dial if
+  # it is still too slow, and it is cheaper to turn down than it looks: at 4,000
+  # chars you still capture the requirements section of 96.9% of postings (3,000 ->
+  # 92.9%; 2,000 -> 82.0%). The old broken 1,200 setting reached only 56.8%. Batch
+  # size makes no measurable difference; do not bother.
   rerank:
     enabled: true
-    model: cross-encoder/ettin-reranker-17m-v1
+    model: cross-encoder/ettin-reranker-68m-v1
+    # THE CUTOFF, and the one number here that is personal to you. It is a raw logit
+    # against your own search profile — not a percentage, not comparable to anyone
+    # else's, and meaningless if you change `model`. Raise it for fewer, better-
+    # matched jobs; lower it if runs come back empty. Derive it from a real run with
+    # `python scripts/calibrate_cutoffs.py` rather than guessing.
+    #
+    # 0.0 is the decision boundary these models are trained toward, which makes it a
+    # defensible starting point on a fresh install with no history to learn from.
+    min_score: 0.0
     # ~2,960 tokens at the measured 5.06 chars/token. Covers 99.8% of real
     # postings in full; the longest ever measured was 25,386 chars / 2,693 tokens,
     # so the 8192 window is never the limit — this is a cost dial. Cost flattens
@@ -76,12 +96,7 @@ funnel:
     # 5,000 chars of headroom are close to free.
     max_doc_chars: 15000
     max_length: 4096      # safety bound on the pair; never binds in practice
-    batch_size: 16
-    refine:
-      enabled: true
-      model: cross-encoder/ettin-reranker-68m-v1
-      depth: 500          # how many of stage 1's best get re-scored. Must be >= top_k.
-      batch_size: 8
+    batch_size: 8
 
   # Repeat postings of one requisition share a single LLM call, and the score is
   # copied to every copy — nothing is discarded. One employer's job once took 31 of
@@ -95,9 +110,14 @@ funnel:
     jitter_s: 0.3
     timeout_s: 20
 
-  # How many jobs get an LLM score per run — your budget, and what makes this
-  # affordable at scale. On a Claude subscription the real limit is prompts per
-  # 5-hour window, so a few hundred is the practical ceiling. 0 = no cap.
-  # Jobs that miss the cut are recorded as `rerank_below_top_k` and stay eligible
-  # for the next run, so raising this later recovers them.
-  top_k: 100
+  # The maximum LLM calls one run may make — a SAFETY FUSE, not how jobs are
+  # chosen. `rerank.min_score` above decides that; this only stops a badly-set
+  # cutoff from handing the judge thousands of jobs before you notice.
+  #
+  # On a Claude subscription these calls draw on the same allowance as your own
+  # Claude chat — a rolling 5-hour window plus a weekly one — so a few hundred is the
+  # practical ceiling. 0 = no cap. Jobs that arrive after the cap is reached are
+  # recorded as `llm_call_cap_reached` and stay eligible for the next run, so raising
+  # this later recovers them. Jobs below the cutoff do not: that was a verdict, and
+  # it would come out the same way every time.
+  top_k: 150
