@@ -72,16 +72,34 @@ def cmd_install_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_path(p) -> None:
+    """Print a path in the form the caller can paste straight back into `set --json`.
+
+    Always POSIX-separated. Every path this file prints exists to be fed into a JSON
+    payload on the next command, and on Windows a native path is full of backslashes
+    — which are JSON escapes. `C:\\Users\\...` loses a level somewhere in the shell
+    and the next call dies on `Invalid \\escape`, which is precisely what happened in
+    a real first run: `init-workspace` printed a native path, the caller copied it,
+    and setup stalled.
+
+    On macOS and Linux `as_posix()` is byte-identical to `str()`, so this changes
+    nothing there. On Windows the forward-slash form is accepted everywhere the
+    engine reads a path — `Path("C:/Users/x")` is absolute and normalises correctly,
+    and `paths.resolve_data` passes it through — so nothing downstream cares.
+    """
+    print(Path(p).as_posix())
+
+
 def cmd_init_workspace(args: argparse.Namespace) -> int:
     ws = workspace.init_workspace(args.path)
-    print(ws)
+    _print_path(ws)
     return 0
 
 
 def cmd_find_resumes(args: argparse.Namespace) -> int:
     found = workspace.find_resumes(args.workspace)
     for p in found:
-        print(p)
+        _print_path(p)
     if not found:
         print("no PDFs in resume/original/", file=sys.stderr)
     return 0
@@ -92,7 +110,7 @@ def cmd_install_resume(args: argparse.Namespace) -> int:
     # pick another file. The path printed is the copy's — that is what belongs in
     # matcher.resume_path and applier.resume_path, not the path they typed.
     dest = workspace.install_resume(args.src, args.workspace)
-    print(dest)
+    _print_path(dest)
     return 0
 
 
@@ -116,7 +134,21 @@ def cmd_set(args: argparse.Namespace) -> int:
     try:
         values = json.loads(args.json)
     except json.JSONDecodeError as exc:
-        raise config_writer.ConfigError(f"--json is not valid JSON: {exc}") from exc
+        hint = ""
+        # A Windows path is the overwhelmingly common cause, and the raw message
+        # ("Invalid \escape") does not say so. The backslashes usually survive the
+        # skill but collapse somewhere in the shell layer, so the caller sees a
+        # payload they believe they escaped correctly and retries the same way.
+        # Naming the fix turns a retry loop into one more attempt.
+        if "\\" in args.json:
+            hint = (
+                "  A Windows path is the usual cause: backslashes are JSON escapes "
+                "and often lose a level in the shell. Use forward slashes — "
+                '"C:/Users/you/job-search" works everywhere the engine reads a path.'
+            )
+        raise config_writer.ConfigError(
+            f"--json is not valid JSON: {exc}{hint}"
+        ) from exc
     if not isinstance(values, dict):
         raise config_writer.ConfigError(
             f"--json must be an object of flat keys, got {type(values).__name__}"
@@ -140,7 +172,7 @@ def cmd_write_profile(args: argparse.Namespace) -> int:
     paths.ensure_data_dirs()
     dest = paths.DATA / PROFILE_FILENAME
     dest.write_text(text + "\n", encoding="utf-8")
-    print(dest)
+    _print_path(dest)
     print(f"{len(text.split())} words; store the bare filename {PROFILE_FILENAME!r} "
           f"in matcher.search_profile_path")
     return 0

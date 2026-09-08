@@ -613,10 +613,10 @@ print(f"fidelity check passed on {len(_sub)} jobs — composed cascade == Rerank
 md(r"""
 ## 6. Spending the budget
 
-`matcher.py:_spend_budget` (lines 207–249), reimplemented to return rows instead of
-`MatchResult`s. The order matters and is easy to get wrong: **rerank first, then
-cluster**. Clustering first would change which member becomes the representative,
-because `pick_representative` chooses by rerank score.
+`matcher.py:_process_batch`, reimplemented to return rows instead of `MatchResult`s.
+The order matters and is easy to get wrong: **rerank first, then cluster**.
+`cluster.group` anchors each cluster on its best-scoring member, so clustering first
+would leave it nothing to anchor on and let input order pick the representative.
 
 `top_k` counts **clusters, not postings** — one requisition posted 31 times takes
 one budget slot, and its siblings inherit the verdict.
@@ -624,19 +624,16 @@ one budget slot, and its siblings inherit the verdict.
 
 code(r'''
 def spend_budget(jobs, by_id, top_k=TOP_K, dedupe=True):
-    """Returns (winners, all_rows). Mirrors matcher.py:207-249."""
+    """Returns (winners, all_rows). Mirrors matcher.py:_process_batch."""
     if dedupe:
-        clusters = list(cluster.group(jobs).values())
+        # Clustering keys on the description now, and anchors each cluster on its
+        # best-scoring member — so it needs plain floats, and the representative is
+        # already first in each group.
+        clusters = cluster.group(jobs, {jid: s.best for jid, s in by_id.items()})
     else:
         clusters = [[j] for j in jobs]
 
-    reps = []
-    for members in clusters:
-        # Explicit tie-break on job_id: 2,279 rows tie on updated_at, and max()
-        # would otherwise let input order decide.
-        members = sorted(members, key=lambda j: j.job_id)
-        rep = cluster.pick_representative(members, by_id) if len(members) > 1 else members[0]
-        reps.append((rep, [m for m in members if m.job_id != rep.job_id]))
+    reps = [(members[0], members[1:]) for members in clusters]
 
     reps.sort(key=lambda p: (by_id[p[0].job_id].sort_key, p[0].job_id), reverse=True)
     winning = reps[:top_k] if top_k else reps
@@ -700,7 +697,9 @@ def run_config(cfg) -> tuple[pd.DataFrame, dict]:
     rows = []
     for rank, (rep, sibs) in enumerate(winning, start=1):
         s = by_id[rep.job_id]
-        ck = cluster.cluster_key(rep)
+        # A cluster is identified by the posting that anchors it; there is no longer
+        # a (company, title) key, because titles are not compared.
+        ck = (rep.board_token, rep.job_id)
         rows.append({
             "config": cfg["name"], "rank": rank, "job_id": rep.job_id,
             "board_token": rep.board_token, "source": rep.source, "title": rep.title,
@@ -726,7 +725,7 @@ def run_config(cfg) -> tuple[pd.DataFrame, dict]:
     # Full ranked list (representatives only) for the agreement metrics.
     ranked = pd.DataFrame([{
         "job_id": rep.job_id,
-        "cluster_key": f"{cluster.cluster_key(rep)[0]}||{cluster.cluster_key(rep)[1]}",
+        "cluster_key": f"{rep.board_token}||{rep.job_id}",
         "cluster_rank": i + 1,
         "rank_score": by_id[rep.job_id].best,
         "is_refined": by_id[rep.job_id].is_refined,

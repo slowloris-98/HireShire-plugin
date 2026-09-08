@@ -37,19 +37,32 @@ from hireshire.models.job import Job
 RUN_ID = "test-run"
 
 
-def make_job(job_id: str, title: str | None = None, board: str = "acme", age_days: int = 0) -> Job:
+def make_job(
+    job_id: str,
+    title: str | None = None,
+    board: str = "acme",
+    age_days: int = 0,
+    content_text: str | None = None,
+) -> Job:
     now = datetime.now(timezone.utc)
     return Job(
         source="greenhouse",
         board_token=board,
-        # Distinct by default: identical titles at one employer are a *cluster*, and
-        # most tests below are about the cutoff, not grouping.
         title=title if title is not None else f"Engineer {job_id}",
         job_id=job_id,
         location={"name": "Remote"},
         absolute_url="https://example.com/job",
         updated_at=now - timedelta(days=age_days),
-        content_text="a description",
+        # Distinct by default, and distinct by a wide margin. Clustering keys on the
+        # DESCRIPTION, so a shared constant here would collapse every job in a test
+        # into one cluster and the cutoff tests would pass for the wrong reason.
+        # Note the margin has to exceed `max_word_diff`: "a description of job 1" and
+        # "a description of job 2" are only 2 words apart and would still merge.
+        # Tests that want a cluster pass the same `content_text` explicitly.
+        content_text=(
+            content_text if content_text is not None
+            else " ".join(f"unique-{job_id}-token-{i}" for i in range(12))
+        ),
         scraped_at=now,
     )
 
@@ -216,11 +229,17 @@ def test_repeat_postings_share_one_call():
     """31 copies of one requisition once consumed 31 of 100 slots. One cluster, one
     call — and the copies come back as siblings so their score can be filled in.
 
-    This still works per batch, which is what made streaming possible: `cluster_key`
-    is (board_token, normalised_title) and the scraper emits one employer per queue
-    item, so every member of a cluster is in the same batch by construction.
+    This still works per batch, which is what made streaming possible: postings group
+    by employer and description, and the scraper emits one employer per queue item,
+    so every member of a cluster is in the same batch by construction.
+
+    The five copies carry *different* titles here, which is the point: the title is
+    not consulted at all.
     """
-    dupes = [make_job(str(i), title="Multi-Media Account Executive") for i in range(5)]
+    dupes = [
+        make_job(str(i), content_text="one requisition, posted five times")
+        for i in range(5)
+    ]
     other = make_job("99", title="Client Success Manager")
 
     winners, dropped, siblings = run_batch([*dupes, other], min_score=-99.0)
@@ -244,7 +263,7 @@ def test_every_member_of_a_dropped_cluster_gets_its_own_row():
     """A member with no row never reaches the all-jobs export and is never marked
     seen — it simply vanishes from the run, which is the one outcome clustering is
     supposed to make impossible."""
-    dupes = [make_job(str(i), title="Account Executive") for i in range(3)]
+    dupes = [make_job(str(i), content_text="one requisition") for i in range(3)]
     other = make_job("50", title="Client Success Manager")
 
     _, dropped, _ = run_batch([*dupes, other], min_score=99.0)
@@ -257,16 +276,17 @@ def test_every_member_of_a_dropped_cluster_gets_its_own_row():
 
 
 def test_dedupe_can_be_switched_off():
-    dupes = [make_job(str(i), title="Account Executive") for i in range(4)]
+    dupes = [make_job(str(i), content_text="one requisition") for i in range(4)]
     winners, _, siblings = run_batch(dupes, min_score=-99.0, dedupe=False)
     assert len(winners) == 4
     assert siblings == {}
 
 
 def test_clusters_never_span_two_employers():
-    """Same title at two companies is two jobs, not a duplicate."""
-    a = make_job("1", title="Account Manager", board="acme")
-    b = make_job("2", title="Account Manager", board="globex")
+    """The same description at two companies is two jobs, not a duplicate — job
+    boards are full of shared agency boilerplate."""
+    a = make_job("1", board="acme", content_text="identical boilerplate")
+    b = make_job("2", board="globex", content_text="identical boilerplate")
     winners, _, siblings = run_batch([a, b], min_score=-99.0)
     assert len(winners) == 2
     assert siblings == {}

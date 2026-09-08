@@ -32,7 +32,7 @@ import matcher
 import scraper
 from hireshire import paths, reporting
 from hireshire.results_export import all_jobs_name, write_all_jobs_csv
-from hireshire.storage.db import PHASE_PIPELINE, get_db
+from hireshire.storage.db import PHASE_MATCH, PHASE_PIPELINE, get_db
 
 load_dotenv()
 
@@ -264,8 +264,15 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
     # like the shortlist CSV, because it is sorted across the whole run — no row's
     # position is known until every row exists.
     all_rows = await asyncio.to_thread(db.load_all_matches, run_id)
+    # The sweep's scoring cost, recorded once against the match phase rather than on
+    # any row. Safe to read here: the matcher writes its `runs` row in the `finally`
+    # that also sends the queue sentinel, and it finalises *before* sending it, so
+    # the row exists by the time this runs. Absent on a run whose backend has no
+    # meters, which writes a blank column rather than a zero.
+    match_stats = (await asyncio.to_thread(db.run_phase_stats, run_id)).get(PHASE_MATCH) or {}
+    run_cost = (match_stats.get("usage") or {}).get("cost_usd")
     all_jobs_path = await asyncio.to_thread(
-        write_all_jobs_csv, all_rows, results_dir / all_jobs_name(stamp)
+        write_all_jobs_csv, all_rows, results_dir / all_jobs_name(stamp), run_cost
     )
 
     json_path = results_dir / _json_name(stamp)

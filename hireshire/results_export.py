@@ -42,6 +42,11 @@ FIELDS = [
     "posted_at",
     "link",
     "job_id",
+    # A per-RUN scalar repeated on every row, unlike everything above it. The tally
+    # is one figure for the whole sweep — the funnel does not attribute spend to
+    # individual jobs — and repeating it keeps the column removable in one line and
+    # makes a spreadsheet pivot work. Blank on runs that recorded no cost.
+    "run_cost_usd",
 ]
 
 
@@ -60,7 +65,7 @@ def _status(record: dict) -> str:
     return "scored_below_threshold"
 
 
-def _row(record: dict) -> dict:
+def _row(record: dict, run_cost_usd: float | None = None) -> dict:
     return {
         "processed_at": record.get("scored_at") or "",
         "company": record.get("board_token") or "",
@@ -82,6 +87,7 @@ def _row(record: dict) -> dict:
         "posted_at": record.get("posted_at") or "",
         "link": record.get("absolute_url") or "",
         "job_id": record.get("job_id") or "",
+        "run_cost_usd": _num(run_cost_usd),
     }
 
 
@@ -100,8 +106,13 @@ def _num(value) -> str | float:
     return "" if value is None else round(float(value), 4)
 
 
-def write_all_jobs_csv(records: list[dict], path: Path) -> Path | None:
+def write_all_jobs_csv(records: list[dict], path: Path,
+                       run_cost_usd: float | None = None) -> Path | None:
     """Write the all-jobs CSV. Returns the path, or None if it could not be written.
+
+    `run_cost_usd` is the sweep's estimated scoring cost, which no match record
+    carries — it is recorded once against the run — so the caller passes it in. It
+    defaults to None, which writes a blank column rather than a zero.
 
     Never raises: this file is a diagnostic, and losing it must not take down a run
     whose real output — the database rows and the shortlist — is already safe.
@@ -113,7 +124,7 @@ def write_all_jobs_csv(records: list[dict], path: Path) -> Path | None:
         with path.open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
             writer.writeheader()
-            writer.writerows(_row(r) for r in records)
+            writer.writerows(_row(r, run_cost_usd) for r in records)
     except OSError as exc:
         logger.warning("Could not write %s: %s", path, exc)
         return None

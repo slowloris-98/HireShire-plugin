@@ -30,6 +30,14 @@ from __future__ import annotations
 import html
 from datetime import datetime, timezone
 
+# The one switch for every cost figure on both pages. Set it to False and the stat
+# tiles, the dashboard column and the footnote all disappear together, leaving the
+# reports exactly as they were before scoring cost was recorded — the numbers stay
+# in `runs.stats_json` and in the all-jobs CSV either way. It is a constant rather
+# than a setting because turning it off is an edit to this repo, not a decision a
+# user makes; `config_writer.py` deliberately whitelists what users may change.
+SHOW_COST = True
+
 # Google Fonts is the only external host the Artifact CSP admits. Every face still
 # names a real fallback stack — on a machine with no network, or inside the local
 # file, the page has to stay readable.
@@ -193,6 +201,21 @@ def num(value) -> str:
         return f"{int(value):,}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def usd(value) -> str:
+    """A dollar figure to the cent, or an em dash when there is no measurement.
+
+    Separate from ``num`` because that one casts to ``int``, which would render
+    $1.87 as "1". Same em-dash-not-zero rule: a run whose backend cannot read its
+    own meters has no cost figure, and printing $0.00 would claim it was free.
+    """
+    if value is None:
+        return "—"
+    try:
+        return f"${float(value):.2f}"
+    except (TypeError, ValueError):
+        return "—"
 
 
 def pct(part: int | None, whole: int | None) -> float:

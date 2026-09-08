@@ -94,6 +94,22 @@ class UsageTally:
     def empty(self) -> bool:
         return self.calls == 0
 
+    def as_dict(self) -> dict:
+        """The tally as plain JSON, for `runs.stats_json`.
+
+        Written once per run by `MatchStore.finalise` so the reports and the
+        all-jobs CSV can answer "what did that sweep cost" without reading a log
+        file — which, under the monitor's `quiet=True`, was the only copy.
+        """
+        return {
+            "calls": self.calls,
+            "input": self.input,
+            "output": self.output,
+            "cache_read": self.cache_read,
+            "cache_write": self.cache_write,
+            "cost_usd": self.cost_usd,
+        }
+
     def summary(self) -> str:
         return (
             f"Scoring usage: {self.calls} calls, {self.input:,} input + "

@@ -1,7 +1,7 @@
 """The matching report: why each job scored what it did, and what never got scored.
 
 This is `<stamp>_results_all_jobs.csv` in a form a person can actually read. The
-CSV answers "what happened to every posting" in sixteen columns; this answers the
+CSV answers "what happened to every posting" in seventeen columns; this answers the
 question underneath it — *why* — by surfacing the four rationales the scoring
 prompt returns, which until now were written into the `matches` table's
 `raw_json` and never shown anywhere.
@@ -36,12 +36,14 @@ from typing import Any
 
 from hireshire.reporting import data
 from hireshire.reporting.render import (
+    SHOW_COST,
     artifact_page,
     e,
     funnel_step,
     local_time,
     num,
     pct,
+    usd,
 )
 
 logger = logging.getLogger(__name__)
@@ -192,7 +194,7 @@ def _scored_entry(index: int, job: dict, threshold: int | None) -> str:
 
     cluster = job.get("cluster_size") or 1
     cluster_txt = (
-        f'<span class="sep">·</span>{cluster} locations' if cluster > 1 else ""
+        f'<span class="sep">·</span>{cluster} copies' if cluster > 1 else ""
     )
 
     url = job.get("absolute_url") or ""
@@ -228,6 +230,45 @@ def _scored_entry(index: int, job: dict, threshold: int | None) -> str:
         f'{_listing(job, "match_reasons", "What matched", "good")}'
         f'{_listing(job, "disqualifiers", "What counted against it", "bad")}'
         "</div></article>"
+    )
+
+
+def _cost_tile(snapshot: dict[str, Any]) -> str:
+    """The sixth stat tile, or nothing at all.
+
+    Empty in three cases that all mean the same thing — no measurement exists —
+    rather than printing a zero that would read as "this sweep was free": the
+    reports' cost display is switched off, the run predates the tally, or its
+    backend cannot read its own meters. Also empty mid-sweep, because the tally is
+    recorded once at finalise.
+    """
+    usage = snapshot.get("usage")
+    if not SHOW_COST or not usage:
+        return ""
+    return (
+        f'<div class="stat"><span class="stat-n">{usd(usage.get("cost_usd"))}</span>'
+        f'<span class="stat-l">Est. cost</span></div>'
+    )
+
+
+def _cost_note(snapshot: dict[str, Any]) -> str:
+    """The footnote under the tile. Renders only when the tile does.
+
+    `cache_read` is here deliberately. The resume and rubric are byte-identical on
+    every call of a run, so from the second judged job onward it should dominate the
+    input count; a zero means the cached prefix broke and the run paid full price to
+    re-read the same resume once per job. That is invisible without printing it.
+    """
+    usage = snapshot.get("usage")
+    if not SHOW_COST or not usage:
+        return ""
+    return (
+        f'<br>Scoring this sweep took <b>{num(usage.get("calls"))}</b> calls — '
+        f'{num(usage.get("input"))} input and {num(usage.get("output"))} output tokens, '
+        f'with {num(usage.get("cache_read"))} served from cache. '
+        f'The <b>{usd(usage.get("cost_usd"))}</b> is Claude Code\'s own client-side '
+        "estimate at list price: not a bill, and not a share of your plan's 5-hour or "
+        "weekly allowance, which no interface outside Claude Code itself can report."
     )
 
 
@@ -467,6 +508,7 @@ def build(snapshot: dict[str, Any], records: list[dict], stamp: str) -> str:
     <div class="stat"><span class="stat-n">{num(snapshot.get('top_score'))}</span><span class="stat-l">Top score</span></div>
     <div class="stat flag"><span class="stat-n">{num(threshold)}</span><span class="stat-l">Threshold</span></div>
     <div class="stat {'good' if snapshot['shortlisted'] else 'flag'}"><span class="stat-n">{num(snapshot['shortlisted'])}</span><span class="stat-l">Shortlisted</span></div>
+    {_cost_tile(snapshot)}
   </div>
 
   <p class="note">
@@ -488,6 +530,7 @@ def build(snapshot: dict[str, Any], records: list[dict], stamp: str) -> str:
     The two cross-encoder columns come from <b>different models</b> and are never
     comparable to each other; the bi-encoder column is a 0–1 cosine over the title only.
     Full machine-readable rows are in <code>{e(stamp)}_results_all_jobs.csv</code>.
+    {_cost_note(snapshot)}
   </footer>
 </div>"""
 

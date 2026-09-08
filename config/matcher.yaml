@@ -100,10 +100,17 @@ funnel:
 
   # Repeat postings of one requisition share a single LLM call, and the score is
   # copied to every copy — nothing is discarded. One employer's job once took 31 of
-  # 100 budget slots. Jobs group only when the company AND the normalised title
+  # 100 budget slots. Jobs group only when the company AND the job description
   # match, so several different roles at one employer stay independently eligible.
+  # Titles are never compared: employers rewrite them freely, and grouping on them
+  # merged unrelated jobs (a Starlink role with a Starship one) two times in three.
   dedupe:
     enabled: true
+    # Words two descriptions may differ by and still count as one posting. A
+    # substitution costs 2 (one word out, one in). Employers interpolate pay bands
+    # and addresses per market, so 0 would split copies of one requisition; much
+    # above 10 starts absorbing genuinely different postings.
+    max_word_diff: 10
 
   detail_fetch:
     concurrency: 10

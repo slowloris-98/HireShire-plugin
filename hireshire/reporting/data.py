@@ -129,6 +129,11 @@ def run_snapshot(db: Database, run_id: str) -> dict[str, Any]:
         "threshold": settings["threshold"] or (phases.get(PHASE_MATCH) or {}).get("threshold"),
         "top_k": settings["top_k"],
         "model": (phases.get(PHASE_MATCH) or {}).get("model"),
+        # What the scoring drew: calls, tokens, cache reads and a cost estimate.
+        # None until the matcher finalises — like `model` and unlike the counts, it
+        # is written once at the end — so a live page simply shows no cost figure
+        # rather than a figure that climbs and then stops meaning anything.
+        "usage": (phases.get(PHASE_MATCH) or {}).get("usage"),
     }
 
 
@@ -204,6 +209,10 @@ def dashboard_snapshot(db: Database, limit: int = 30) -> dict[str, Any]:
         "candidates": sum(r["candidates"] for r in runs),
         "scored": sum(r["scored"] for r in runs),
         "shortlisted": sum(r["shortlisted"] for r in runs),
+        # Runs that were never measured contribute nothing rather than breaking the
+        # sum, so this is "what the measured sweeps cost", which is the most that can
+        # honestly be said across an install that predates the tally.
+        "cost_usd": sum((r.get("usage") or {}).get("cost_usd") or 0 for r in runs),
     }
     return {
         "runs": runs,

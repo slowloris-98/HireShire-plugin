@@ -232,6 +232,19 @@ def _log_usage(scorer, quiet: bool) -> None:
         )
 
 
+def _usage_stats(scorer) -> dict | None:
+    """The run's meters as JSON for `runs.stats_json`, or None when unmeasured.
+
+    Same rule as `_log_usage` directly above, for the same reason: only backends
+    that can read their own meters expose a tally, and a run without one records
+    nothing rather than a row of zeros that would read as "this sweep was free".
+    """
+    usage = getattr(scorer, "usage", None)
+    if usage is None or usage.empty:
+        return None
+    return usage.as_dict()
+
+
 def _funnel_summary(stages: dict[str, int], budget: "_CallBudget") -> str:
     """One line naming what each stage passed.
 
@@ -284,6 +297,7 @@ async def _process_batch(
     budget: _CallBudget,
     run_id: str,
     dedupe: bool = True,
+    max_word_diff: int = cluster.DEFAULT_MAX_WORD_DIFF,
 ) -> tuple[list[tuple[Job, float]], list[MatchResult], dict[str, list[tuple[Job, float]]]]:
     """Rerank one batch and decide, per job, whether it is worth an LLM call.
 
@@ -300,12 +314,17 @@ async def _process_batch(
     profile, so it can be applied the moment the batch arrives — which is what makes
     the shortlist fill during the sweep instead of in its last two minutes.
 
-    **Clustering survives the move, and it is load-bearing.** `cluster_key` is
-    (board_token, normalised_title) and the scraper emits one employer per queue
-    item, so every member of a cluster is in this batch by construction. Grouping
-    here still collapses 31 copies of one requisition into one LLM call; no global
-    pass is needed for that. The thing top-K needed globally was *ranking* companies
-    against each other, and nothing does that any more.
+    **Clustering survives the move, and it is load-bearing.** Postings group by
+    employer and description, and the scraper emits one employer per queue item, so
+    every member of a cluster is in this batch by construction. Grouping here still
+    collapses 31 copies of one requisition into one LLM call; no global pass is
+    needed for that. The thing top-K needed globally was *ranking* companies against
+    each other, and nothing does that any more.
+
+    **Rerank before cluster, not after.** `cluster.group` anchors each cluster on its
+    best-scoring member, so it needs `by_id` already populated — which is also what
+    lets the representative be chosen without a second pass. Reordering these two
+    lines would silently make scrape order pick the representative.
 
     An unusable reranker (no profile, or reranking switched off) must not be gated:
     it scores everything 0.0, which is an absence of information rather than a
@@ -320,14 +339,15 @@ async def _process_batch(
 
     # --- Group repeat requisitions so one employer cannot eat the budget --------
     if dedupe:
-        clusters = list(cluster.group(candidates).values())
+        clusters = cluster.group(candidates, by_id, max_word_diff=max_word_diff)
     else:
         clusters = [[job] for job in candidates]
 
-    representatives: list[tuple[Job, list[Job]]] = []
-    for members in clusters:
-        rep = cluster.pick_representative(members, by_id) if len(members) > 1 else members[0]
-        representatives.append((rep, [m for m in members if m.job_id != rep.job_id]))
+    # `group` returns each cluster with its representative first — the anchor every
+    # sibling was measured against — so there is nothing left to choose here.
+    representatives: list[tuple[Job, list[Job]]] = [
+        (members[0], members[1:]) for members in clusters
+    ]
 
     # Best-first *within the batch*. This no longer decides anything — every
     # representative is measured against the cutoff on its own — but when the run is
@@ -646,6 +666,7 @@ async def main(
                     winners, dropped, siblings = await _process_batch(
                         to_score, reranker, min_score, budget, run_id,
                         config.funnel.dedupe.enabled,
+                        config.funnel.dedupe.max_word_diff,
                     )
                     stages["reranked"] += len(to_score)
                     stages["above_cutoff"] += len(winners) + sum(
@@ -688,7 +709,9 @@ async def main(
                 shortlisted = [r for r in results if is_shortlisted(r, settings.threshold)]
                 rejected = [r for r in results if not is_shortlisted(r, settings.threshold)]
                 shortlisted.sort(key=lambda r: (r.relevance_score or 0), reverse=True)
-                store.finalise(shortlisted, rejected, started_at, settings.threshold, settings.model, len(results))
+                store.finalise(shortlisted, rejected, started_at, settings.threshold,
+                               settings.model, len(results),
+                               _usage_stats(scorer if not effective_skip_llm else None))
                 if breaker.tripped:
                     # Queue mode is what the monitor runs, where a "0 shortlisted"
                     # line would otherwise be the only trace of a dead backend.
@@ -740,7 +763,8 @@ async def main(
         # chunk it — but it goes through the same helper as the streaming path so the
         # two cannot drift apart in what they gate, cluster or retire.
         winners, cut_dropped, siblings = await _process_batch(
-            gated, reranker, min_score, budget, run_id, config.funnel.dedupe.enabled
+            gated, reranker, min_score, budget, run_id, config.funnel.dedupe.enabled,
+            config.funnel.dedupe.max_word_diff,
         )
         stages["gated"] = stages["reranked"] = len(gated)
         stages["above_cutoff"] = len(winners) + budget.refused
@@ -796,7 +820,9 @@ async def main(
         shortlisted = [r for r in results if is_shortlisted(r, settings.threshold)]
         rejected = [r for r in results if not is_shortlisted(r, settings.threshold)]
         shortlisted.sort(key=lambda r: (r.relevance_score or 0), reverse=True)
-        store.finalise(shortlisted, rejected, started_at, settings.threshold, settings.model, len(jobs))
+        store.finalise(shortlisted, rejected, started_at, settings.threshold,
+                       settings.model, len(jobs),
+                       _usage_stats(scorer if not effective_skip_llm else None))
         for r in results:
             # Budget drops stay eligible for a later run — see _RETRYABLE_SKIP_REASONS.
             if r.skip_reason not in _RETRYABLE_SKIP_REASONS:

@@ -104,7 +104,7 @@ def test_write_profile_resolves_the_data_dir_itself(data_dir, capsys):
 
     dest = data_dir / setup_cli.PROFILE_FILENAME
     assert dest.exists()
-    assert printed == str(dest)
+    assert printed == dest.as_posix()
     assert "Component-based UI development." in dest.read_text(encoding="utf-8")
 
 
@@ -123,9 +123,41 @@ def test_init_workspace_refuses_the_install_dir(data_dir, capsys):
 def test_init_workspace_creates_the_documented_skeleton(data_dir, tmp_path, capsys):
     ws = tmp_path / "search"
     assert setup_cli.main(["init-workspace", str(ws)]) == 0
-    assert capsys.readouterr().out.strip() == str(ws.resolve())
+    assert capsys.readouterr().out.strip() == ws.resolve().as_posix()
     assert (ws / paths.RESUME_SUBDIR).is_dir()
     assert (ws / paths.RUN_RESULTS_DIRNAME).is_dir()
+
+
+def test_printed_paths_survive_being_pasted_back_into_a_json_payload(data_dir, tmp_path, capsys):
+    """The round trip that broke a real first run on Windows.
+
+    Every path this CLI prints exists to be fed into the next `set --json` call. A
+    native Windows path is full of backslashes, which are JSON escapes: they lose a
+    level in the shell and the next command dies on `Invalid \\escape`. The caller
+    then retries the same way, because the payload looks correctly escaped.
+
+    Printing POSIX separators makes the failure impossible rather than documented.
+    On macOS and Linux this assertion is trivially true and the output is unchanged;
+    on Windows it is the whole point.
+    """
+    ws = tmp_path / "search"
+    setup_cli.main(["init-workspace", str(ws)])
+    printed = capsys.readouterr().out.strip()
+
+    assert "\\" not in printed
+    # The real test: it round-trips through JSON without escaping, and still names
+    # the same directory.
+    from pathlib import Path
+    payload = json.dumps({"workspace_dir": printed})
+    assert Path(json.loads(payload)["workspace_dir"]) == ws.resolve()
+
+
+def test_a_windows_path_in_json_is_refused_with_the_fix_named(data_dir, capsys):
+    """The backstop for a caller who builds the payload by hand anyway. `Invalid
+    \\escape` on its own does not tell anyone what to do differently."""
+    assert setup_cli.main(["set", "scraper", "--json", r'{"workspace_dir": "C:\Users\me"}']) == 1
+    err = capsys.readouterr().err
+    assert "forward slashes" in err
 
 
 def test_a_missing_resume_fails_before_anything_is_copied(data_dir, tmp_path, capsys):
