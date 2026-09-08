@@ -1,7 +1,17 @@
-Add this point to the plan as well:
-- Do not share teh size of model being downloaded in the setup and installation. Only discuss the time it can take to setup like 15-20 min for the initial first time setup.
-- change the scoring model to haiku with high thinking
+- Dashboard is not showing any sweeps. Manual reload showed something
+- the shell logging should be very clean and very simple
+- some check to see if the claude limit is reached and to stop/pause the process. maybe the monitor should take care of this.
+- also in case the limit is reached at least the scrapper and funnel should do their job and persist data somewhere. which can be scored in the next run.
+- maybe keep high precision (eg: keyword searching should be less generic and more relevant to the user role)
+    - the idea is that the plugin should find the most relevant and recent jobs. users can get generaic results from job boards as well.
+- to reduce llm-as-a-judge approach, convert the jd in json (yoe, skills, etc) (using lightweight models like haiku) compare this json with resume json (deterministic)
+
+
+- search the whole solution if it has keyword related to swe or is skewed for a specific job type.
+
+
 - make the applier also asynchronous (maybe batch by batch)
+
 
 
 - User can add more compines like google/microsoft (basically that have their own career website) which should be scrapped along the given boards. Similar to what orchestrate in HireShire original is doing currently.

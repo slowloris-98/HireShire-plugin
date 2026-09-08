@@ -46,6 +46,18 @@ def run(argv: list[str]) -> int:
     env.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
     env["CLAUDE_PLUGIN_DATA"] = str(DATA)
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    # Windows defaults stdout to the console's ANSI codepage (cp1252), which cannot
+    # encode most of what comes out of a PDF. `setup_cli.py resume-text` died on
+    # U+25CF — an ordinary bullet — during a real first run, taking setup with it.
+    # Every resume has bullets, so on Windows this was a blocker for essentially
+    # every user, and it only appears once a real PDF is involved.
+    #
+    # Set here rather than in each entrypoint because this is the one place every
+    # engine script is launched from, the same argument as interpreter and directory
+    # discovery. `:replace` covers the residue: PDF extraction can emit lone
+    # surrogates, which are not encodable even in UTF-8, and a mangled character
+    # beats a dead run. setdefault so an explicitly-set value still wins.
+    env.setdefault("PYTHONIOENCODING", "utf-8:replace")
 
     return subprocess.run(
         [str(venv_python()), str(script), *argv[1:]],

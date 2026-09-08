@@ -51,6 +51,12 @@ def _reexec_in_venv() -> int:
     env.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
     env["CLAUDE_PLUGIN_DATA"] = str(DATA)  # informational; the child derives the same from ROOT
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    # Same reason as run_engine.py: Windows defaults stdout to the console codepage,
+    # which cannot encode most of what a job posting contains. This path prints only
+    # ASCII summaries today, so it is insurance rather than a fix — but the two
+    # launcher entrypoints having different encoding behaviour is how the next
+    # summary line that carries a job title becomes a crash nobody is watching.
+    env.setdefault("PYTHONIOENCODING", "utf-8:replace")
     return subprocess.run(
         [str(venv_python()), str(Path(__file__).resolve())],
         cwd=str(ROOT),
@@ -74,6 +80,11 @@ def _loop() -> int:
     logging.basicConfig(
         level=logging.INFO,
         filename=str(paths.LOGS_DIR / "orchestration.log"),
+        # Explicit, because the default is the platform's codepage: on Windows a job
+        # title with an em-dash lands in this file as an escaped `—`. Nothing
+        # crashes (basicConfig defaults errors to "backslashreplace"), but this log
+        # is the only record an unattended sweep leaves, and it should be readable.
+        encoding="utf-8",
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
