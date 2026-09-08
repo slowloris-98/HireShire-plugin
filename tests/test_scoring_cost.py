@@ -218,6 +218,61 @@ def test_a_renamed_or_missing_usage_field_never_breaks_a_run():
     assert tally.cost_usd == 0.0
 
 
+def test_the_tally_serialises_for_the_run_row(monkeypatch):
+    """`runs.stats_json` is how the meters reach the reports and the all-jobs CSV.
+    Before this, the only copy of a monitor sweep's cost was a line in a log file,
+    because `quiet=True` suppresses the console summary."""
+    captured: dict = {}
+    backend = _backend(monkeypatch, captured, _OK)
+    asyncio.run(backend.call("prompt", "system"))
+
+    assert backend.usage.as_dict() == {
+        "calls": 1, "input": 900, "output": 400,
+        "cache_read": 2500, "cache_write": 120, "cost_usd": pytest.approx(0.031),
+    }
+
+
+def test_an_unmeasured_run_reports_no_usage_at_all():
+    """Only backends that read their own meters have a tally. A run without one
+    records nothing rather than a row of zeros that would read as 'this was free'."""
+    import matcher
+
+    class _Scorer:
+        def __init__(self, usage):
+            self.usage = usage
+
+    assert matcher._usage_stats(None) is None
+    assert matcher._usage_stats(_Scorer(None)) is None
+    assert matcher._usage_stats(_Scorer(UsageTally())) is None, "empty tally, no call made"
+
+    tally = UsageTally()
+    tally.record(_OK)
+    assert matcher._usage_stats(_Scorer(tally))["calls"] == 1
+
+
+def test_finalise_omits_the_usage_key_when_nothing_was_measured(tmp_path):
+    """Absent, not zeroed: a reader that finds no key knows the run was never
+    measured, which is a different fact from a sweep that cost nothing."""
+    from hireshire.matcher.store import MatchStore
+
+    class _DB:
+        def __init__(self):
+            self.stats = None
+
+        def finalise_run(self, run_id, phase, started_at, finished_at=None, stats=None):
+            self.stats = stats
+
+    db = _DB()
+    store = MatchStore("run-1", threshold=75, db=db)
+    started = datetime(2026, 9, 7, tzinfo=timezone.utc)
+
+    store.finalise([], [], started, 75, "claude-sonnet-5", 0)
+    assert "usage" not in db.stats
+
+    store.finalise([], [], started, 75, "claude-sonnet-5", 0, {"calls": 3, "cost_usd": 0.5})
+    assert db.stats["usage"] == {"calls": 3, "cost_usd": 0.5}
+
+
 def test_a_flat_cache_creation_count_is_accepted():
     """Older CLI versions reported a number where current ones report a per-TTL
     object."""

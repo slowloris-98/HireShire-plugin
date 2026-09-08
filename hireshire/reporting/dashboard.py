@@ -25,7 +25,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from hireshire.reporting.render import document, e, funnel_step, local_time, num
+from hireshire.reporting.render import SHOW_COST, document, e, funnel_step, local_time, num, usd
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,31 @@ def _live_panel(live: dict[str, Any] | None) -> str:
     )
 
 
+def _cost_total_tile(totals: dict[str, Any]) -> str:
+    """Lifetime estimated spend, or nothing when no sweep here was ever measured.
+
+    A falsy total means exactly that — every run predates the tally, or ran on a
+    backend with no meters — so the tile is omitted rather than claiming $0.00.
+    """
+    if not SHOW_COST or not totals.get("cost_usd"):
+        return ""
+    return (
+        f'<div class="stat"><span class="stat-n">{usd(totals["cost_usd"])}</span>'
+        f'<span class="stat-l">Est. cost</span></div>'
+    )
+
+
+def _cost_cell(run: dict[str, Any]) -> str:
+    """One sweep's estimated cost, blank when that sweep was never measured.
+
+    An em dash rather than $0.00 on runs made before the tally existed, or by a
+    backend that cannot read its own meters — the same rule the stat tiles follow.
+    """
+    if not SHOW_COST:
+        return ""
+    return f'<td class="numeric">{usd((run.get("usage") or {}).get("cost_usd"))}</td>'
+
+
 def _run_rows(runs: list[dict[str, Any]]) -> str:
     cells = []
     for r in runs:
@@ -87,6 +112,7 @@ def _run_rows(runs: list[dict[str, Any]]) -> str:
             f'<td class="numeric">{num(r["scored"])}</td>'
             f'<td class="numeric">{num(r.get("top_score"))}</td>'
             f'<td class="numeric">{num(r["shortlisted"])}</td>'
+            f"{_cost_cell(r)}"
             f"<td>{state}</td></tr>"
         )
     return "".join(cells)
@@ -128,6 +154,7 @@ def build(snapshot: dict[str, Any], results_root: Path) -> str:
     <div class="stat"><span class="stat-n">{num(totals['scored'])}</span><span class="stat-l">LLM-scored</span></div>
     <div class="stat good"><span class="stat-n">{num(totals['shortlisted'])}</span><span class="stat-l">Shortlisted</span></div>
     <div class="stat"><span class="stat-n">{num(applied['total'])}</span><span class="stat-l">Applied</span></div>
+    {_cost_total_tile(totals)}
   </div>
   <p class="standfirst" style="font-size:.9rem">
     Totals count every row across all {num(totals['runs'])} sweeps, so a job that resurfaced
@@ -143,9 +170,9 @@ def build(snapshot: dict[str, Any], results_root: Path) -> str:
     <table>
       <thead><tr>
         <th>Started</th><th>Employers</th><th>Jobs</th><th>Reranked</th>
-        <th>Scored</th><th>Best</th><th>Shortlisted</th><th></th>
+        <th>Scored</th><th>Best</th><th>Shortlisted</th>{'<th>Est. cost</th>' if SHOW_COST else ''}<th></th>
       </tr></thead>
-      <tbody>{_run_rows(runs) or '<tr><td colspan="8">No sweeps yet.</td></tr>'}</tbody>
+      <tbody>{_run_rows(runs) or f'<tr><td colspan="{9 if SHOW_COST else 8}">No sweeps yet.</td></tr>'}</tbody>
     </table>
   </div>
   <p class="standfirst" style="font-size:.9rem;margin-top:1rem">
@@ -153,6 +180,10 @@ def build(snapshot: dict[str, Any], results_root: Path) -> str:
     reaches the threshold{f' of <b>{num(threshold)}</b>' if threshold is not None else ''}.
     Jobs that lost the top-K race are never marked seen, so they come back around in the
     next sweep and may win against weaker competition.
+    {"<b>Est. cost</b> is Claude Code's own client-side estimate at list price for the "
+     "sweeps that recorded one, so it is neither a bill nor a share of your plan's "
+     "5-hour or weekly allowance. Sweeps run before costs were recorded show a dash."
+     if SHOW_COST else ""}
   </p>
 
   <h2 class="section">Applications</h2>

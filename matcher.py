@@ -232,6 +232,19 @@ def _log_usage(scorer, quiet: bool) -> None:
         )
 
 
+def _usage_stats(scorer) -> dict | None:
+    """The run's meters as JSON for `runs.stats_json`, or None when unmeasured.
+
+    Same rule as `_log_usage` directly above, for the same reason: only backends
+    that can read their own meters expose a tally, and a run without one records
+    nothing rather than a row of zeros that would read as "this sweep was free".
+    """
+    usage = getattr(scorer, "usage", None)
+    if usage is None or usage.empty:
+        return None
+    return usage.as_dict()
+
+
 def _funnel_summary(stages: dict[str, int], budget: "_CallBudget") -> str:
     """One line naming what each stage passed.
 
@@ -696,7 +709,9 @@ async def main(
                 shortlisted = [r for r in results if is_shortlisted(r, settings.threshold)]
                 rejected = [r for r in results if not is_shortlisted(r, settings.threshold)]
                 shortlisted.sort(key=lambda r: (r.relevance_score or 0), reverse=True)
-                store.finalise(shortlisted, rejected, started_at, settings.threshold, settings.model, len(results))
+                store.finalise(shortlisted, rejected, started_at, settings.threshold,
+                               settings.model, len(results),
+                               _usage_stats(scorer if not effective_skip_llm else None))
                 if breaker.tripped:
                     # Queue mode is what the monitor runs, where a "0 shortlisted"
                     # line would otherwise be the only trace of a dead backend.
@@ -805,7 +820,9 @@ async def main(
         shortlisted = [r for r in results if is_shortlisted(r, settings.threshold)]
         rejected = [r for r in results if not is_shortlisted(r, settings.threshold)]
         shortlisted.sort(key=lambda r: (r.relevance_score or 0), reverse=True)
-        store.finalise(shortlisted, rejected, started_at, settings.threshold, settings.model, len(jobs))
+        store.finalise(shortlisted, rejected, started_at, settings.threshold,
+                       settings.model, len(jobs),
+                       _usage_stats(scorer if not effective_skip_llm else None))
         for r in results:
             # Budget drops stay eligible for a later run — see _RETRYABLE_SKIP_REASONS.
             if r.skip_reason not in _RETRYABLE_SKIP_REASONS:

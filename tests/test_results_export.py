@@ -120,6 +120,27 @@ def test_status_distinguishes_scored_but_below_threshold(tmp_path):
     assert read(path)[0]["status"] == "scored_below_threshold"
 
 
+def test_the_run_cost_is_stamped_on_every_row(tmp_path):
+    """A per-run scalar in a per-row file. The funnel records one cost for the whole
+    sweep, so repeating it is the honest shape — and it makes the column removable
+    in one line and a spreadsheet pivot trivial."""
+    path = tmp_path / "x.csv"
+    write_all_jobs_csv([record(), record(job_id="j2")], path, 1.8734)
+    rows = read(path)
+
+    assert [r["run_cost_usd"] for r in rows] == ["1.8734", "1.8734"]
+    assert FIELDS[-1] == "run_cost_usd"
+
+
+def test_an_unmeasured_run_leaves_the_cost_blank_rather_than_zero(tmp_path):
+    """Every provider but claude_code reads no meters, and runs predating the tally
+    have none. Printing 0 would say the sweep was free — the same misreading that
+    blank `llm_score` exists to prevent."""
+    path = tmp_path / "x.csv"
+    write_all_jobs_csv([record()], path)          # the two-argument call still works
+    assert read(path)[0]["run_cost_usd"] == ""
+
+
 def test_an_unwritable_path_returns_none_rather_than_raising(tmp_path):
     """A diagnostic must never take down a run whose real output is already safe."""
     assert write_all_jobs_csv([record()], tmp_path / "no-such-dir" / "x.csv") is None

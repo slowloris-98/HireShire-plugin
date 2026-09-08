@@ -119,10 +119,11 @@ def test_a_locked_csv_degrades_to_database_only_instead_of_failing_the_run(
 
 
 class _FinaliseDB(_FakeDB):
-    def __init__(self, rows, all_rows=None):
+    def __init__(self, rows, all_rows=None, phase_stats=None):
         super().__init__()
         self._rows = rows
         self._all_rows = all_rows if all_rows is not None else []
+        self._phase_stats = phase_stats if phase_stats is not None else {}
         self.finalised = None
 
     def load_pipeline_results(self, run_id):
@@ -131,15 +132,20 @@ class _FinaliseDB(_FakeDB):
     def load_all_matches(self, run_id):
         return self._all_rows
 
+    def run_phase_stats(self, run_id):
+        # `_finalise_pipeline` reads the match phase's stats for the run's scoring
+        # cost. Empty by default, which is what a run with no meters looks like.
+        return self._phase_stats
+
     def finalise_run(self, run_id, phase, started_at, ended_at, summary):
         self.finalised = (run_id, phase, summary)
 
 
-def _finalise(tmp_path, stamp, rows, monkeypatch):
+def _finalise(tmp_path, stamp, rows, monkeypatch, all_rows=None, phase_stats=None):
     from hireshire import paths
 
     monkeypatch.setattr(paths, "LAST_RUN_PATH", tmp_path / "last_run.json")
-    db = _FinaliseDB(rows)
+    db = _FinaliseDB(rows, all_rows, phase_stats)
     monkeypatch.setattr(orchestrate, "get_db", lambda: db)
     results_dir = tmp_path / stamp
     results_dir.mkdir()
@@ -166,6 +172,25 @@ def test_finalise_writes_the_pointer_apply_reads(tmp_path, monkeypatch):
     assert pointer["total_results"] == 1
     # ...and the file it points at is really there, with the rows in it.
     assert json.loads(Path(pointer["json"]).read_text(encoding="utf-8"))[0]["company"] == "Acme"
+
+
+def test_the_all_jobs_csv_carries_the_runs_scoring_cost(tmp_path, monkeypatch):
+    """The cost lives on the match phase's `runs` row, not on any match record, so
+    `_finalise_pipeline` reads it out and hands it to the writer. Safe to read there
+    because the matcher finalises before sending the queue sentinel this waits on."""
+    import csv as _csv
+    from hireshire.storage.db import PHASE_MATCH
+
+    stamp = "2026-08-12_143005"
+    _, results_dir = _finalise(
+        tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch,
+        all_rows=[{"job_id": "j1", "board_token": "acme", "title": "Engineer",
+                   "relevance_score": 91, "shortlisted": True}],
+        phase_stats={PHASE_MATCH: {"usage": {"calls": 142, "cost_usd": 1.8734}}},
+    )
+
+    with (results_dir / f"{stamp}_results_all_jobs.csv").open(encoding="utf-8-sig") as f:
+        assert next(_csv.DictReader(f))["run_cost_usd"] == "1.8734"
 
 
 def test_an_unwritable_json_does_not_report_a_successful_run_as_failed(tmp_path, monkeypatch):

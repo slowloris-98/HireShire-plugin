@@ -143,6 +143,72 @@ def test_the_dashboard_reloads_only_while_a_sweep_is_running():
     assert "http-equiv=\"refresh\"" in running
 
 
+# --- what the sweep cost ------------------------------------------------------
+
+USAGE = {"calls": 142, "input": 88210, "output": 31004,
+         "cache_read": 412553, "cache_write": 4820, "cost_usd": 1.8734}
+
+
+def test_the_sweeps_cost_reaches_the_matching_report():
+    """Until this, a monitor sweep's cost survived only in logs/orchestration.log,
+    because `quiet=True` suppresses the console summary."""
+    html = matching.build(snapshot(usage=USAGE), [scored_record()], "2026-08-25_153432")
+
+    assert "$1.87" in html
+    assert "Est. cost" in html
+    # The cache-read figure is the one that reveals a prompt cache that has stopped
+    # working — a zero there means the run re-read the resume once per job.
+    assert "412,553" in html
+    assert "not a bill" in html
+
+
+def test_a_run_that_was_never_measured_shows_no_cost_anywhere():
+    """Runs made before the tally existed, and every backend but claude_code, have
+    no figure. Printing $0.00 would claim the sweep was free."""
+    html = matching.build(snapshot(), [scored_record()], "2026-08-25_153432")
+
+    assert "Est. cost" not in html
+    assert "$0.00" not in html
+
+
+def test_the_cost_display_is_one_switch(monkeypatch):
+    """Every cost fragment on both pages hangs off render.SHOW_COST, so the feature
+    comes out of the reports in one edit while the numbers stay in the database."""
+    monkeypatch.setattr(matching, "SHOW_COST", False)
+    html = matching.build(snapshot(usage=USAGE), [scored_record()], "2026-08-25_153432")
+    assert "Est. cost" not in html and "$1.87" not in html
+
+    monkeypatch.setattr(dashboard, "SHOW_COST", False)
+    board = dashboard.build(
+        {"totals": {"runs": 1, "jobs": 10, "candidates": 5, "scored": 1,
+                    "shortlisted": 0, "cost_usd": 1.8734},
+         "applied": {"total": 0, "submitted": 0, "dry_run": 0, "errors": 0, "recent": []},
+         "runs": [snapshot(usage=USAGE)], "live": None},
+        __import__("pathlib").Path("/tmp/r"),
+    )
+    assert "Est. cost" not in board and "$1.87" not in board
+
+
+def test_the_dashboard_shows_cost_per_sweep_and_for_the_install():
+    """Two different questions — what did that sweep cost, and what has this install
+    spent — so the row keeps its own figure and the tile totals the measured ones."""
+    board = dashboard.build(
+        {"totals": {"runs": 2, "jobs": 10, "candidates": 5, "scored": 1,
+                    "shortlisted": 0, "cost_usd": 2.5},
+         "applied": {"total": 0, "submitted": 0, "dry_run": 0, "errors": 0, "recent": []},
+         # One measured sweep and one from before the tally existed.
+         "runs": [snapshot(usage=USAGE), snapshot()], "live": None},
+        __import__("pathlib").Path("/tmp/r"),
+    )
+    header = board.split("<thead><tr>")[1].split("</tr>")[0]
+
+    assert header.count("<th>") == 9, "the cost column adds one header cell"
+    assert "$2.50" in board, "lifetime tile"
+    assert "$1.87" in board, "the measured sweep's own row"
+    # ...and the unmeasured sweep gets an em dash in that column, not a zero.
+    assert "$0.00" not in board
+
+
 # --- the rules that keep the report honest ------------------------------------
 
 
