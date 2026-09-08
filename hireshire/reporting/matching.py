@@ -192,7 +192,7 @@ def _scored_entry(index: int, job: dict, threshold: int | None) -> str:
 
     cluster = job.get("cluster_size") or 1
     cluster_txt = (
-        f'<span class="sep">·</span>{cluster} locations' if cluster > 1 else ""
+        f'<span class="sep">·</span>{cluster} copies' if cluster > 1 else ""
     )
 
     url = job.get("absolute_url") or ""

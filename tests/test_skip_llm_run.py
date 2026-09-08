@@ -29,7 +29,9 @@ from hireshire.storage.db import Database
 RUN_ID = "2026-08-14T00-00-00Z"
 
 
-def make_job(job_id: str, title: str, board: str = "acme") -> Job:
+def make_job(
+    job_id: str, title: str, board: str = "acme", content_text: str | None = None
+) -> Job:
     now = datetime.now(timezone.utc)
     return Job(
         source="greenhouse",
@@ -39,7 +41,13 @@ def make_job(job_id: str, title: str, board: str = "acme") -> Job:
         location={"name": f"City {job_id}"},
         absolute_url=f"https://example.com/{job_id}",
         updated_at=now,
-        content_text="a description",
+        # Distinct by default, by a margin wider than `max_word_diff` — clustering
+        # keys on the description, so a shared constant (or a near-identical one)
+        # would collapse every job in a test into a single cluster.
+        content_text=(
+            content_text if content_text is not None
+            else " ".join(f"unique-{job_id}-token-{i}" for i in range(12))
+        ),
         scraped_at=now,
     )
 
@@ -126,9 +134,10 @@ def test_results_are_emitted_before_the_sweep_finishes(harness):
 def test_no_llm_run_emits_every_job_including_cluster_siblings(harness):
     db = harness
     jobs = [
-        make_job("d1", "Multi-Media Account Executive"),
-        make_job("d2", "Multi-Media Account Executive"),
-        make_job("d3", "Multi-Media Account Executive - 101.5"),
+        make_job("d1", "Multi-Media Account Executive", content_text="one requisition"),
+        make_job("d2", "Multi-Media Account Executive", content_text="one requisition"),
+        # Same requisition, different title — the title is not consulted.
+        make_job("d3", "Multi-Media Account Executive - 101.5", content_text="one requisition"),
         make_job("solo", "Client Success Manager"),
     ]
     forwarded = run_queue_mode(jobs)

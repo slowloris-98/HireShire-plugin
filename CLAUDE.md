@@ -113,8 +113,8 @@ location + age      free
 exclude keywords    free                          funnel.py:54
 bi-encoder          cheap, TITLE only             relevance.py — a recall net
 detail hydration    only for DETAIL_SOURCES       detail_fetcher.py:20
-cluster             one call per requisition      cluster.py
 cross-encoder 68m   full description → logit      rerank.py
+cluster             one call per requisition      cluster.py — needs those logits
 min_score cutoff    per job, per batch → LLM      matcher.py:_process_batch
 top_k               a fuse on calls, not a gate   matcher.py:_CallBudget
 ```
@@ -142,10 +142,12 @@ Five things follow that are easy to break:
   between users, and void the moment `rerank.model` changes. `scripts/calibrate_cutoffs.py`
   derives it from the user's own `matches` rows; the shipped 0.0 is a defensible
   starting point (the models' own decision boundary), not a tuned value.
-- **Clustering still works per batch, and this is load-bearing.** `cluster_key` is
-  `(board_token, normalised_title)` and the scraper emits one employer per queue item,
+- **Clustering still works per batch, and this is load-bearing.** Postings group by
+  `board_token` plus description, and the scraper emits one employer per queue item,
   so every member of a cluster is in the same batch by construction. That is what let
-  top-K go without 31 copies of a requisition becoming 31 LLM calls.
+  top-K go without 31 copies of a requisition becoming 31 LLM calls. Clustering must
+  run *after* the reranker: `cluster.group` anchors each cluster on its best-scoring
+  member, so swapping the two lines would let scrape order pick the representative.
 - **Greenhouse/Ashby/Lever ship the description in the list response**
   (`greenhouse.py:89`, `ashby.py:54`, `lever.py:59`). Only Workday, BambooHR and the
   direct portals need hydration. That is why full-text reranking is free on the
@@ -187,15 +189,29 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
   concatenated into the prompt at `scorer.py`.
 
 - **Duplicate requisitions are grouped, never dropped.** `cluster.py` keys on
-  `(board_token, normalised_title)` — descriptions are deliberately never compared,
-  because similarity thresholds are unauditable after the fact. One representative
-  is scored and the verdict is copied to every sibling, so all 31 copies keep their
-  own location and link in the all-jobs export. Siblings carry
+  `(board_token, description)` — **titles are deliberately never compared.** One
+  representative is scored and the verdict is copied to every sibling, so all 31
+  copies keep their own location and link in the all-jobs export. Siblings carry
   `duplicate_of_cluster`, which must stay **out** of `_RETRYABLE_SKIP_REASONS`: they
   have been judged, just by proxy. Members of a cluster that misses the cut inherit
-  the representative's drop reason, so their retryability follows the rule above. The
-  normaliser is biased toward doing nothing — over-merging costs the user a match
-  they never learn existed, while under-merging costs only one LLM call.
+  the representative's drop reason, so their retryability follows the rule above.
+
+  This reverses the original title-based key, and the reversal was forced by data —
+  do not "restore" it. An audit of 192,700 real postings found that of 2,578 clusters
+  formed by stripping a trailing parenthetical, **1,739 grouped postings whose
+  descriptions differed**. SpaceX qualifies titles by programme, so one cluster held
+  seven unrelated jobs (`Automation & Controls Engineer` for Facilities, Raptor,
+  Starlink, Starship…); the same strip collapsed shifts, employment types and ladder
+  levels (`(L1)` with `(L3)`). Six of seven then inherited a non-retryable reason and
+  were retired permanently on a verdict about a different job.
+
+  Exact description equality is too strict — employers interpolate pay bands and
+  addresses per market — so `dedupe.max_word_diff` (default 10) allows a small drift.
+  It is a **multiset symmetric difference, where a substitution costs 2**; every
+  calibration is in those units. Two costs are accepted and should not be "fixed"
+  without new data: templated employers over-merge (sweetgreen ships identical text
+  for `Assistant Coach` and `Assistant Restaurant Manager`), and localised employers
+  fragment (~+900 to +1,010 LLM calls per sweep, which land on the retryable cap).
 
 Note that `MatchStore.finalise` records only summary stats — individual rows reach
 the `matches` table via `append_result`. Budget drops and cluster siblings are

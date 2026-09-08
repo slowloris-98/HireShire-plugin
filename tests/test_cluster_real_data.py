@@ -1,175 +1,229 @@
-"""Clustering checked against titles taken verbatim from a production database.
+"""Clustering, checked against descriptions taken verbatim from a production database.
 
-`test_cluster.py` covers the normaliser with cases transcribed by hand. This file
-covers it with cases *extracted*, and the difference matters: hand-picked examples
-inherit the author's model of what a duplicate looks like, which is the very thing
-under test.
+Two halves. The first pins the *mechanism* with synthetic text, because a word count
+is only meaningful if you can say exactly what counts as a word. The second pins the
+*outcomes* against real postings, because every threshold in `cluster.py` was derived
+from them and would otherwise be a number nobody could defend.
 
-**Provenance.** 192,700 job rows across the ten largest sweeps in the reference
-install's database (`HireShire/data/hireshire.db`, runs 2026-07-14 .. 2026-08-27).
-Titles below are copied exactly, including the doubled spaces and non-breaking
-spaces the boards really emit.
+**Provenance.** `tests/fixtures/cluster_descriptions.json` holds eleven postings
+scraped on 2026-07-21, with their full description text — untruncated, because
+truncating changes the word diff and would silently invalidate every number here.
+They were selected from an audit of 192,700 rows across the ten largest sweeps.
 
-**Method.** Ground truth for "the same requisition" is a hash of the *full*
-description text of two postings at one employer -- never their titles, which would
-beg the question the normaliser exists to answer. Two corrections came out of
-building that oracle and are worth recording, because both directions of the naive
-version are wrong:
+The three employers are not arbitrary; each pins a different property:
 
-- A fingerprint of `length + first 300 + last 300` chars is useless. Greenhouse
-  descriptions open with a boilerplate company intro and close with boilerplate EEO
-  text, so at Anduril and Roblox it matched unrelated roles. Only a full hash
-  separates them.
-- Description equality does not imply one requisition. Employers template: sweetgreen
-  ships identical text for `Assistant Coach` and `Restaurant Manager`, and Carvana
-  A/B-tests four titles over one job. Description *difference* is strong evidence of
-  two jobs; description *sameness* is weak evidence of one.
-
-So a merge is asserted below only where the titles differ by location, requisition id
-or whitespace alone -- and a split only where the parenthetical names a different
-product line, shift, employment type or level, corroborated by differing text.
-
-The bias is the one `cluster.py` documents: over-merging costs the user a job they
-never learn existed, and silently, because a sibling inherits `duplicate_of_cluster`
-and that reason is deliberately not retryable. Under-merging costs one budget slot.
+- **Veterinary Emergency Group** carries both behaviours in one title family. Four
+  postings differ only by clinic and must merge; `(Overnight)` and `(Part Time)` are
+  separate jobs and must not. This is the case the old title-based key got wrong.
+- **SpaceX** is the failure that forced the redesign. Its titles are qualified by
+  programme, so stripping the trailing parenthetical collapsed unrelated engineering
+  roles into one cluster and retired the losers permanently under
+  `duplicate_of_cluster`, which is not retryable.
+- **sweetgreen** is the cost this design accepts. It ships byte-identical text for
+  `Assistant Coach` and `Assistant Restaurant Manager`. With the title ignored,
+  nothing separates them — so that merge is asserted here deliberately, to keep the
+  trade visible in the suite rather than surfacing later as a bug report.
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
 import pytest
 
-from hireshire.funnel.cluster import group, normalise_title
-from test_cluster import make_job
-
-
-def same(a: str, b: str) -> bool:
-    return normalise_title(a) == normalise_title(b)
-
-
-# --- 1. one requisition, posted repeatedly: MUST cluster -------------------------
-
-@pytest.mark.parametrize(
-    "a,b",
-    [
-        # Location is the only difference. Identical description text at each.
-        # healthcare|wd1|private
-        ("Acera Senior Account Executive - Baltimore, MD",
-         "Acera Senior Account Executive - San Jose, CA"),
-        # veterinaryemergencygroupst -- one role staffed across eight clinics.
-        ("Emergency Credentialed Veterinary Technician - Leesburg, VA",
-         "Emergency Credentialed Veterinary Technician - Henderson, NV"),
-        ("Emergency Credentialed Veterinary Technician - Princeton, NJ",
-         "Emergency Credentialed Veterinary Technician - Virginia Beach, VA"),
-        # urpt -- a travelling role advertised per metro. Descriptions differ here
-        # (each names its own city), which is exactly why the oracle is not the only
-        # input: the title difference is still purely locational.
-        ("Physical Therapist National Traveler - Kansas City, MO",
-         "Physical Therapist National Traveler - Waldo, MO"),
-        # Requisition id is the only difference. nttlimited|wd3, tbc|wd12, hempel|wd3.
-        ("Senior Engineer - MS, Network", "Senior Engineer - MS, Network-2"),
-        ("Senior Engineer - MS, Network-2", "Senior Engineer - MS, Network-4"),
-        ("Senior Software Engineer", "Senior Software Engineer-1"),
-        ("Showroom Assistant", "Showroom Assistant-2"),
-        # Case only -- the same posting re-entered by a different recruiter.
-        # bpinternational|wd3, jci|wd5, lytx|wd1.
-        ("Staff Software Engineer", "Staff software engineer"),
-        ("Service Engineer", "Service engineer"),
-        ("Senior DevOps Engineer", "Senior Devops Engineer"),
-        # Whitespace only. browserstack|wd3 emits a doubled space.
-        ("Account Manager  - Strategic Sales", "Account Manager - Strategic Sales"),
-        # scoutmotors emits the same title twice, once with U+00A0 throughout.
-        ("Direct Procurement Specialist – Metal Commodity",
-         "Direct Procurement Specialist – Metal Commodity"),
-        # Stacked: a parenthetical over a city. universalproperty|wd1, gevernova|wd5.
-        ("Field Adjuster - Detroit, MI (Local Only)",
-         "Field Adjuster - Indianapolis/South Bend, IN (Local Only)"),
-        ("Wind Hub Technician (Criterion, Maryland)", "Wind Hub Technician- Traverse, OK"),
-    ],
+from hireshire.funnel.cluster import (
+    DEFAULT_MAX_WORD_DIFF,
+    group,
+    normalise_description,
+    word_diff,
 )
-def test_repeat_postings_of_one_requisition_cluster(a, b):
-    assert same(a, b), f"{a!r} and {b!r} are one requisition and must cluster"
+from hireshire.models.job import Job
+
+FIXTURE = Path(__file__).parent / "fixtures" / "cluster_descriptions.json"
 
 
-# --- 2. different jobs that merely share a stem: MUST NOT cluster ----------------
-# Every pair here was confirmed to carry different description text at the employer.
-
-@pytest.mark.parametrize(
-    "a,b",
-    [
-        # Product line. SpaceX qualifies almost every title this way, and the
-        # programmes are unrelated engineering organisations. `Automation & Controls
-        # Engineer` alone spans seven distinct postings under one normalised title.
-        ("Automation & Controls Engineer (Starlink)",
-         "Automation & Controls Engineer (Starship)"),
-        ("Automation & Controls Engineer (Facilities)",
-         "Automation & Controls Engineer (Raptor Manufacturing Systems)"),
-        ("Antenna Engineer (Starlink)", "Antenna Engineer (Starship)"),
-        ("Avionics Test Engineer (Starshield)", "Avionics Test Engineer (Starship)"),
-        ("Civil Engineer, Land Development (Starlink)",
-         "Civil Engineer, Land Development (Starship Launch Pad)"),
-        # andurilindustries -- three distinct hardware disciplines, four descriptions.
-        ("Electrical Engineer", "Electrical Engineer (Actuators)"),
-        ("Electrical Engineer (Actuators)", "Electrical Engineer (Motor Controls)"),
-        # Shift. Same work, different hours, different pay -- and the user may be able
-        # to take one and not the other. spacex, xai, industrialelectricmanufacturing.
-        ("Construction Superintendent", "Construction Superintendent (Night Shift)"),
-        ("Data Center Operations Technician",
-         "Data Center Operations Technician (Night Shift)"),
-        ("Production Controller", "Production Controller (Second Shift)"),
-        ("CNC Programmer (Starship Components) - Level 4/5",
-         "CNC Programmer (Starship Components) - Level 4/5 (2nd Shift)"),
-        # Employment type. greenthumbindustries, hfecorp|wd503, fullsail|wd1, xai.
-        ("Personal Care Specialist (Full Time)", "Personal Care Specialist (Part Time)"),
-        ("Personal Care Specialist", "Personal Care Specialist (Part Time)"),
-        ("Story Land- Facilities Maintenance (Full Time)",
-         "Story Land- Facilities Maintenance (Seasonal)"),
-        ("Adjunct Faculty - Information Technology (Part-Time)",
-         "Adjunct Faculty - Information Technology (Remote)"),
-        ("Front Desk Ambassador", "Front Desk Ambassador (Part-Time)"),
-        # veterinaryemergencygroupst -- relief and overnight are different postings.
-        ("Emergency Veterinary Assistant (Part Time) - Redmond, WA",
-         "Emergency Veterinary Assistant (Overnight) - Redmond, WA"),
-        # Level in a parenthetical. This is the `Analyst 3` failure the bare-number
-        # guard in _TRAILING_REQ was written to prevent, wearing brackets.
-        # nttlimited|wd3 posts L1/L2/L3 of one ladder.
-        ("Security Managed Services Engineer (L1)",
-         "Security Managed Services Engineer (L3)"),
-        ("Server Load Balancer Engineer (L1)", "Server Load Balancer Engineer (L2)"),
-        # Specialisation. cambiumlearning|wd1, urpt (15 distinct descriptions).
-        ("Senior Software Engineer", "Senior Software Engineer (AI Applications)"),
-        ("Physical Therapist - National Traveler",
-         "Physical Therapist - National Traveler (Journey by Upstream)"),
-    ],
-)
-def test_distinct_jobs_sharing_a_stem_stay_separate(a, b):
-    assert not same(a, b), f"{a!r} and {b!r} are different jobs and must not merge"
-
-
-# --- 3. both behaviours inside one real cluster ----------------------------------
-
-def test_a_real_employer_cluster_splits_on_qualifier_but_not_on_location():
-    """Eight postings scraped from veterinaryemergencygroupst in one sweep.
-
-    The plain ones are one requisition staffed across four clinics and belong in a
-    single cluster. `(Part Time)`, `(Relief)` and `(Overnight)` are separate
-    postings and must each keep their own -- so the correct outcome is four
-    clusters, not one, and not eight.
-    """
-    titles = [
-        "Emergency Credentialed Veterinary Technician - Henderson, NV",
-        "Emergency Credentialed Veterinary Technician - Leesburg, VA",
-        "Emergency Credentialed Veterinary Technician - Princeton, NJ",
-        "Emergency Credentialed Veterinary Technician - Virginia Beach, VA",
-        "Emergency Credentialed Veterinary Technician (Part Time) - Leesburg, VA",
-        "Emergency Credentialed Veterinary Technician (Relief) - Boulder, CO",
-        "Emergency Credentialed Veterinary Technician (Relief) - Henderson, NV",
-        "Emergency Credentialed Veterinary Technician (Overnight) - Redmond, WA",
-    ]
-    jobs = [make_job(str(i), t, board="veterinaryemergencygroupst")
-            for i, t in enumerate(titles)]
-    clusters = group(jobs)
-
-    sizes = sorted(len(v) for v in clusters.values())
-    assert sizes == [1, 1, 2, 4], (
-        "expected the four plain postings to merge and each qualifier to stand "
-        f"alone, got {sizes}"
+def make_job(job_id, title="A Job", board="acme", content_text="text", age_days=0) -> Job:
+    now = datetime.now(timezone.utc)
+    return Job(
+        source="greenhouse",
+        board_token=board,
+        job_id=str(job_id),
+        title=title,
+        location={"name": "Remote"},
+        absolute_url="https://example.com/job",
+        updated_at=now - timedelta(days=age_days),
+        content_text=content_text,
+        scraped_at=now,
     )
+
+
+def load_fixture(board=None, title_contains=None):
+    rows = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    if board:
+        rows = [r for r in rows if r["board_token"] == board]
+    if title_contains:
+        rows = [r for r in rows if title_contains in r["title"]]
+    return rows
+
+
+def jobs_from(rows):
+    return [
+        make_job(r["job_id"], title=r["title"], board=r["board_token"],
+                 content_text=r["content_text"])
+        for r in rows
+    ]
+
+
+def cluster_sizes(jobs, **kw):
+    return sorted(len(c) for c in group(jobs, **kw))
+
+
+# --- the metric ------------------------------------------------------------------
+
+BASE = tuple(f"word{i}" for i in range(200))
+
+
+def text(tokens) -> str:
+    return " ".join(tokens)
+
+
+def test_a_substitution_costs_two_not_one():
+    """One word out and one word in. Every threshold in cluster.py is calibrated in
+    these units, so this is the assertion that stops the scale drifting."""
+    changed = ("replacement",) + BASE[1:]
+    assert word_diff(BASE, changed) == 2
+
+
+def test_an_insertion_costs_one():
+    assert word_diff(BASE, BASE + ("extra",)) == 1
+
+
+def test_identical_text_is_zero():
+    assert word_diff(BASE, BASE) == 0
+
+
+def test_whitespace_and_case_do_not_count_as_differences():
+    """Boards emit non-breaking spaces and re-cased titles for the same requisition."""
+    a = normalise_description("Senior  Engineer\nRemote")
+    b = normalise_description("senior engineer remote")
+    assert a == b
+    assert word_diff(a, b) == 0
+
+
+@pytest.mark.parametrize("insertions,should_merge", [(0, True), (5, True), (10, True),
+                                                     (11, False), (40, False)])
+def test_the_threshold_is_inclusive_at_ten(insertions, should_merge):
+    a = make_job("a", content_text=text(BASE))
+    b = make_job("b", content_text=text(BASE + tuple(f"x{i}" for i in range(insertions))))
+    merged = len(group([a, b])) == 1
+    assert merged is should_merge
+
+
+def test_the_threshold_is_configurable():
+    a = make_job("a", content_text=text(BASE))
+    b = make_job("b", content_text=text(BASE + ("x", "y", "z")))
+    assert len(group([a, b], max_word_diff=2)) == 2
+    assert len(group([a, b], max_word_diff=3)) == 1
+
+
+# --- descriptions that are absent, not merely different --------------------------
+
+@pytest.mark.parametrize("empty", [None, "", "   "])
+def test_postings_without_a_description_are_never_clustered(empty):
+    """An absent description is an absence of evidence, not evidence of uniqueness.
+    `strip_html` turns markup-only HTML into "", so both forms occur in practice."""
+    jobs = [make_job(i, content_text=empty) for i in range(3)]
+    assert cluster_sizes(jobs) == [1, 1, 1]
+
+
+def test_an_absent_description_never_joins_a_real_cluster():
+    jobs = [
+        make_job("a", content_text=text(BASE)),
+        make_job("b", content_text=text(BASE)),
+        make_job("empty", content_text=None),
+    ]
+    assert cluster_sizes(jobs) == [1, 2]
+
+
+# --- anchoring ------------------------------------------------------------------
+
+def test_the_representative_is_the_best_scoring_member():
+    """The cluster is judged on its strongest copy, and `group` puts it first."""
+    jobs = [make_job(i, content_text=text(BASE)) for i in ("a", "b", "c")]
+    clusters = group(jobs, {"a": -3.0, "b": -0.5, "c": -2.5})
+    assert len(clusters) == 1
+    assert clusters[0][0].job_id == "b"
+
+
+def test_merging_does_not_chain_through_intermediate_members():
+    """A and B differ by 6, B and C by 6, A and C by 12. Under transitive merging C
+    would join via B and inherit a verdict from a posting 12 words away. Every member
+    must be within the threshold of the representative *itself*."""
+    a = make_job("a", content_text=text(BASE))
+    b = make_job("b", content_text=text(BASE + tuple(f"x{i}" for i in range(6))))
+    c = make_job("c", content_text=text(BASE + tuple(f"x{i}" for i in range(12))))
+    # Scores force `a` to anchor, so `c` is measured against `a`, not against `b`.
+    clusters = group([a, b, c], {"a": 3.0, "b": 2.0, "c": 1.0})
+
+    assert sorted(len(x) for x in clusters) == [1, 2]
+    for members in clusters:
+        rep = members[0]
+        for sib in members[1:]:
+            assert word_diff(
+                normalise_description(rep.content_text),
+                normalise_description(sib.content_text),
+            ) <= DEFAULT_MAX_WORD_DIFF
+
+
+def test_clusters_never_span_two_employers():
+    """Agency boilerplate is shared across companies; a match there is not a repost."""
+    a = make_job("a", board="acme", content_text=text(BASE))
+    b = make_job("b", board="globex", content_text=text(BASE))
+    assert cluster_sizes([a, b]) == [1, 1]
+
+
+# --- real postings ---------------------------------------------------------------
+
+def test_veg_merges_clinics_and_splits_qualifiers():
+    """The case the title key got wrong, end to end.
+
+    Four postings differ only by clinic (0-4 words) and are one requisition.
+    `(Overnight)` is 13 words away and `(Part Time)` is 99 — different jobs.
+    """
+    rows = load_fixture("veterinaryemergencygroupst")
+    assert len(rows) == 6
+    assert cluster_sizes(jobs_from(rows)) == [1, 1, 4]
+
+
+def test_veg_the_four_clinic_postings_are_the_ones_that_merged():
+    rows = load_fixture("veterinaryemergencygroupst")
+    biggest = max(group(jobs_from(rows)), key=len)
+    assert all("(" not in j.title for j in biggest), (
+        "a qualified posting was absorbed into the plain-location cluster"
+    )
+
+
+def test_spacex_programme_variants_stay_separate():
+    """The regression that forced the redesign: stripping the trailing parenthetical
+    merged Asset Engineering, Facilities and Raptor Manufacturing Systems into one
+    cluster, and the losers were retired permanently under a non-retryable reason."""
+    rows = load_fixture("spacex")
+    assert len(rows) == 3
+    assert cluster_sizes(jobs_from(rows)) == [1, 1, 1]
+
+
+def test_sweetgreen_template_collision_merges_and_that_is_accepted():
+    """A cost this design takes on knowingly, asserted so it stays visible.
+
+    sweetgreen ships byte-identical text for two genuinely different roles. With the
+    title ignored there is nothing left to separate them, so they merge and one is
+    retired. Fixing this would mean reintroducing title comparison, which is what
+    caused the far larger SpaceX failure above. If this test ever fails, the trade
+    was changed deliberately — update the module docstring in cluster.py too.
+    """
+    rows = load_fixture("sweetgreen")
+    assert {r["title"] for r in rows} == {"Assistant Coach", "Assistant Restaurant Manager"}
+    a, b = (normalise_description(r["content_text"]) for r in rows)
+    assert word_diff(a, b) == 0
+    assert cluster_sizes(jobs_from(rows)) == [2]

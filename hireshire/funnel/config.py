@@ -106,16 +106,25 @@ class DetailFetchConfig(BaseModel):
 class DedupeConfig(BaseModel):
     """Collapse repeated requisitions so one employer cannot eat the whole budget.
 
-    Nothing is discarded: postings that share a company AND a normalised title are
+    Nothing is discarded: postings that share a company AND a description are
     grouped, one representative is scored, and the score is copied back to every
     sibling. A single Townsquare Media requisition occupied 31 of 100 budget slots
     in a real sweep, and 12 EquipmentShare copies sat just below the cut.
 
-    Descriptions are deliberately never compared — see funnel/cluster.py for why the
-    key is this conservative.
+    Titles are deliberately never compared — employers rewrite them freely, and an
+    audit of 192,700 real postings found that grouping on them merged unrelated jobs
+    two times out of three. See funnel/cluster.py for the evidence.
     """
 
     enabled: bool = True
+
+    # How many words two descriptions may differ by and still count as one posting.
+    # A *substitution* costs 2 (one word out, one in) — see `cluster.word_diff`, which
+    # every calibration in that module is expressed in. Employers interpolate pay
+    # bands and addresses per market, so copies of one requisition are near-identical
+    # rather than identical; 0 would split them. Above ~13 real variants start being
+    # absorbed, so this has less headroom than it looks.
+    max_word_diff: int = 10
 
 
 class FunnelConfig(BaseModel):
