@@ -6,7 +6,7 @@ with `python applier.py` (both read/write the same table).
     python scripts/applied_cli.py list                      # print applied job_ids, one per line
     python scripts/applied_cli.py record --job-id j1 \
         --board-token acme --title "Backend Engineer" \
-        --url https://example.com/jobs/j1 --status submitted --dry-run false
+        --url https://example.com/jobs/j1 --status submitted
 """
 
 import argparse
@@ -18,10 +18,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hireshire.storage.db import DEFAULT_DB_PATH, get_db
-
-
-def _str2bool(v: str) -> bool:
-    return str(v).strip().lower() in ("1", "true", "yes", "y")
 
 
 def main() -> None:
@@ -37,8 +33,7 @@ def main() -> None:
     rec.add_argument("--title", default="")
     rec.add_argument("--url", default="")
     rec.add_argument("--status", required=True,
-                     help='"dry_run" | "submitted" | "error" | "skipped"')
-    rec.add_argument("--dry-run", default="false", help="true|false")
+                     help='"submitted" | "error" | "skipped"')
     rec.add_argument("--screenshot", default=None)
     rec.add_argument("--error", default=None)
 
@@ -54,7 +49,7 @@ def main() -> None:
         db.record_applied(
             args.job_id, args.board_token, args.title, args.url,
             datetime.now(timezone.utc).isoformat(), args.status,
-            _str2bool(args.dry_run), args.screenshot, args.error,
+            args.screenshot, args.error,
         )
         print(f"recorded {args.job_id} (status={args.status})")
         return

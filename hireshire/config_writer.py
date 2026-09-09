@@ -224,10 +224,6 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 ("settings", "enable_applier"), "bool",
                 "Run the applier after each pipeline run.",
             ),
-            "dry_run": FieldSpec(
-                ("settings", "dry_run"), "bool",
-                "Fill every form but never click submit.",
-            ),
             "resume_path": FieldSpec(
                 ("settings", "resume_path"), "str", "Resume PDF to upload.",
                 normalise=_clean_path_value,

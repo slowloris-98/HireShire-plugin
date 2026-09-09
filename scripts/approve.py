@@ -80,8 +80,9 @@ _SUBCOMMANDS = {
 
 # Browser tools that only look. Everything that changes state on an employer's
 # page — click, type, fill_form, select_option, file_upload — is deliberately
-# absent: once dry_run is off those actions submit a real application, and the
-# prompt is the last human checkpoint before that happens.
+# absent: those actions submit a real application, and the prompt is the last human
+# checkpoint before that happens. That mattered more once `dry_run` was removed:
+# `enable_applier` is now the only other thing in the way, so do not widen this set.
 _READ_ONLY_BROWSER_TOOLS = frozenset({
     "mcp__plugin_hireshire_playwright__browser_navigate",
     "mcp__plugin_hireshire_playwright__browser_snapshot",

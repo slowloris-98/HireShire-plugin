@@ -121,8 +121,8 @@ def test_the_matching_report_names_itself_for_the_rolling_url(tmp_path):
 def test_the_dashboard_is_a_complete_local_document():
     html = dashboard.build({"totals": {"runs": 0, "jobs": 0, "candidates": 0,
                                        "scored": 0, "shortlisted": 0},
-                            "applied": {"total": 0, "submitted": 0, "dry_run": 0,
-                                        "errors": 0, "recent": []},
+                            "applied": {"total": 0, "submitted": 0,
+                                        "errors": 0, "skipped": 0, "recent": []},
                             "runs": [], "live": None}, tmp_root := __import__("pathlib").Path("/tmp/r"))
     assert html.lower().startswith("<!doctype html>")
     assert "<body>" in html
@@ -132,7 +132,7 @@ def test_the_dashboard_is_a_complete_local_document():
 def test_the_dashboard_reloads_only_while_a_sweep_is_running():
     """A finished run that kept reloading would look like one that never ended."""
     base = {"totals": {"runs": 1, "jobs": 10, "candidates": 5, "scored": 1, "shortlisted": 0},
-            "applied": {"total": 0, "submitted": 0, "dry_run": 0, "errors": 0, "recent": []},
+            "applied": {"total": 0, "submitted": 0, "errors": 0, "skipped": 0, "recent": []},
             "runs": [snapshot()], "live": None}
     idle = dashboard.build(base, __import__("pathlib").Path("/tmp/r"))
     assert "http-equiv=\"refresh\"" not in idle
@@ -182,7 +182,7 @@ def test_the_cost_display_is_one_switch(monkeypatch):
     board = dashboard.build(
         {"totals": {"runs": 1, "jobs": 10, "candidates": 5, "scored": 1,
                     "shortlisted": 0, "cost_usd": 1.8734},
-         "applied": {"total": 0, "submitted": 0, "dry_run": 0, "errors": 0, "recent": []},
+         "applied": {"total": 0, "submitted": 0, "errors": 0, "skipped": 0, "recent": []},
          "runs": [snapshot(usage=USAGE)], "live": None},
         __import__("pathlib").Path("/tmp/r"),
     )
@@ -195,7 +195,7 @@ def test_the_dashboard_shows_cost_per_sweep_and_for_the_install():
     board = dashboard.build(
         {"totals": {"runs": 2, "jobs": 10, "candidates": 5, "scored": 1,
                     "shortlisted": 0, "cost_usd": 2.5},
-         "applied": {"total": 0, "submitted": 0, "dry_run": 0, "errors": 0, "recent": []},
+         "applied": {"total": 0, "submitted": 0, "errors": 0, "skipped": 0, "recent": []},
          # One measured sweep and one from before the tally existed.
          "runs": [snapshot(usage=USAGE), snapshot()], "live": None},
         __import__("pathlib").Path("/tmp/r"),
@@ -351,7 +351,7 @@ def test_a_write_failure_is_reported_as_none_not_raised(tmp_path):
     blocked.write_text("i am a file, not a directory", encoding="utf-8")
     assert dashboard.write(
         {"totals": {"runs": 0, "jobs": 0, "candidates": 0, "scored": 0, "shortlisted": 0},
-         "applied": {"total": 0, "submitted": 0, "dry_run": 0, "errors": 0, "recent": []},
+         "applied": {"total": 0, "submitted": 0, "errors": 0, "skipped": 0, "recent": []},
          "runs": [], "live": None},
         blocked / "dashboard.html",
     ) is None
@@ -366,7 +366,7 @@ def test_the_throttle_lets_the_final_write_through(tmp_path, monkeypatch):
                         lambda db, run_id: calls.append(run_id) or snapshot())
     monkeypatch.setattr(reporting.data, "dashboard_snapshot", lambda db, limit=30: {
         "totals": {"runs": 0, "jobs": 0, "candidates": 0, "scored": 0, "shortlisted": 0},
-        "applied": {"total": 0, "submitted": 0, "dry_run": 0, "errors": 0, "recent": []},
+        "applied": {"total": 0, "submitted": 0, "errors": 0, "skipped": 0, "recent": []},
         "runs": [], "live": None})
     monkeypatch.setattr(reporting, "_last_refresh", 0.0)
 

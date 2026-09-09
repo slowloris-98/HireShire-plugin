@@ -24,11 +24,12 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 343 tests, no network, no model weights
+pytest                                # 360 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_only_jobs_reaching_the_cutoff_are_judged
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
 sh scripts/hireshire.sh --status      # is a recurring sweep running?
+sh scripts/hireshire.sh --stop        # kill the sweep's process TREE, clear status
 sh scripts/hireshire.sh --approve     # PreToolUse guard; hook payload on stdin
 
 # Engine, from a checkout (falls back to ./data when the plugin env vars are unset)
@@ -99,18 +100,26 @@ Consequences already worked out, which should not be re-derived:
   stops with the session. `hireshire/orchestration_status.py` is the single source of
   truth for "is it running", by heartbeat freshness rather than PID probing — `os.kill(pid, 0)`
   is not portable to Windows and a recycled PID reads as alive.
+
+  "Session-scoped" is the intent, not a guarantee: on Windows a monitor has outlived
+  its session more than once, leaving a sweeper on the database that the user could
+  only reach through Task Manager. `--stop` exists for that, and it kills the process
+  **tree** — `run_orchestration.py` re-execs twice (system interpreter → venv →
+  engine), so the pid in the status file is a leaf and killing it alone strands its
+  parents, which then read as a live sweep. It clears the status file either way: a
+  stale document claiming "running" is the more harmful of the two failures.
 - **Setup never shows YAML.** `hireshire/config_writer.py` is a whitelisted,
   ruamel-based writer that preserves comments and CRLF and validates the patched
   document against the phase's pydantic model *before* writing.
 
 ### The funnel is the interesting part
 
-Scoring every posting with an LLM is what makes a 10,000-employer sweep accurate,
+Scoring every posting with an LLM is what makes a 15,000-employer sweep accurate,
 and also what makes it expensive. The pipeline spends that budget deliberately:
 
 ```
 location + age      free
-exclude keywords    free                          funnel.py:54
+exclude keywords    free                          funnel.py:55
 bi-encoder          cheap, TITLE only             relevance.py — a recall net
 detail hydration    only for DETAIL_SOURCES       detail_fetcher.py:20
 cross-encoder 68m   full description → logit      rerank.py
@@ -275,7 +284,14 @@ wrong for this resume, and the two are indistinguishable without the counts. A l
 
 Two phases, each independent: own entrypoint, own `hireshire/<phase>/` subpackage,
 own `config/<phase>.yaml`. All tabular data lives in one SQLite DB (WAL); every
-phase writes rows keyed by a shared `run_id`. `orchestrate.py` wires them over
+phase writes rows keyed by a shared `run_id`.
+
+Applying is **not** a third engine phase, despite having `config/applier.yaml` and a
+`hireshire/applier/` package. That package is only `config.py` and `store.py` — there
+is no `main()` and nothing for `orchestrate.py` to wire a queue to, because the work
+is driving a browser, which the `apply` skill does through Playwright MCP. The engine
+launches that skill as a `claude -p` subprocess (`_launch_skill`) and reads the rows it
+records. Anything needing a browser belongs on the skill side of that line. `orchestrate.py` wires them over
 asyncio queues with exactly one `None` sentinel per queue, always sent in a
 `finally`:
 
@@ -290,10 +306,13 @@ suppresses Rich in favour of `logging` — required under the monitor.
 
 ## Things that are easy to get wrong
 
-- **Board defaults.** Workday and BambooHR default **off**: 9,974 companies vs
-  24,754. The README leads with 24,754 but must state plainly that the default
-  sweep is ~10,000. Setup presents it as a time trade-off — and **no specific
-  multiplier has been measured yet**, so say "considerably longer", not "3x".
+- **Board defaults.** Workday and BambooHR default **off**, and they are the two
+  biggest lists: 24,200 companies held back against 15,868 swept (greenhouse 8,333,
+  lever 4,369, ashby 3,163, direct 3), out of 40,068 shipped. The README leads with
+  40,000+ but must state plainly that the default sweep is ~15,868. Setup presents it
+  as a time trade-off — and **no specific multiplier has been measured yet**, so say
+  "considerably longer", not "3x". These counts come from `config/*_companies.json`
+  and grow between releases; re-derive them rather than copying this paragraph.
 - **Interpreter discovery lives in exactly one place: `scripts/hireshire.sh`.**
   Two traps make this worth centralising. macOS has no bare `python` — Apple
   removed `/usr/bin/python` in 12.3 and Homebrew installs `python3` only. And
@@ -344,8 +363,12 @@ suppresses Rich in favour of `logging` — required under the monitor.
   for the interpreter probe. Note that Windows needs three path spellings compared
   (`/d/...` from Git Bash, `C:/...`, `C:\...`) or the guard silently never matches.
   On the `apply` side only `browser_navigate`, `browser_snapshot` and
-  `browser_take_screenshot` are approved: once `dry_run` is off, the prompt on a click
-  or an upload is the last checkpoint before a real application reaches an employer.
+  `browser_take_screenshot` are approved: the prompt on a click or an upload is the
+  last checkpoint before a real application reaches an employer. That became load-
+  bearing when `dry_run` was removed — `enable_applier` and `exclude_companies` are
+  now the only other things in the way, so this set must not be widened. Note the
+  monitor's own apply phase runs `claude -p --permission-mode auto` and therefore
+  bypasses it entirely: unattended auto-apply has no human checkpoint by design.
 - **`userConfig` is not used** for anything load-bearing — its enable-time prompt
   has open bugs. The `setup` skill is the source of truth.
 - **Set an explicit `version` in `plugin.json`.** Omitting it pushes every commit at

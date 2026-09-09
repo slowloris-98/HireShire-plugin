@@ -6,7 +6,67 @@ All notable changes to this plugin are documented here. Versions follow
 
 ## [0.3.0] — unreleased
 
+### Removed
+
+- **`dry_run` is gone. The applier is on or off.** It used to fill every form and
+  stop short of submitting, and it read as a safety net without being one. Left on,
+  it produced a plugin that looked like it was working and had never applied to
+  anything; left off, it had already been bypassed. The run it rehearsed was never
+  the run that followed.
+
+  `enable_applier` is now the only gate, and it still ships false. **Turning it on
+  means real applications are submitted, unattended, from the first sweep** — the
+  monitor launches the apply skill with `--permission-mode auto`, so the
+  click/upload prompt that `scripts/approve.py` normally preserves does not apply
+  there. `exclude_companies` is the only other limit, and neither it nor the
+  read-only browser allowlist may be widened.
+
+  The `dry_run` column stays in the `applied` table: rows written before this carry
+  real values, and dropping a SQLite column is awkward for no gain. Nothing reads
+  it, and new rows write 0.
+
+- **`ApplierSettings.headless`** — declared, never read. The browser is driven by
+  the Playwright MCP server, which is headed by default; this setting had no effect
+  on anything.
+
+### Fixed
+
+- **The apply phase never ran.** `orchestrate._launch_skill` passed the SKILL.md
+  body to `claude -p` as a positional argument. A SKILL.md opens with `---`
+  frontmatter, which the CLI parses as an option, so every unattended apply phase
+  died with `error: unknown option '---\nname: apply...'` and exit code 1 — visible
+  only as one ERROR line in a multi-megabyte log, while the status file went on
+  reporting `apply_enabled: true`. The prompt now goes on stdin, and a test asserts
+  it never appears in argv.
+
+- **Jobs skipped by `exclude_companies` were invisible.** Those employers need an
+  account login, so the applier genuinely cannot complete them — but it dropped
+  them without a word. One real run shortlisted three jobs, all at an excluded
+  employer, and would have reported nothing to do without saying why. The apply
+  skill now always prints an **Apply manually** section with company, title and URL.
+
+### Changed
+
+- **Scale numbers corrected everywhere — they were understated by ~60%.** The shipped
+  slug lists had grown well past the figures in the docs: **40,068** boards, not
+  24,754, and a default sweep of **15,868**, not ~10,000 (Workday 12,884, BambooHR
+  11,316, Greenhouse 8,333, Lever 4,369, Ashby 3,163, direct portals 3). Updated in
+  the README, `CLAUDE.md`, the setup skill's board-type prompt, and both the
+  `plugin.json` and `marketplace.json` descriptions. The README table now also lists
+  the direct portals, which were enabled by default but absent from the docs, and says
+  plainly that the figure is the shipped list rather than a promise of live boards.
+
+- **Install size was overstated ~2×.** Measured: venv ~1.2 GB plus ~350 MB of models
+  (all-MiniLM-L6-v2 88 MB, ettin-reranker-68m 265 MB). The docs said 2.5–3 GB in six
+  places; all now say ~2 GB.
+
 ### Added
+
+- **`hireshire.sh --stop`.** The recurring sweep is meant to end with the session
+  that started it; on Windows it has outlived one more than once, leaving a sweeper
+  on the database reachable only through Task Manager. `--stop` kills the recorded
+  process **tree** — the monitor re-execs twice, so the pid on record is a leaf and
+  killing it alone strands its parents — then clears the status file.
 
 - **Every sweep now writes two HTML reports, and the skills publish one of them.**
   The scoring prompt returns four rationales per job — core skills, experience,

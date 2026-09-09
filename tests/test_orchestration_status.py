@@ -82,3 +82,68 @@ def test_describe_reports_the_configured_interval_not_a_default(tmp_path):
     status.write(tmp_path, pid=7, interval_hours=12, started_at=time.time())
 
     assert "every 12h" in status.describe(tmp_path)
+
+
+# --- stopping a sweep the session failed to take with it ---------------------
+#
+# `--stop` exists because "session-scoped" turned out to be the intent rather than a
+# guarantee: on Windows a monitor has outlived its session more than once, leaving a
+# sweeper on the database reachable only through Task Manager.
+
+def _stop_with(monkeypatch, tmp_path, platform, returncode=0):
+    """Run bootstrap.stop() against a fake kill, returning (exit_code, command)."""
+    import bootstrap
+
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        class R:
+            pass
+        R.returncode = returncode
+        return R
+
+    monkeypatch.setattr(bootstrap, "DATA", tmp_path)
+    monkeypatch.setattr(bootstrap.sys, "platform", platform)
+    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+    monkeypatch.setattr(bootstrap.os, "kill", lambda *a: None)
+    return bootstrap.stop(), seen.get("cmd")
+
+
+def test_stop_kills_the_whole_tree_on_windows(monkeypatch, tmp_path):
+    """The recorded pid is a LEAF. run_orchestration.py re-execs twice (system
+    interpreter -> venv -> engine), so killing it alone leaves its parents running and
+    they read as a live sweep. /T is what makes this correct, not tidy."""
+    status.write(tmp_path, pid=4242, interval_hours=4, started_at=time.time())
+
+    code, cmd = _stop_with(monkeypatch, tmp_path, "win32")
+
+    assert code == 0
+    assert "/T" in cmd and "4242" in cmd
+    assert status.is_running(tmp_path) is False
+
+
+def test_stop_on_a_dead_sweep_succeeds_and_clears(monkeypatch, tmp_path):
+    """Nothing to kill is not a failure — and the stale file still has to go, because a
+    document claiming "running" is the more harmful of the two ways to be wrong."""
+    status.write(tmp_path, pid=4242, interval_hours=4)
+    doc = status.read(tmp_path)
+    doc["heartbeat"] = time.time() - (status.STALE_AFTER_S + 1)
+    status.status_path(tmp_path).write_text(__import__("json").dumps(doc), encoding="utf-8")
+
+    code, cmd = _stop_with(monkeypatch, tmp_path, "win32")
+
+    assert code == 0
+    assert cmd is None, "a dead sweep must not be killed"
+    assert status.read(tmp_path) is None
+
+
+def test_stop_clears_the_status_file_even_when_the_kill_fails(monkeypatch, tmp_path):
+    """Reported, not raised. Leaving the file behind would block a restart on the
+    strength of a process that may already be gone."""
+    status.write(tmp_path, pid=4242, interval_hours=4, started_at=time.time())
+
+    code, _ = _stop_with(monkeypatch, tmp_path, "win32", returncode=1)
+
+    assert code == 1
+    assert status.read(tmp_path) is None

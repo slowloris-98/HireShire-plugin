@@ -1,3 +1,12 @@
+- Judge the last orchestrate run. my observations:
+    - The best matches were left out of the top_k.
+    - top_k had some irrelevant jobs as well
+    - does the scrape -> match go just by the thereshold and that is why irrelevant jobs were accepted?
+    - will increasing the thereshold for cross encoder give be better top_k
+    - why did the applier did not apply the jobs
+
+
+
 - Dashboard is not showing any sweeps. Manual reload showed something
 - the shell logging should be very clean and very simple
 - some check to see if the claude limit is reached and to stop/pause the process. maybe the monitor should take care of this.

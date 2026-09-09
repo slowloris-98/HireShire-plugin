@@ -55,7 +55,7 @@ def test_session_start_hook_probes_but_never_installs():
     """The hook blocks the user's first turn, so it must stay fast.
 
     It used to run `--bootstrap`, which meant a fresh install spent ~4 minutes
-    downloading 2.5 GB before the user could be told anything — and the warning that
+    downloading ~2 GB before the user could be told anything — and the warning that
     explains the wait lives in the setup skill, which cannot run until the hook
     finishes. The download belongs to the skill; the hook only reports.
     """
@@ -90,12 +90,15 @@ def test_the_launcher_exposes_its_read_only_modes_separately():
     # a sweep is already running. See the tests below for both.
     assert "--paths)" in sh
     assert "--status)" in sh
+    # --stop is the counterpart to --monitor: the sweep is supposed to end with its
+    # session and on Windows has repeatedly not.
+    assert "--stop)" in sh
     # The permission guard runs before the venv exists, so it is a launcher mode
     # rather than an engine entrypoint. See tests/test_approve.py.
     assert "--approve)" in sh
 
 
-@pytest.mark.parametrize("mode", ["paths", "status"])
+@pytest.mark.parametrize("mode", ["paths", "status", "stop"])
 def test_the_read_only_modes_answer_without_building_anything(mode):
     """Both are questions a skill asks before it can do or say anything, so both must
     return on a machine where the venv does not exist yet."""
@@ -245,7 +248,7 @@ def test_the_permission_guard_is_wired_to_pretooluse():
 
 
 def test_the_guard_never_covers_a_browser_action_that_submits():
-    """`/hireshire:apply` fills real forms. Once `dry_run` is off, the permission
+    """`/hireshire:apply` fills real forms. With `dry_run` gone, the permission
     prompt is the last human checkpoint before an application reaches an employer,
     so only the tools that look are auto-approved."""
     matcher = next(

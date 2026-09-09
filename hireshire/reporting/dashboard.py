@@ -136,7 +136,7 @@ def build(snapshot: dict[str, Any], results_root: Path) -> str:
         if applied_rows
         else '<p class="note calm"><b>No applications recorded yet.</b> '
              "<code>/hireshire:apply</code> fills forms for the shortlist and records each "
-             "one here. While <code>dry_run</code> is on it stops short of submitting.</p>"
+             "one here. It runs only while <code>enable_applier</code> is on.</p>"
     )
 
     body = f"""<div class="wrap">
@@ -189,7 +189,7 @@ def build(snapshot: dict[str, Any], results_root: Path) -> str:
   <h2 class="section">Applications</h2>
   <div class="stats">
     <div class="stat good"><span class="stat-n">{num(applied['submitted'])}</span><span class="stat-l">Submitted</span></div>
-    <div class="stat"><span class="stat-n">{num(applied['dry_run'])}</span><span class="stat-l">Dry run</span></div>
+    <div class="stat"><span class="stat-n">{num(applied['skipped'])}</span><span class="stat-l">Skipped</span></div>
     <div class="stat flag"><span class="stat-n">{num(applied['errors'])}</span><span class="stat-l">Errors</span></div>
   </div>
   {applied_block}

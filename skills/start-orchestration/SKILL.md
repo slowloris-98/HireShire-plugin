@@ -71,8 +71,9 @@ If it says running, tell the user, plainly:
 - **That invoking this twice does nothing** — the second start exits rather than
   duplicating the sweep.
 
-If auto-apply is enabled in their config, mention that each sweep will also run the
-applier — and that `dry_run` decides whether anything is actually submitted.
+If auto-apply is enabled in their config, say plainly that each sweep will also open a
+browser and **submit real applications**, unattended and with no confirmation step.
+There is no rehearsal mode; `enable_applier` is the only thing holding it back.
 
 If `--status` still says not running, **say so**. Do not report a sweep that is not
 there. Read `<DATA>/logs/orchestration.log` for the reason, tell them what it says, and
