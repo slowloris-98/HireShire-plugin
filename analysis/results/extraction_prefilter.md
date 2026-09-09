@@ -71,3 +71,11 @@ Note also that `seen_jobs` retires a job once it has an outcome, so the usual
   gaps in the vocabulary read as false drops. Widen it before trusting a kill.
 - Extraction drops must go **into** `_RETRYABLE_SKIP_REASONS`. A misparse is the same
   class of failure as the `--json-schema` bug that permanently retired 100 jobs.
+
+  **This holds only for an LLM extractor, and the YoE half no longer uses one.**
+  `hireshire/funnel/experience.py` reads years with a regex, which has no transient
+  failure mode: the same description and the same `candidate_years` give the same
+  answer every time, so `yoe_below_requirement` is a *verdict* and stays OUT of
+  `_RETRYABLE_SKIP_REASONS`, by the same argument that keeps `rerank_below_cutoff`
+  out. The rule above still governs `role_family`, which is still unimplemented and
+  would still need a model. See `analysis/results/yoe_gate.md`.

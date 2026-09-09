@@ -94,6 +94,10 @@ CREATE TABLE IF NOT EXISTS matches (
     encoder_score     REAL,
     rerank_score_wide REAL,
     rerank_score      REAL,
+    -- Years of experience the POSTING asks for, read from its description by
+    -- funnel/experience.py. Not the LLM's own reading of the same question, which
+    -- stays in raw_json as years_experience_required.
+    yoe_required      REAL,
     shortlisted     INTEGER DEFAULT 0,
     skipped         INTEGER DEFAULT 0,
     skip_reason     TEXT,
@@ -182,6 +186,9 @@ class Database:
         # `matches` never had this one: the rerank score used to live only in
         # pipeline_results and inside raw_json, so it is new here too.
         ("matches", "rerank_score", "REAL"),
+        # Years the posting asks for, read by funnel/experience.py. Distinct from the
+        # LLM's own `years_experience_required`, which lives in raw_json.
+        ("matches", "yoe_required", "REAL"),
         ("pipeline_results", "encoder_score", "REAL"),
         ("pipeline_results", "rerank_score_wide", "REAL"),
     )
@@ -517,16 +524,17 @@ class Database:
         encoder_score: float | None = None,
         rerank_score_wide: float | None = None,
         rerank_score: float | None = None,
+        yoe_required: float | None = None,
     ) -> None:
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO matches"
                 "(run_id, job_id, board_token, title, relevance_score, encoder_score, "
-                " rerank_score_wide, rerank_score, shortlisted, "
+                " rerank_score_wide, rerank_score, yoe_required, shortlisted, "
                 " skipped, skip_reason, source_run_id, scored_at, raw_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, job_id, board_token, title, relevance_score, encoder_score,
-                 rerank_score_wide, rerank_score, int(shortlisted),
+                 rerank_score_wide, rerank_score, yoe_required, int(shortlisted),
                  int(skipped), skip_reason, source_run_id, scored_at, raw_json),
             )
 
@@ -552,7 +560,8 @@ class Database:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT m.raw_json, m.relevance_score, m.encoder_score, "
-                "       m.rerank_score_wide, m.rerank_score, m.skipped, m.skip_reason, "
+                "       m.rerank_score_wide, m.rerank_score, m.yoe_required, "
+                "       m.skipped, m.skip_reason, "
                 "       m.shortlisted, m.scored_at, j.location, j.updated_at "
                 "FROM matches m LEFT JOIN jobs j "
                 "  ON j.run_id = m.run_id AND j.job_id = m.job_id "

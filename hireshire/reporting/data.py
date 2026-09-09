@@ -44,6 +44,7 @@ REASON_LABELS = {
     "": "Scored by the LLM",
     "rerank_below_cutoff": "Below the relevance cutoff — the cross-encoder read it and said no",
     "llm_call_cap_reached": "Reached the run's call cap — still eligible next sweep",
+    "yoe_below_requirement": "Asks for more years of experience than the resume shows",
     # Written by runs made before selection became a cutoff. Nothing produces it any
     # more, but the reports render historical rows and an unlabelled reason shows up
     # verbatim, which reads as a bug.

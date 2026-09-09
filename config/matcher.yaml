@@ -98,6 +98,34 @@ funnel:
     max_length: 4096      # safety bound on the pair; never binds in practice
     batch_size: 8
 
+  # Skip postings that ask for meaningfully more experience than you have. The
+  # requirement is read straight out of the description with a pattern match — no
+  # model, no API call, nothing to pay for — so this stage is free.
+  #
+  # It reads ranges and open-ended minimums alike ("5+ years", "at least five
+  # years", "3-7 years"), and treats "preferred" exactly like "required", because
+  # employers use the words interchangeably. Roughly a quarter of postings state no
+  # requirement at all; those are always KEPT.
+  #
+  # It only ever gates from BELOW. "5-10 years" is read as "at least 5" — you are
+  # never dropped for being over-qualified, because whether a senior candidate
+  # should apply to a mid-level role is a judgement call, not arithmetic.
+  #
+  # Off until /hireshire:setup fills in candidate_years, and it stays off while that
+  # is 0 — otherwise an install that never ran setup would filter every job in the
+  # sweep against a candidate with "no experience".
+  experience:
+    enabled: false
+    # Your own total years of professional experience. PERSONAL, like min_score
+    # above: set it two years low and you silently lose two years' worth of
+    # legitimate jobs, with no error to tell you. Changing it later does not bring
+    # back jobs already dropped against the old value — those were verdicts.
+    candidate_years: 0
+    # How far below a stated requirement you are still considered a match. At 0.5, a
+    # "5+ years" posting keeps you if you have 4.5. A strict 0 would be wrong more
+    # often than the jobs it filters — postings asking for 5 do interview 4.5s.
+    tolerance_years: 0.5
+
   # Repeat postings of one requisition share a single LLM call, and the score is
   # copied to every copy — nothing is discarded. One employer's job once took 31 of
   # 100 budget slots. Jobs group only when the company AND the job description
