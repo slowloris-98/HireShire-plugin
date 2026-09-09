@@ -20,17 +20,63 @@ job wrongly. Most of the remaining disagreements are the label being wrong: Haik
 returned null on postings that plainly state a minimum ("At least five years of
 relevant experience as a Superintendent", "15+ years of industry experience").
 
-## Two rules that look like bugs and are not
+## The "+" is the requirement marker, and that is the whole trick
+
+This module used to demand experience *language* near the number — "years" counted as
+a requirement only when a word like `experience`, `working` or `industry` sat within a
+short window. That guard silently threw away real requirements, because employers write
+the domain instead of the word:
+
+    7+ years owning financial planning and forecasting processes end-to-end
+    10+ years in software engineering, with a focus on data engineering
+    5+ years of production support, application support, systems support
+
+None of those contain an experience word near the number, so all three were read as
+stating no requirement at all and cost a full LLM call. On one measured sweep this was
+7 of 50 paid calls.
+
+The fix is to key on the shape rather than the vocabulary. An **open-ended minimum** —
+`5+ years`, `5 plus years`, `at least 5 years`, `minimum of 5 years` — is a requirement
+whatever follows it, and company prose almost never uses that form. Widening the word
+list instead was tried and rejected: a rule loose enough to admit the lines above also
+read "For 20 years, Acme has been building homes" as a 20-year requirement, which is
+the one error direction that kills a good job.
+
+## Three tiers, in order, first match wins
+
+1. **Open-ended minimums** (`_OPEN_ENDED`), aggregated with **max**. No proximity check.
+2. **Ranges** (`_RANGE`) — lower bound only, and see below.
+3. **Bare counts plus the old proximity guard** (`_REQUIREMENT` + `_EXPERIENCE`),
+   aggregated with min. This keeps "5 years of experience required" — no "+" anywhere —
+   readable. Not dead weight: dropping it costs 7 of the 104 reachable labels
+   (91% -> 85% agreement, and 1 missed requirement becomes 10).
+
+Every tier still passes through `_REJECT_BEFORE`, `_REJECT_AFTER` and the plausibility
+band, which are what keep company history and benefits tables out.
+
+## Three rules that look like bugs and are not
+
+**The HIGHEST open-ended minimum governs.** A posting stating `8+ years in Forward
+Deployed Engineering` and `2+ years directly managing engineers` reads **8**, not 2.
+This reverses an earlier decision, and the reversal is deliberate. Taking the lowest is
+the reading that best agrees with `analysis/cache/extraction.json`, whose labels encode
+exactly that rule — but agreement with those labels is not the objective. A candidate
+who cannot clear the highest bar the posting names is not getting the job, and reading
+the easiest bar sent 6 more calls per 50 to postings needing 5-8 years. Because the
+labels use the lowest, this parser now reads *higher* than a label on occasion by
+design; `analysis/yoe_gate_eval.py` section 3 (the safety floor) is the check that
+matters, not its section 1 agreement count.
 
 **"Preferred" is treated exactly like "required".** Employers use the words
 interchangeably and a "preferred: 5+ years" posting filters the same candidates out
 in practice. This is a deliberate departure from the spike's prompt, which excluded
 preference-phrased lines and lost most of them entirely.
 
-**A range is only its lower bound.** "5-10 years" is read as 5, and the upper bound
-is parsed solely so it cannot be mistaken for a second, separate requirement. Nothing
-here ever rejects a candidate for having too MUCH experience: an over-qualified
-applicant is a judgement call for the LLM, not a deterministic drop.
+**A range is only its lower bound.** "5-10 years" is read as 5. Ranges are matched
+before the open-ended tier and their spans are then excluded from it, so "3 to 7+
+years" reads 3 rather than being torn into a separate 7. Nothing here ever rejects a
+candidate for having too MUCH experience: an over-qualified applicant is a judgement
+call for the LLM, not a deterministic drop.
 """
 from __future__ import annotations
 
@@ -57,6 +103,32 @@ _REQUIREMENT = re.compile(
     rf"(?<![\d.])({_NUM})\s*(?:\+|plus)?\s*"
     rf"(?:(?:-|–|—|to|or)\s*{_NUM}\s*(?:\+|plus)?\s*)?"
     r"(?:\+\s*)?(?:years?|yrs?)\b",
+    re.IGNORECASE,
+)
+
+_YEARS = r"(?:years?|yrs?)"
+
+# Tier 1. An OPEN-ENDED minimum: "5+ years", "5 plus years", "5 years or more",
+# "at least five years", "minimum of 8 yrs". The marker itself carries the meaning,
+# which is why no experience-language check is applied to these — see the module
+# docstring. Each alternative captures the count in group 1.
+_OPEN_ENDED = (
+    re.compile(rf"(?<![\d.])({_NUM})\s*(?:\+|plus)\s*{_YEARS}\b", re.IGNORECASE),
+    re.compile(
+        rf"(?<![\d.])({_NUM})\s*{_YEARS}\s*(?:\+|or more|or greater|or above)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:at least|minimum(?:\s+of)?|min\.?|no less than)\s*({_NUM})"
+        rf"\s*\+?\s*{_YEARS}\b",
+        re.IGNORECASE,
+    ),
+)
+
+# Tier 2. A range. Matched BEFORE tier 1 so its span can be excluded from it —
+# otherwise "3 to 7+ years" would read as an open-ended 7 instead of a range from 3.
+_RANGE = re.compile(
+    rf"(?<![\d.])({_NUM})\s*(?:-|–|—|to|or)\s*{_NUM}\s*(?:\+|plus)?\s*{_YEARS}\b",
     re.IGNORECASE,
 )
 
@@ -88,9 +160,14 @@ _REJECT_BEFORE = re.compile(
     r"\bevery|\bage of|\bunder)\s*$",
     re.IGNORECASE,
 )
+# The last four entries carry the weight now that tier 1 runs without a proximity
+# check. "A Best Places to Work company 10 years in a row" and "a 7+year history of AI
+# innovation" both sit in the posting that prompted this module's rewrite, and the
+# second one has a "+", so it reaches tier 1 and nothing else would stop it.
 _REJECT_AFTER = re.compile(
     r"^\s*(?:ago\b|old\b|of age\b|of service\b|of combined\b|"
     r",?\s*we(?:'ve| have| are)?\b|in business\b|"
+    r"in a row\b|history\b|straight\b|running\b|"
     r"of (?:vacation|pto|paid|parental|leave|tenure))",
     re.IGNORECASE,
 )
@@ -105,9 +182,15 @@ _MAX_PLAUSIBLE = 25
 class ExperienceRequirement:
     """What a posting asks for, in years.
 
-    `min_years` is the LOWEST reading in the document, which is what the gate
-    compares against — see `parse_requirement` for why. `stated` keeps every
-    surviving reading so a diagnostic can show the whole picture.
+    `min_years` is the EFFECTIVE requirement — the bar the candidate has to clear —
+    and which reading that is depends on the tier that produced it: the highest of
+    the open-ended minimums, or the lowest bound of a range, or the lowest bare
+    count. See `parse_requirement`. The name predates the tiers and is kept because
+    `matcher`, `scorer` and `store` all address it; it does not mean "the smallest
+    number in the document".
+
+    `stated` keeps every surviving reading from the tier that won, in document
+    order, so a diagnostic can show the whole picture.
     """
 
     min_years: float
@@ -124,11 +207,15 @@ def parse_requirement(text: str | None) -> ExperienceRequirement | None:
     None is the common case — roughly a quarter of real postings say nothing about
     years — and it means KEEP. Absent data must never drop a job.
 
-    When a posting states several requirements ("8+ years leading teams… 12+ years
-    full-stack… 3+ years infrastructure"), `min_years` is the lowest of them. That is
-    the conservative reading: it only drops a candidate who misses even the easiest
-    bar the posting names, and it was the only aggregation of the three measured that
-    never read higher than the LLM label.
+    Three tiers, first non-empty one wins (see the module docstring for why):
+
+      1. open-ended minimums ("8+ years… 12+ years… 3+ years") -> the HIGHEST, 12.
+         A candidate who cannot clear the highest bar the posting names is not
+         getting the job, so the easiest one is the wrong thing to measure against.
+      2. a range ("3-7 years") -> its lower bound, 3. Never an upper bound: nothing
+         here drops anyone for being over-qualified.
+      3. bare counts with experience language beside them -> the LOWEST, unchanged
+         from the behaviour that predates the tiers.
 
     Pass the FULL description. The reranker's `max_doc_chars` truncation is a cost
     dial for the cross-encoder and must not be applied here — the median posting does
@@ -137,26 +224,72 @@ def parse_requirement(text: str | None) -> ExperienceRequirement | None:
     if not text:
         return None
 
-    found: list[float] = []
+    # Ranges first: their spans are excluded from tier 1 so that "3 to 7+ years"
+    # cannot also be read as an open-ended 7.
+    ranges: list[tuple[int, float]] = []
+    range_spans: list[tuple[int, int]] = []
+    for match in _RANGE.finditer(text):
+        range_spans.append(match.span())
+        value = _admit(text, match)
+        if value is not None:
+            ranges.append((match.start(), value))
+
+    open_ended: list[tuple[int, float]] = []
+    for pattern in _OPEN_ENDED:
+        for match in pattern.finditer(text):
+            if any(lo <= match.start() < hi for lo, hi in range_spans):
+                continue
+            value = _admit(text, match)
+            if value is not None:
+                open_ended.append((match.start(), value))
+
+    if open_ended:
+        return _requirement(open_ended, max)
+    if ranges:
+        return _requirement(ranges, min)
+
+    bare: list[tuple[int, float]] = []
     for match in _REQUIREMENT.finditer(text):
         before = text[max(0, match.start() - 40):match.start()]
         after = text[match.end():match.end() + 60]
-
-        if _REJECT_BEFORE.search(before) or _REJECT_AFTER.match(after):
-            continue
         # Experience language usually follows ("5 years of experience"), but a few
         # postings lead with it ("experience: 5 years"), so check a short window on
-        # both sides.
+        # both sides. Tier 1 needs no such check; this tier has no "+" to rely on.
         if not _EXPERIENCE.search(after) and not _EXPERIENCE.search(before[-25:]):
             continue
+        value = _admit(text, match)
+        if value is not None:
+            bare.append((match.start(), value))
 
-        value = _value(match.group(1))
-        if _MIN_PLAUSIBLE <= value <= _MAX_PLAUSIBLE:
-            found.append(float(value))
+    if bare:
+        return _requirement(bare, min)
+    return None
 
-    if not found:
+
+def _admit(text: str, match: re.Match[str]) -> float | None:
+    """The count this match states, or None if it is not a requirement at all.
+
+    The guards every tier shares: surrounding prose that makes the number
+    retrospective or a benefit, and the plausibility band.
+    """
+    before = text[max(0, match.start() - 40):match.start()]
+    after = text[match.end():match.end() + 60]
+    if _REJECT_BEFORE.search(before) or _REJECT_AFTER.match(after):
         return None
-    return ExperienceRequirement(min_years=min(found), stated=tuple(found))
+    value = _value(match.group(1))
+    if not _MIN_PLAUSIBLE <= value <= _MAX_PLAUSIBLE:
+        return None
+    return float(value)
+
+
+def _requirement(found: list[tuple[int, float]], governs) -> ExperienceRequirement:
+    """Pick the effective requirement out of one tier's readings.
+
+    `stated` is kept in document order rather than the order the patterns happened to
+    run in, so a diagnostic reads the way the posting does.
+    """
+    values = [value for _, value in sorted(found)]
+    return ExperienceRequirement(min_years=governs(values), stated=tuple(values))
 
 
 def meets(

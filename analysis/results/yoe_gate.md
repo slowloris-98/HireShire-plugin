@@ -1,5 +1,17 @@
 # The regex years-of-experience gate — measurement
 
+> **Superseded in part.** This records the gate as it stood when the parser required
+> experience language beside the number and took the LOWEST reading. Both of those
+> changed: the `+` is now the requirement marker and the HIGHEST open-ended minimum
+> governs. The safety-floor method and verdict below still hold and are still the
+> right way to judge a change here; the agreement table and the taking-the-lowest
+> argument in section 1 describe the old rule. What replaced it, measured the same
+> way: 91% agreement on the 104 labels still reachable, 1 benign over-read (label 1
+> vs 2), and on sweep `2026-09-09T06-51-12Z` it dropped 13 of 50 paid calls with the
+> best judge score among them 44, against a shortlist threshold of 65, nothing
+> shortlisted touched. The reason for the reversal is in
+> `hireshire/funnel/experience.py`'s module docstring.
+
 Run via `analysis/yoe_gate_eval.py` against the same corpus as
 `extraction_prefilter.md` (213 descriptions carrying a `matches` row, sweep
 `2026-09-08T05-51-47Z`), at the shipped defaults: `candidate_years: 4`,

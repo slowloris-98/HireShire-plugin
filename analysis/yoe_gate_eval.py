@@ -30,6 +30,21 @@ stating a minimum, and on anything phrased as "preferred", which the shipped par
 deliberately treats as a requirement. Read the printed disagreements before
 believing either number.
 
+**Section 1 no longer measures correctness, and section 3 is the check that matters.**
+The labels encode "the lowest stated requirement governs"; the shipped parser takes
+the HIGHEST open-ended minimum (`hireshire/funnel/experience.py` says why). So a
+non-zero "read HIGHER than the label" count is now the expected consequence of a
+deliberate policy difference, not the danger signal its wording suggests. Judge a
+change to the gate by the safety floor instead: nothing the judge rated highly may be
+killed.
+
+Two sampling traps in this harness, both of which flatter it. It needs a `matches` row
+for `rerank_score`, so it silently reports on only the labelled jobs that a *recent*
+sweep also scored — as few as 12 of the 213 — and a run whose casualties all hit the
+call cap has no judged rows among them, which prints PASS from an empty set. Check the
+"rows with a REAL LLM verdict" line before believing the floor, and to measure a change
+properly, re-parse the judged rows of one full sweep directly.
+
 Usage:
     python analysis/yoe_gate_eval.py
     python analysis/yoe_gate_eval.py --tolerance 2 --candidate-years 4
