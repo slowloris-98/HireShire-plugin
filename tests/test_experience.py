@@ -70,21 +70,73 @@ def test_a_range_is_read_as_its_lower_bound(text):
     assert req.stated == (3.0,)
 
 
-def test_the_lowest_of_several_requirements_governs():
+def test_the_highest_open_ended_requirement_governs():
     """Postings routinely stack requirements of different weights.
 
-    The lowest is the conservative reading: it drops only a candidate who misses
-    even the easiest bar the posting names. Measured against 213 LLM-labelled
-    descriptions it was the only aggregation that never read HIGHER than the label,
-    which is the error direction that kills a job wrongly.
+    This REVERSES the earlier rule, which took the lowest. Taking the lowest agrees
+    better with `analysis/cache/extraction.json`, whose labels encode exactly that
+    rule — but agreement with those labels is not the objective. A candidate who
+    cannot clear the highest bar a posting names is not getting the job, and reading
+    the easiest bar sent 6 of every 50 paid calls to postings needing 5-8 years while
+    the candidate had 4.
+
+    The safety floor is what licenses the reversal, not the agreement count: on the
+    sweep that motivated it the best judge score among the newly dropped jobs was 44,
+    against a shortlist threshold of 65, and nothing shortlisted was touched.
     """
     req = parse_requirement(
         "8+ years of experience leading teams. "
         "12+ years of experience in full-stack development. "
         "3+ years of experience running large-scale infrastructure."
     )
-    assert req.min_years == 3
+    assert req.min_years == 12
     assert req.stated == (8.0, 12.0, 3.0)
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Every one of these is a real posting line that the old proximity guard threw
+    # away, because the domain is written where the word "experience" would be.
+    ("7+ years owning financial planning and forecasting processes end-to-end", 7),
+    ("10+ years in software engineering, with a focus on data engineering", 10),
+    ("5+ years of production support, application support, systems support", 5),
+    ("7+ years delivering enterprise-class applications", 7),
+    ("5+ years designing complex distributed systems that operate at scale", 5),
+    ("8+ years developing systems and software for large business environments", 8),
+])
+def test_an_open_ended_minimum_needs_no_experience_word_beside_it(text, expected):
+    """The "+" is the requirement marker; the vocabulary after it is irrelevant."""
+    assert parse_requirement(text).min_years == expected
+
+
+def test_the_highest_bar_governs_even_when_a_lesser_one_is_stated_alongside():
+    """The shape that cost the most calls: a senior role with a junior sub-bullet.
+
+    Read as 2 this posting looks open to a 4-year candidate. It is not.
+    """
+    req = parse_requirement(
+        "8+ years in Forward Deployed Engineering, Solutions Engineering or similar. "
+        "2+ years directly managing engineers, ideally in a customer-facing org."
+    )
+    assert req.min_years == 8
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Minimum of 8 yrs of industry experience", 8),
+    ("At least five years of relevant experience as a Superintendent", 5),
+    ("No less than 6 years of experience", 6),
+    ("10 years or more of experience in the field", 10),
+])
+def test_the_marker_may_be_a_word_instead_of_a_plus(text, expected):
+    assert parse_requirement(text).min_years == expected
+
+
+def test_a_range_is_not_torn_into_a_separate_open_ended_requirement():
+    """"3 to 7+ years" is a range from 3, not an open-ended 7.
+
+    Ranges are matched first and their spans excluded from the open-ended tier
+    precisely so the "+" on the upper bound cannot promote it to a requirement.
+    """
+    assert parse_requirement("3 to 7+ years of experience").min_years == 3
 
 
 def test_preferred_is_treated_exactly_like_required():
@@ -110,6 +162,16 @@ def test_preferred_is_treated_exactly_like_required():
     # Retrospective and eligibility phrasing.
     "I left that job 5 years ago after gaining experience",
     "Must be 18 years of age or older with experience",
+    # Company prose in the plausible band. These matter more since the open-ended
+    # tier dropped the experience-word check: nothing but the reject lists and the
+    # band stands between them and a reading that would kill the job. The last two
+    # are lifted from the posting that prompted the rewrite, and the "7+year" one
+    # carries a "+", so it reaches the open-ended tier.
+    "For 20 years, Acme has been building homes for families.",
+    "A trusted partner for 18 years, helping brands scale.",
+    "Acme has spent 12 years growing into a global leader, we are proud to say.",
+    "A Best Places to Work company 10 years in a row and numerous other awards",
+    "a unified platform, a 7+year history of AI innovation, a customer NPS of 70+",
 ])
 def test_text_that_states_no_requirement_yields_nothing(text):
     assert parse_requirement(text) is None

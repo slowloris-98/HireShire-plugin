@@ -56,7 +56,7 @@ funnel:
     model: sentence-transformers/all-MiniLM-L6-v2
     # Adjacent job titles you are qualified for, generated at setup.
     targets: []
-    threshold: 0.25   # recall net — deliberately loose
+    threshold: 0.30   # recall net — deliberately loose
   # One cross-encoder, reading every surviving description in full.
   #
   # This used to be a two-model cascade — a cheap model read everything, an accurate
@@ -86,9 +86,12 @@ funnel:
     # matched jobs; lower it if runs come back empty. Derive it from a real run with
     # `python scripts/calibrate_cutoffs.py` rather than guessing.
     #
-    # 0.0 is the decision boundary these models are trained toward, which makes it a
-    # defensible starting point on a fresh install with no history to learn from.
-    min_score: 0.0
+    # 3.0 is a deliberately selective starting point. The model's own decision
+    # boundary is 0.0, and it lets through far more than it stops; 3.0 is the cutoff
+    # this project's analysis runs used, and it keeps a sweep inside `top_k` so the
+    # cutoff decides what gets scored rather than the budget running out. It is still
+    # not tuned to *you* — calibrate it once you have a run or two of history.
+    min_score: 3.0
     # ~2,960 tokens at the measured 5.06 chars/token. Covers 99.8% of real
     # postings in full; the longest ever measured was 25,386 chars / 2,693 tokens,
     # so the 8192 window is never the limit — this is a cost dial. Cost flattens

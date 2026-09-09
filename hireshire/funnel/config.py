@@ -12,7 +12,7 @@ class EncoderConfig(BaseModel):
     targets: list[str] = []
     # A title passes when its max cosine similarity to any target >= threshold.
     #
-    # Deliberately low. This is a RECALL NET, not the decision: its only job is to
+    # Deliberately loose. This is a RECALL NET, not the decision: its only job is to
     # discard the obviously irrelevant cheaply so the reranker isn't handed tens of
     # thousands of documents. Precision belongs to the cross-encoder below.
     #
@@ -30,10 +30,15 @@ class EncoderConfig(BaseModel):
     # that max-over-targets rises monotonically with the number of anchors, so a
     # bigger `targets` list loosens this gate further on its own.
     #
+    # 0.30 is the shipped starting point, not a tuned value — see the paragraph
+    # above about why it cannot be one. `scripts/calibrate_cutoffs.py` reports what
+    # this gate passed and lost on the user's own run, which is the only basis for
+    # moving it.
+    #
     # Bounded to the cosine range so the matcher's 0-100 relevance threshold cannot be
     # written here by mistake: 85 would validate as a float and silently reject every
     # job in the sweep.
-    threshold: float = Field(0.25, ge=0.0, le=1.0)
+    threshold: float = Field(0.30, ge=0.0, le=1.0)
 
 
 class RerankConfig(BaseModel):
@@ -74,13 +79,17 @@ class RerankConfig(BaseModel):
     # a real run with `scripts/calibrate_cutoffs.py`, which reports what each
     # candidate cutoff would have passed and what it would have lost.
     #
-    # 0.0 is the provisional shipped default: on the binary-relevance objective
-    # these models are trained for it is the decision boundary (sigmoid 0.5), which
-    # makes it defensible rather than arbitrary while a fresh install has no history
-    # to calibrate against. It is deliberately permissive — `FunnelConfig.top_k` is
-    # the fuse that bounds cost, not this. Set too high, a user gets zero jobs and no
+    # 3.0 is the shipped default. It sits well above 0.0 — the decision boundary
+    # these models are trained toward on their binary-relevance objective (sigmoid
+    # 0.5), which shipped previously and is permissive enough that the cutoff
+    # rarely bound. 3.0 is the operating point every study in `analysis/results/`
+    # was run at: on that corpus it admits 61 jobs a sweep, comfortably inside
+    # `FunnelConfig.top_k`, so the cutoff rather than the budget is what decides
+    # who gets scored. It remains a starting point rather than a tuned value —
+    # one corpus, one profile — and `scripts/calibrate_cutoffs.py` is how a user
+    # replaces it with their own. Set too high, a user gets zero jobs and no
     # error, which is why the per-stage counts in the matching report exist.
-    min_score: float = 0.0
+    min_score: float = 3.0
     # Job descriptions tokenise at ~5.06 chars/token, so this is ~2,960 tokens.
     # 15,000 covers 99.8% of real postings in full; only 5.8% exceed 10,000, so the
     # extra headroom is nearly free. Truncating the *head* is what broke the old

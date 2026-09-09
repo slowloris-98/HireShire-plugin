@@ -1,5 +1,17 @@
 # The regex years-of-experience gate — measurement
 
+> **Superseded in part.** This records the gate as it stood when the parser required
+> experience language beside the number and took the LOWEST reading. Both of those
+> changed: the `+` is now the requirement marker and the HIGHEST open-ended minimum
+> governs. The safety-floor method and verdict below still hold and are still the
+> right way to judge a change here; the agreement table and the taking-the-lowest
+> argument in section 1 describe the old rule. What replaced it, measured the same
+> way: 91% agreement on the 104 labels still reachable, 1 benign over-read (label 1
+> vs 2), and on sweep `2026-09-09T06-51-12Z` it dropped 13 of 50 paid calls with the
+> best judge score among them 44, against a shortlist threshold of 65, nothing
+> shortlisted touched. The reason for the reversal is in
+> `hireshire/funnel/experience.py`'s module docstring.
+
 Run via `analysis/yoe_gate_eval.py` against the same corpus as
 `extraction_prefilter.md` (213 descriptions carrying a `matches` row, sweep
 `2026-09-08T05-51-47Z`), at the shipped defaults: `candidate_years: 4`,
@@ -59,12 +71,27 @@ question was whether an LLM call got spent finding out.
 
 ## 3. Safety floor — PASS
 
-Nothing shortlisted was killed, and the **best judge score among all 19 casualties is
-31**, against a shortlist threshold of 65–75. A 34-point margin.
+**Only 50 of the 213 rows carry a real LLM verdict.** The other 163 hit the call cap
+or the cutoff and were never judged — and `filtered_result` stamps
+`relevance_score = 0` on every one of them, so reading that column raw counts a job
+the judge never saw as a job the judge rated zero. `_judged()` in the eval script
+exists to stop that; it is the same misreading the all-jobs export prints a **blank**
+`llm_score` to avoid, and it silently inflates any sample built from this table.
 
-Stated honestly: 213 rows carry a judge score but only 3 are shortlisted, which
-cannot support precision/recall. The claim the corpus does support is the one above —
-*nothing it killed scored above 31*.
+Against the rows that carry an actual verdict:
+
+```
+of the 19 killed, 9 were judged : 6, 10, 14, 15, 19, 25, 25, 26, 31
+judged survivors                : 8, 12, 13, 26, 27, 28, 35, 44,
+                                  45, 46, 46, 53, 57, 65, 68, 82
+```
+
+The separation is clean at both ends: **nothing the gate kills scored above 31**, and
+**every job the judge rated 53+ survives it** — including all three shortlisted.
+
+Stated honestly, that rests on 9 judged casualties and 16 judged survivors, which
+cannot support precision/recall. It is a floor, not a metric. What the corpus does
+support is the statement above.
 
 ## Why this is measured separately from the spike
 

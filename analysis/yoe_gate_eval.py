@@ -30,6 +30,21 @@ stating a minimum, and on anything phrased as "preferred", which the shipped par
 deliberately treats as a requirement. Read the printed disagreements before
 believing either number.
 
+**Section 1 no longer measures correctness, and section 3 is the check that matters.**
+The labels encode "the lowest stated requirement governs"; the shipped parser takes
+the HIGHEST open-ended minimum (`hireshire/funnel/experience.py` says why). So a
+non-zero "read HIGHER than the label" count is now the expected consequence of a
+deliberate policy difference, not the danger signal its wording suggests. Judge a
+change to the gate by the safety floor instead: nothing the judge rated highly may be
+killed.
+
+Two sampling traps in this harness, both of which flatter it. It needs a `matches` row
+for `rerank_score`, so it silently reports on only the labelled jobs that a *recent*
+sweep also scored — as few as 12 of the 213 — and a run whose casualties all hit the
+call cap has no judged rows among them, which prints PASS from an empty set. Check the
+"rows with a REAL LLM verdict" line before believing the floor, and to measure a change
+properly, re-parse the judged rows of one full sweep directly.
+
 Usage:
     python analysis/yoe_gate_eval.py
     python analysis/yoe_gate_eval.py --tolerance 2 --candidate-years 4
@@ -68,12 +83,24 @@ def _plain_text(raw: str | None) -> str:
     return Job.strip_html(raw) or ""
 
 
+def _judged(row: dict) -> int | None:
+    """The LLM's score for this row, or None if no call was ever made for it.
+
+    A `skip_reason` means the judge never saw the job. `filtered_result` still writes
+    `relevance_score = 0` on those rows, so the raw column reads as a verdict of zero
+    — the exact misreading that made the all-jobs export print a blank instead.
+    """
+    if row["skip_reason"]:
+        return None
+    return row["relevance_score"]
+
+
 def _load(db_path: Path, labels: dict) -> list[dict]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT m.job_id, m.title, m.board_token, m.rerank_score, m.relevance_score,"
-        "       m.shortlisted, j.content_text "
+        "       m.skip_reason, m.shortlisted, j.content_text "
         "FROM matches m JOIN jobs j ON j.job_id = m.job_id "
         "WHERE j.content_text IS NOT NULL AND LENGTH(j.content_text) > 200"
     ).fetchall()
@@ -148,15 +175,28 @@ def _report(rows: list[dict], labels: dict, candidate: float, tolerance: float) 
 
     violations = [
         (row, need) for row, need in kills
-        if row["shortlisted"] or (row["relevance_score"] or 0) >= SAFETY_FLOOR
+        if row["shortlisted"] or (_judged(row) or 0) >= SAFETY_FLOOR
     ]
-    labelled = [r for r in rows if r["relevance_score"] is not None]
-    scored_kills = [r for r, _ in kills if r["relevance_score"] is not None]
-    best = max((r["relevance_score"] for r in scored_kills), default=None)
+    # A row is only evidence if an LLM actually judged it. `filtered_result` stamps
+    # relevance_score=0 on every cutoff and cap drop, so reading that column raw
+    # counts jobs the judge never saw as jobs the judge rated zero — which would
+    # silently inflate the sample this floor rests on. Same misreading that the
+    # all-jobs export prints a BLANK llm_score to avoid.
+    judged_all = [r for r in rows if _judged(r) is not None]
+    judged_kills = [r for r, _ in kills if _judged(r) is not None]
+    best = max((_judged(r) for r in judged_kills), default=None)
+    survivors = [r for r in above if r not in [k for k, _ in kills]]
+    judged_survivors = sorted(
+        s for s in (_judged(r) for r in survivors) if s is not None
+    )
 
     print(f"\n=== 3. Safety floor (must kill nothing >= {SAFETY_FLOOR}) ===")
-    print(f"  rows carrying a judge score : {len(labelled)} "
-          f"(shortlisted: {sum(1 for r in labelled if r['shortlisted'])})")
+    print(f"  rows with a REAL LLM verdict : {len(judged_all)} of {len(rows)} "
+          f"(shortlisted: {sum(1 for r in judged_all if r['shortlisted'])})")
+    print(f"  of the {len(kills)} killed, actually judged : {len(judged_kills)}"
+          f"  -- the rest hit the call cap and were never judged")
+    print(f"     their scores : {sorted(_judged(r) for r in judged_kills)}")
+    print(f"  judged survivors : {judged_survivors}")
     print("  NOTE: too few positives for precision/recall; this is a floor, not a metric.")
     print(f"  best judge score among the killed : "
           f"{best if best is not None else 'n/a - none of them were judged'}")

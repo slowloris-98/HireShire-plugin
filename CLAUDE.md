@@ -101,13 +101,32 @@ Consequences already worked out, which should not be re-derived:
   truth for "is it running", by heartbeat freshness rather than PID probing — `os.kill(pid, 0)`
   is not portable to Windows and a recycled PID reads as alive.
 
-  "Session-scoped" is the intent, not a guarantee: on Windows a monitor has outlived
-  its session more than once, leaving a sweeper on the database that the user could
-  only reach through Task Manager. `--stop` exists for that, and it kills the process
-  **tree** — `run_orchestration.py` re-execs twice (system interpreter → venv →
-  engine), so the pid in the status file is a leaf and killing it alone strands its
-  parents, which then read as a live sweep. It clears the status file either way: a
-  stale document claiming "running" is the more harmful of the two failures.
+  **"Session-scoped" is now enforced, not assumed.** Being a child of the session is
+  not enough on Windows: an orphan there is re-parented in silence — no process group,
+  no SIGHUP — and a monitor outlived its session more than once, the last time with a
+  shortlist in hand and auto-apply on. Two mechanisms end it and **neither is
+  sufficient alone**. The `SessionEnd` hook runs `--stop` on an orderly exit, filtered
+  on the payload's `reason` so a `/clear` does not kill a live sweep; it cannot fire
+  when Claude Code is force-killed or crashes. So `run_orchestration.py`'s heartbeat
+  also watches the two pids `hireshire.sh --monitor` hands it and exits within one
+  interval when either goes. Those two pids mean different things per platform and
+  **both spellings are needed**: under Git Bash `exec` cannot replace the process, so
+  `$$` names the surviving `sh.exe` and is how a killed shell task is detected, while
+  on POSIX `exec` preserves the pid, `$$` becomes the monitor's own, and only `$PPID`
+  does any work. The watchdog is armed solely by those variables being present, which
+  is what keeps it inert for the scheduled route (`orchestrate.py --once`, no session).
+
+  **Killing the leaf is enough, because the chain unwinds itself.** Every parent in the
+  re-exec chain is blocked in `subprocess.run`, so each exits as soon as its child
+  does — verified against a live four-process orphan, where a `taskkill /T` on the
+  recorded leaf cleared all four. That is what makes a watchdog in the leaf sufficient,
+  with no Job Objects and no `execv` rewrite.
+
+  `--stop` remains the manual backstop and clears the status file either way: a stale
+  document claiming "running" is the more harmful of the two failures. On POSIX it must
+  signal the recorded pid **itself** — `pkill -P` only ever reaches children, and
+  gating the SIGTERM on pkill having *failed* meant the sweeper survived precisely when
+  it had a child, which is to say during the apply phase.
 - **Setup never shows YAML.** `hireshire/config_writer.py` is a whitelisted,
   ruamel-based writer that preserves comments and CRLF and validates the patched
   document against the phase's pydantic model *before* writing.
@@ -142,7 +161,7 @@ Five things follow that are easy to break:
   bi-encoder buys CPU seconds and skipped detail fetches, never LLM calls, and pays
   for them in recall at the *title-only* stage. This is the single most common wrong
   instinct about this funnel.
-- **The bi-encoder threshold is deliberately low (0.25)** and does not transfer
+- **The bi-encoder threshold is deliberately low (0.30)** and does not transfer
   between users. Outside tech, titles are branded and generic (Account Manager,
   Client Partner, Growth Partner), so their cosines bunch into a narrow band and a
   threshold tuned on engineering titles passes everything or nothing. Note also that
@@ -150,8 +169,12 @@ Five things follow that are easy to break:
   loosens the gate further on its own.
 - **`min_score` is a raw logit and is personal.** Not a probability, not comparable
   between users, and void the moment `rerank.model` changes. `scripts/calibrate_cutoffs.py`
-  derives it from the user's own `matches` rows; the shipped 0.0 is a defensible
-  starting point (the models' own decision boundary), not a tuned value.
+  derives it from the user's own `matches` rows; the shipped 3.0 is a starting point
+  borrowed from this project's own analysis corpus (where it admits ~61 jobs a sweep,
+  inside `top_k`), not a value tuned to any particular user. It sits deliberately well
+  above 0.0 — the models' own decision boundary, which shipped through 0.2.x and was
+  permissive enough that the budget rather than the cutoff usually decided what got
+  scored.
 - **Clustering still works per batch, and this is load-bearing.** Postings group by
   `board_token` plus description, and the scraper emits one employer per queue item,
   so every member of a cluster is in the same batch by construction. That is what let
@@ -198,23 +221,45 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
   cross-encoder to one logit, so neither has a span output, and pooled embeddings are
   bad at magnitude anyway ("2+ years" sits near "12+ years"). An LLM can, and
   `analysis/extraction_spike.py` measured Haiku doing it, but the cost was a wash:
-  ~20 Sonnet-equivalents to save 18 judge calls. Measured against that spike's own
-  213 labels the regex reads *higher* than the label **zero** times — the only error
-  direction that kills a job wrongly — and the safety floor passes with the best
-  judge score among 19 casualties at 31, against a shortlist threshold of 65–75
-  (`analysis/results/yoe_gate.md`).
+  ~20 Sonnet-equivalents to save 18 judge calls. It clears the safety floor that
+  licenses it: on sweep `2026-09-09T06-51-12Z` the best judge score among its
+  casualties was 44 against a shortlist threshold of 65, and nothing shortlisted was
+  killed (`analysis/results/yoe_gate.md`, whose section 1 predates the current
+  aggregation — read the banner there).
 
-  Four rules hold it together, and each reverses an instinct:
+  Five rules hold it together, and each reverses an instinct:
 
-  - **Lowest stated requirement governs.** A posting listing `8+ / 12+ / 3+` compares
-    against 3. Taking the first or the highest scored better against the labels (82%
-    and 80% versus 76%) and both over-read, which is the only failure that discards a
-    job wrongly. Agreement is not the objective; error direction is.
+  - **The `+` is the requirement marker, not the word "experience".** The parser used
+    to require experience language within a short window of the number, which threw
+    away every posting that writes the domain instead — `7+ years owning financial
+    planning`, `10+ years in software engineering`, `5+ years of production support`.
+    An **open-ended minimum** (`5+ years`, `5 plus years`, `at least 5 years`,
+    `minimum of 5 years`) is a requirement whatever follows it, and company prose
+    almost never uses that form. Widening the word list instead was tried and
+    rejected: a rule loose enough to admit those lines also read "For 20 years, Acme
+    has been building homes" as a 20-year requirement. Three tiers, first non-empty
+    wins — open-ended, then range (lower bound), then the old bare-count-plus-
+    proximity path, which is retained because dropping it costs 7 of the 104
+    reachable labels (91% → 85%) and takes missed requirements from 1 to 10.
+  - **Highest open-ended minimum governs.** A posting listing `8+ / 12+ / 3+` compares
+    against **12**. This reverses the original lowest-governs rule and the reversal is
+    deliberate: a candidate who cannot clear the highest bar a posting names is not
+    getting the job, and the lowest reading sent 6 of every 50 paid calls to postings
+    needing 5-8 years. The label corpus in `analysis/cache/extraction.json` encodes
+    lowest-governs, so the parser now reads *higher* than a label occasionally by
+    design — do not "fix" that. What licenses it is the safety floor, not agreement:
+    on sweep `2026-09-09T06-51-12Z` the change dropped 13 of 50 paid calls (26%), the
+    best judge score among them was 44 against a shortlist threshold of 65, and
+    nothing shortlisted was touched. Agreement on the labels rose 81% → 91% anyway.
+    Note `analysis/yoe_gate_eval.py` section 1 therefore measures policy divergence,
+    not error, and its sample is thin — see the caveats in its docstring.
   - **"Preferred" is treated exactly like "required"**, which is where the spike's
     prompt differed and why it returned null on most preference-phrased postings.
-  - **It gates only from below.** `5-10 years` is read as *at least 5*; the upper
-    bound is matched solely so it is consumed and cannot look like a second
-    requirement. Nothing is dropped for being over-qualified.
+  - **It gates only from below.** `5-10 years` is read as *at least 5*. Ranges are
+    matched *before* the open-ended tier and their spans excluded from it, so the
+    upper bound cannot look like a second requirement — without that ordering
+    `3 to 7+ years` would read as an open-ended 7 rather than a range from 3.
+    Nothing is dropped for being over-qualified.
   - **It runs after the `min_score` cutoff, not before it.** Both are LLM-free, so
     the ordering buys two other things: `stages["above_cutoff"]` keeps meaning what
     the matching report says it means, and a wrong `candidate_years` can only touch

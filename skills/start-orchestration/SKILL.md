@@ -65,7 +65,10 @@ If it says running, tell the user, plainly:
 - **How often** it sweeps — take the interval from the status output, not from memory.
 - **That it stops when this session ends.** The single most important thing to say,
   because the natural assumption is that it keeps running. It is a session watcher, not
-  a background service.
+  a background service. Two things enforce it — the session's own exit stops the sweep,
+  and the sweep watches the session for the case where Claude Code is killed outright —
+  so this is a claim you can make plainly. If the machine loses power mid-sweep, say
+  that `--status` still tells the truth afterwards and `--stop` ends whatever it finds.
 - **How to make it survive** closing Claude Code: the OS scheduler entry
   `/hireshire:setup` offers. If they did not take it, they can re-run setup.
 - **That invoking this twice does nothing** — the second start exits rather than

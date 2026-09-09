@@ -31,6 +31,39 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Fixed
 
+- **The recurring sweep did not stop with the session, and now it does.** Users are
+  told it is a session watcher rather than a background service; on Windows that was
+  untrue. An orphan there is re-parented in silence — no process group, no SIGHUP —
+  so nothing signalled the sweeper when Claude Code closed. It happened twice in one
+  afternoon, the second time with seven jobs shortlisted and `enable_applier` on: a
+  process one step from submitting real applications with nobody watching, reachable
+  only through Task Manager. Two mechanisms now end it, and neither is sufficient
+  alone:
+
+  - a **`SessionEnd` hook** runs `hireshire.sh --session-end`, which reuses `--stop`.
+    It filters on the payload's `reason`, so a `/clear` — which leaves the user in a
+    live session — does not kill their sweep. It cannot fire if Claude Code is
+    force-killed or crashes.
+  - the sweeper's **heartbeat watches the session's own pids** (`hireshire.sh
+    --monitor` hands it the launching shell and the CLI above it) and exits within one
+    interval when either disappears. This is the half that survives a crash.
+
+  Shutdown is immediate rather than graceful: every job already judged is in `matches`,
+  so what is abandoned is the employer batch in flight, not work anyone paid for. An
+  in-flight `claude -p` apply subprocess is taken down with it — an orphaned one would
+  go on submitting applications, which is the whole point. Nothing needs killing above
+  the leaf: each parent in the re-exec chain is blocked in `subprocess.run` and unwinds
+  on its own. `--stop` remains the manual backstop.
+
+- **`--stop` could report success while leaving the sweeper running, on macOS and
+  Linux.** It ran `pkill -TERM -P <pid>`, which signals the *children* of a pid and
+  never the pid itself, then gated the `SIGTERM` fallback on pkill having **failed**.
+  So whenever pkill succeeded — whenever the sweep had a child — the sweeper survived
+  and was reported as stopped. The sweep has a child in exactly one situation: while
+  `claude -p` is driving a browser through the apply phase, so the stop path failed at
+  the one moment that mattered most. It now always signals the recorded process, with
+  the child sweep as an addition rather than a substitute.
+
 - **The apply phase never ran.** `orchestrate._launch_skill` passed the SKILL.md
   body to `claude -p` as a positional argument. A SKILL.md opens with `---`
   frontmatter, which the CLI parses as an option, so every unattended apply phase
@@ -46,6 +79,28 @@ All notable changes to this plugin are documented here. Versions follow
   skill now always prints an **Apply manually** section with company, title and URL.
 
 ### Changed
+
+- **`funnel.rerank.min_score` now defaults to 3.0, up from 0.0.** 0.0 is the
+  cross-encoder's own decision boundary, which is permissive enough that the cutoff
+  rarely bound — most of what reached the reranker went on to cost an LLM call, and
+  the budget, not the cutoff, decided who got scored. 3.0 is the operating point
+  every study in `analysis/results/` was run at; on that corpus it admits 61 jobs a
+  sweep, well inside `top_k`. The docs already described the funnel this way
+  (`docs/sys_arch.md`), so this brings the code and the shipped YAML in line with
+  them. **The number is still a raw logit and still personal** — it is not a
+  percentage, it means nothing if `rerank.model` changes, and
+  `scripts/calibrate_cutoffs.py` remains the way to derive your own. Existing
+  installs keep whatever is in their own `config/matcher.yaml`; this changes new
+  installs only. Anyone whose sweeps come back emptier than before should lower it.
+
+- **`funnel.encoder.threshold` now defaults to 0.30, up from 0.25.** The title gate
+  stays a recall net — everything in its comment block still holds, in particular
+  that tightening it saves no money, since both title gates run locally and only
+  `rerank.min_score` decides what reaches the LLM. What it buys is CPU seconds and
+  skipped detail fetches on Workday/BambooHR, paid for in recall at the stage that
+  sees the least. `docs/sys_arch.md` already documented 0.30. Like the cutoff, this
+  does not transfer between users: outside tech, titles bunch into a narrow cosine
+  band, and max-over-targets loosens the gate on its own as `targets` grows.
 
 - **Scale numbers corrected everywhere — they were understated by ~60%.** The shipped
   slug lists had grown well past the figures in the docs: **40,068** boards, not
@@ -79,8 +134,10 @@ All notable changes to this plugin are documented here. Versions follow
   Re-run setup to change it — though jobs already skipped stay skipped, the same way
   raising the relevance cutoff does not bring back what it rejected.
 
-  Measured against a real sweep: of 61 jobs that reached the LLM, it skips 19, and
-  the best score among them was 31 out of 100 against a shortlist bar of 65-75. The
+  Measured against a real sweep: of 61 jobs that got past the relevance cutoff, it
+  skips 19. Nine of those nineteen had actually been scored, and the best of them
+  managed 31 out of 100 against a shortlist bar of 65-75 — while every job the
+  scorer rated 53 or higher survived the filter untouched. The
   new `yoe_required` column in the all-jobs CSV records what each posting asked for —
   on **every** job, whether or not the filter is switched on, so you can see what
   turning it on would have cost you before you do.

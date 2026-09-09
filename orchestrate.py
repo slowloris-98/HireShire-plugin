@@ -17,6 +17,8 @@ import json
 import logging
 import logging.handlers
 import os
+import subprocess
+import sys
 import threading
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -109,6 +111,47 @@ async def _collect_results(in_q: asyncio.Queue, out_q: asyncio.Queue) -> None:
     await out_q.put(None)
 
 
+#: The `claude -p` subprocess driving a browser through the apply phase, while one is
+#: running; None otherwise.
+#:
+#: Held here so the session watchdog in `scripts/run_orchestration.py` can take it down
+#: before the sweep exits. It is a *child* of the sweep, so nothing else will: an
+#: orphaned apply phase goes on submitting real applications, unattended, after the
+#: session that authorised it has gone. That is the exact failure this whole mechanism
+#: exists to prevent, so leaving it running would make the fix cosmetic.
+_apply_proc: "asyncio.subprocess.Process | None" = None
+
+
+def terminate_apply_subprocess() -> None:
+    """Kill the apply subprocess and the browser under it, if one is running.
+
+    Tree-wide, because `claude -p` spawns the browser itself — killing only the CLI
+    would leave a Playwright process sitting on a half-filled application form.
+
+    Never raises: the only caller is already on its way out, and a failure here must
+    not stop it from clearing the status file and exiting.
+    """
+    proc = _apply_proc
+    if proc is None or proc.returncode is not None:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+            )
+        else:
+            # Children first, then the process itself — the same order and the same
+            # reasoning as `bootstrap.stop()`. `pkill -P` never signals the parent.
+            subprocess.run(
+                ["pkill", "-KILL", "-P", str(proc.pid)], capture_output=True, text=True
+            )
+            proc.kill()
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.exception("Could not terminate the apply subprocess (pid %s)", proc.pid)
+
+
 async def _launch_skill(skill_name: str, extra: str = "") -> bool:
     """Run a Claude Code skill as a `claude -p` subprocess. Returns success."""
     # Plugin layout: skills live at ROOT/skills/<name>/SKILL.md. The whole body is
@@ -145,7 +188,14 @@ async def _launch_skill(skill_name: str, extra: str = "") -> bool:
         stderr=asyncio.subprocess.PIPE,
         env=skill_env,
     )
-    stdout, stderr = await proc.communicate(skill_prompt.encode("utf-8"))
+    # Published for `terminate_apply_subprocess`, and cleared the moment it exits so a
+    # later shutdown cannot go hunting for a pid the OS has already recycled.
+    global _apply_proc
+    _apply_proc = proc
+    try:
+        stdout, stderr = await proc.communicate(skill_prompt.encode("utf-8"))
+    finally:
+        _apply_proc = None
     if stdout:
         logger.info("%s output:\n%s", skill_name, stdout.decode(errors="replace"))
     if proc.returncode != 0:
