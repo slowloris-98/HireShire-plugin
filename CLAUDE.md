@@ -101,13 +101,32 @@ Consequences already worked out, which should not be re-derived:
   truth for "is it running", by heartbeat freshness rather than PID probing — `os.kill(pid, 0)`
   is not portable to Windows and a recycled PID reads as alive.
 
-  "Session-scoped" is the intent, not a guarantee: on Windows a monitor has outlived
-  its session more than once, leaving a sweeper on the database that the user could
-  only reach through Task Manager. `--stop` exists for that, and it kills the process
-  **tree** — `run_orchestration.py` re-execs twice (system interpreter → venv →
-  engine), so the pid in the status file is a leaf and killing it alone strands its
-  parents, which then read as a live sweep. It clears the status file either way: a
-  stale document claiming "running" is the more harmful of the two failures.
+  **"Session-scoped" is now enforced, not assumed.** Being a child of the session is
+  not enough on Windows: an orphan there is re-parented in silence — no process group,
+  no SIGHUP — and a monitor outlived its session more than once, the last time with a
+  shortlist in hand and auto-apply on. Two mechanisms end it and **neither is
+  sufficient alone**. The `SessionEnd` hook runs `--stop` on an orderly exit, filtered
+  on the payload's `reason` so a `/clear` does not kill a live sweep; it cannot fire
+  when Claude Code is force-killed or crashes. So `run_orchestration.py`'s heartbeat
+  also watches the two pids `hireshire.sh --monitor` hands it and exits within one
+  interval when either goes. Those two pids mean different things per platform and
+  **both spellings are needed**: under Git Bash `exec` cannot replace the process, so
+  `$$` names the surviving `sh.exe` and is how a killed shell task is detected, while
+  on POSIX `exec` preserves the pid, `$$` becomes the monitor's own, and only `$PPID`
+  does any work. The watchdog is armed solely by those variables being present, which
+  is what keeps it inert for the scheduled route (`orchestrate.py --once`, no session).
+
+  **Killing the leaf is enough, because the chain unwinds itself.** Every parent in the
+  re-exec chain is blocked in `subprocess.run`, so each exits as soon as its child
+  does — verified against a live four-process orphan, where a `taskkill /T` on the
+  recorded leaf cleared all four. That is what makes a watchdog in the leaf sufficient,
+  with no Job Objects and no `execv` rewrite.
+
+  `--stop` remains the manual backstop and clears the status file either way: a stale
+  document claiming "running" is the more harmful of the two failures. On POSIX it must
+  signal the recorded pid **itself** — `pkill -P` only ever reaches children, and
+  gating the SIGTERM on pkill having *failed* meant the sweeper survived precisely when
+  it had a child, which is to say during the apply phase.
 - **Setup never shows YAML.** `hireshire/config_writer.py` is a whitelisted,
   ruamel-based writer that preserves comments and CRLF and validates the patched
   document against the phase's pydantic model *before* writing.

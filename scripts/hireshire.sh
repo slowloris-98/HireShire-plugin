@@ -19,6 +19,7 @@
 #   hireshire.sh --paths                  print ROOT= and DATA=; installs nothing
 #   hireshire.sh --status                 is a recurring sweep running? installs nothing
 #   hireshire.sh --stop                   stop a running sweep; installs nothing
+#   hireshire.sh --session-end            SessionEnd hook; hook payload on stdin
 #   hireshire.sh --approve                PreToolUse guard; reads a hook payload on stdin
 #   hireshire.sh --bootstrap              create/refresh the venv
 #   hireshire.sh --monitor                run the recurring sweep (start in background)
@@ -36,8 +37,15 @@
 # --stop is the counterpart to --monitor. The sweep is meant to end with the session
 # that started it, but on Windows it has outlived one more than once, leaving a
 # sweeper on the database that the user could only reach through Task Manager. The
-# kill is tree-wide because the monitor re-execs twice, so the pid on record is a leaf
-# and killing it alone strands its parents.
+# kill is tree-wide because the monitor re-execs twice and the pid on record is the
+# leaf: /T reaches the apply subprocess and the browser under it, and the parents
+# unwind by themselves, each being blocked in subprocess.run waiting on its child.
+#
+# --session-end is what makes that automatic. It is the SessionEnd hook, and it reuses
+# --stop's kill after checking the payload's `reason`, because `clear` and `resume`
+# are not endings — killing a sweep on /clear would be a new bug of the same shape.
+# It cannot fire when Claude Code is force-killed, which is why --monitor also hands
+# the sweep the session pids to watch for itself. Neither half is sufficient alone.
 #
 # --approve is what the PreToolUse hook runs, via scripts/approve.sh. It decides
 # whether a command is one of this plugin's own and can skip the permission prompt,
@@ -78,9 +86,30 @@ case "$1" in
     --paths)     exec "$PY" "$ROOT/scripts/bootstrap.py" --paths ;;
     --status)    exec "$PY" "$ROOT/scripts/bootstrap.py" --status ;;
     --stop)      exec "$PY" "$ROOT/scripts/bootstrap.py" --stop ;;
+    --session-end) exec "$PY" "$ROOT/scripts/bootstrap.py" --session-end ;;
     --approve)   exec "$PY" "$ROOT/scripts/approve.py" ;;
     --bootstrap) exec "$PY" "$ROOT/scripts/bootstrap.py" ;;
-    --monitor)   exec "$PY" "$ROOT/scripts/run_orchestration.py" ;;
-    "")          echo "usage: hireshire.sh [--check|--paths|--status|--stop|--approve|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
+    --monitor)
+        # Hand the sweep the two pids that stand for "this session", so it can end
+        # itself when the session goes. Windows gives it no other way to notice: an
+        # orphan there is re-parented in silence, with no process group and no
+        # SIGHUP, and a monitor has outlived its session more than once.
+        #
+        #   $$     the shell Claude Code spawned for the background task. Under Git
+        #          Bash this SURVIVES the exec below, because MSYS cannot execve and
+        #          leaves `sh.exe` in place as a proxy — which is exactly what makes
+        #          "the user killed the shell task from the CLI" detectable.
+        #   $PPID  Claude Code itself — "the user closed the CLI".
+        #
+        # On POSIX `exec` really does replace the shell, so the pid in $$ becomes the
+        # monitor's own and that check answers "alive" for as long as it runs. That
+        # is intended, not a leftover: deleting it would cost Windows its only signal
+        # for a killed shell task, and $PPID carries POSIX on its own.
+        HIRESHIRE_SHELL_PID=$$
+        HIRESHIRE_CLI_PID=$PPID
+        export HIRESHIRE_SHELL_PID HIRESHIRE_CLI_PID
+        exec "$PY" "$ROOT/scripts/run_orchestration.py"
+        ;;
+    "")          echo "usage: hireshire.sh [--check|--paths|--status|--stop|--session-end|--approve|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
     *)           exec "$PY" "$ROOT/scripts/run_engine.py" "$@" ;;
 esac

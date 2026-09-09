@@ -16,6 +16,7 @@ venv exists, so it may only import the standard library.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -148,17 +149,30 @@ def stop() -> int:
     killed = False
     if isinstance(pid, int):
         if sys.platform == "win32":
-            cmd = ["taskkill", "/PID", str(pid), "/T", "/F"]
+            # /T reaches the recorded process and everything under it, which is what
+            # takes down an apply subprocess and the browser it is driving.
+            try:
+                killed = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                ).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                killed = False
         else:
-            cmd = ["pkill", "-TERM", "-P", str(pid)]
-        try:
-            killed = subprocess.run(
-                cmd, capture_output=True, text=True
-            ).returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            killed = False
-        if not killed and sys.platform != "win32":
-            # pkill only reached the children; the recorded process itself is still up.
+            # `pkill -P` signals the CHILDREN of pid and never pid itself, so it is a
+            # first step, never the whole job. This used to gate the SIGTERM below on
+            # pkill having *failed*, which meant that whenever pkill succeeded — that
+            # is, whenever the sweep had a child — the sweeper was left running and
+            # reported as stopped. The sweep has a child in exactly one situation:
+            # while `claude -p` drives a browser through the apply phase. So the stop
+            # path failed at the one moment that mattered most.
+            try:
+                subprocess.run(
+                    ["pkill", "-TERM", "-P", str(pid)], capture_output=True, text=True
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
             try:
                 os.kill(pid, signal.SIGTERM)
                 killed = True
@@ -175,6 +189,48 @@ def stop() -> int:
         "`kill` it directly."
     )
     return 1
+
+
+#: SessionEnd reasons that do NOT mean the session is over. `/clear` and a resume both
+#: leave the user sitting in a live session, and stopping their sweep there would be a
+#: new bug of exactly the kind this hook exists to prevent.
+#:
+#: Held as a deny-list rather than an allow-list of endings on purpose: an unfamiliar
+#: or missing reason then still stops the sweep. The whole point of this hook is that
+#: a sweep must not outlive its session, so an unknown reason should fail toward
+#: stopping — the cost is a sweep the user restarts, against an orphan they can only
+#: reach through Task Manager.
+_SESSION_CONTINUES_REASONS = frozenset({"clear", "resume"})
+
+
+def session_end() -> int:
+    """Stop the sweep when the session that started it ends.
+
+    The recurring sweep is documented as session-scoped and on Windows it was not:
+    nothing signals an orphan there — no process group, no SIGHUP — so a monitor
+    outlived its session repeatedly, once with a shortlist in hand and auto-apply
+    enabled. This is the clean half of the fix: the host tells us the session is over
+    and we stop.
+
+    The other half is in `run_orchestration.py`, which watches the session's pids
+    itself, because this hook cannot fire when Claude Code is force-killed or crashes.
+    Neither layer is sufficient alone.
+
+    Silence is the default, as in `approve.py`: an unreadable payload leaves the sweep
+    running rather than guessing at it.
+    """
+    try:
+        # No payload at all is treated as an empty one: the hook fired, so the session
+        # ended — only the reason is missing, and that is the deny-list's case. A
+        # payload that is unreadable or not an object is different, and left alone.
+        payload = json.loads(sys.stdin.read() or "{}")
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    if payload.get("reason") in _SESSION_CONTINUES_REASONS:
+        return 0
+    return stop()
 
 
 def check() -> int:
@@ -253,4 +309,6 @@ if __name__ == "__main__":
         sys.exit(status())
     if "--stop" in argv:
         sys.exit(stop())
+    if "--session-end" in argv:
+        sys.exit(session_end())
     sys.exit(check() if "--check" in argv else main())

@@ -67,6 +67,38 @@ def test_session_start_hook_probes_but_never_installs():
     assert cmd.get("timeout", 0) >= 900
 
 
+def test_session_end_hook_stops_the_sweep_through_the_one_launcher():
+    """The sweep is documented as ending with its session and on Windows it did not:
+    an orphan there is re-parented in silence, so a monitor outlived its session twice,
+    the second time with a shortlist in hand and auto-apply on. This hook is the
+    orderly half of the fix; `run_orchestration`'s pid watchdog is the other half."""
+    hooks = _json("hooks/hooks.json")["hooks"]["SessionEnd"]
+    cmd = hooks[0]["hooks"][0]
+    assert cmd["type"] == "command"
+    assert "hireshire.sh" in cmd["command"], "must go through the one launcher"
+    assert "--session-end" in cmd["command"]
+    # It runs while the session is tearing down, so it must not be able to install.
+    assert "--bootstrap" not in cmd["command"]
+    assert 0 < cmd.get("timeout", 0) <= 60
+
+
+def test_the_monitor_hands_the_sweep_the_session_pids_to_watch():
+    """The watchdog only arms when these are set, and `--monitor` is the only thing
+    that sets them.
+
+    `$$` and `$PPID` mean different things per platform and both spellings are needed:
+    under Git Bash `exec` cannot replace the process, so `$$` names the surviving
+    `sh.exe` and catches "the user killed the shell task"; on POSIX `exec` preserves
+    the pid so `$$` becomes the monitor's own and `$PPID` does the work. Dropping
+    either one costs a platform its signal.
+    """
+    sh = (ROOT / "scripts" / "hireshire.sh").read_text(encoding="utf-8")
+    monitor = sh.split("--monitor)", 1)[1].split(";;", 1)[0]
+    assert "HIRESHIRE_SHELL_PID=$$" in monitor
+    assert "HIRESHIRE_CLI_PID=$PPID" in monitor
+    assert "export HIRESHIRE_SHELL_PID HIRESHIRE_CLI_PID" in monitor
+
+
 def test_check_mode_cannot_install_anything():
     """`check()` may recover stranded data and report, nothing else."""
     import bootstrap
@@ -93,6 +125,9 @@ def test_the_launcher_exposes_its_read_only_modes_separately():
     # --stop is the counterpart to --monitor: the sweep is supposed to end with its
     # session and on Windows has repeatedly not.
     assert "--stop)" in sh
+    # --session-end is what makes that automatic rather than something the user has to
+    # remember; it reuses --stop's kill.
+    assert "--session-end)" in sh
     # The permission guard runs before the venv exists, so it is a launcher mode
     # rather than an engine entrypoint. See tests/test_approve.py.
     assert "--approve)" in sh

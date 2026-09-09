@@ -31,6 +31,39 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Fixed
 
+- **The recurring sweep did not stop with the session, and now it does.** Users are
+  told it is a session watcher rather than a background service; on Windows that was
+  untrue. An orphan there is re-parented in silence — no process group, no SIGHUP —
+  so nothing signalled the sweeper when Claude Code closed. It happened twice in one
+  afternoon, the second time with seven jobs shortlisted and `enable_applier` on: a
+  process one step from submitting real applications with nobody watching, reachable
+  only through Task Manager. Two mechanisms now end it, and neither is sufficient
+  alone:
+
+  - a **`SessionEnd` hook** runs `hireshire.sh --session-end`, which reuses `--stop`.
+    It filters on the payload's `reason`, so a `/clear` — which leaves the user in a
+    live session — does not kill their sweep. It cannot fire if Claude Code is
+    force-killed or crashes.
+  - the sweeper's **heartbeat watches the session's own pids** (`hireshire.sh
+    --monitor` hands it the launching shell and the CLI above it) and exits within one
+    interval when either disappears. This is the half that survives a crash.
+
+  Shutdown is immediate rather than graceful: every job already judged is in `matches`,
+  so what is abandoned is the employer batch in flight, not work anyone paid for. An
+  in-flight `claude -p` apply subprocess is taken down with it — an orphaned one would
+  go on submitting applications, which is the whole point. Nothing needs killing above
+  the leaf: each parent in the re-exec chain is blocked in `subprocess.run` and unwinds
+  on its own. `--stop` remains the manual backstop.
+
+- **`--stop` could report success while leaving the sweeper running, on macOS and
+  Linux.** It ran `pkill -TERM -P <pid>`, which signals the *children* of a pid and
+  never the pid itself, then gated the `SIGTERM` fallback on pkill having **failed**.
+  So whenever pkill succeeded — whenever the sweep had a child — the sweeper survived
+  and was reported as stopped. The sweep has a child in exactly one situation: while
+  `claude -p` is driving a browser through the apply phase, so the stop path failed at
+  the one moment that mattered most. It now always signals the recorded process, with
+  the child sweep as an addition rather than a substitute.
+
 - **The apply phase never ran.** `orchestrate._launch_skill` passed the SKILL.md
   body to `claude -p` as a positional argument. A SKILL.md opens with `---`
   frontmatter, which the CLI parses as an option, so every unattended apply phase
