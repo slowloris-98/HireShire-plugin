@@ -34,6 +34,7 @@ FIELDS = [
     "cross_score_refined",
     "cross_score_wide",
     "bi_score",
+    "yoe_required",
     "rerank_stage",
     "status",
     "recommend",
@@ -79,6 +80,10 @@ def _row(record: dict, run_cost_usd: float | None = None) -> dict:
         "cross_score_refined": _num(record.get("rerank_score")),
         "cross_score_wide": _num(record.get("rerank_score_wide")),
         "bi_score": _num(record.get("encoder_score")),
+        # What the posting asks for in years, read by funnel/experience.py. Blank
+        # when it states nothing, which is the majority-of-a-quarter case and means
+        # the experience gate never had an opinion about this row.
+        "yoe_required": _num(record.get("yoe_required")),
         "rerank_stage": record.get("rerank_stage") or "",
         "status": _status(record),
         "recommend": "yes" if record.get("recommend") else "no",

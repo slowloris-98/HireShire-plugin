@@ -152,9 +152,10 @@ default or a recommendation for almost all of them — put that option first and
 recommended. The user gets one tap instead of typing, and "Other" is always there for
 anyone who wants something else, so offering options never narrows what they can say.
 
-Two questions stay free text, because their answers are open-ended and a menu would
-constrain them: the path to their resume, and correcting the target roles you drafted
-in question 6.
+Three questions stay free text, because their answers are open-ended and a menu would
+constrain them: the path to their resume, correcting the target roles you drafted in
+question 6, and confirming the years of experience you read off the resume in question
+7 — that one is a number to accept or correct, not a choice between options.
 
 ### How to write a value
 
@@ -308,7 +309,36 @@ Three things that trip people up:
        set funnel --json '{"targets": [...]}'
    ```
 
-7. **Which job boards** → `enabled_platforms` (phase `scraper`), a list. Present as
+7. **Years of experience.** You already have the resume text from the step above, so
+   read a number out of it and make them confirm it — one short question, in the same
+   turn as the draft above if that reads naturally:
+
+   > From your resume I read about **4 years** of professional experience. I'll use
+   > that to skip postings asking for meaningfully more — correct me if it's off.
+
+   **Propose, never assume.** Every drop this setting causes is relative to this one
+   number, in every future sweep, and a value two years low silently discards two
+   years' worth of legitimate jobs with no error anywhere. If the resume is ambiguous
+   — a career change, a long gap, freelance work — say what you are unsure about and
+   let them settle it. Count professional experience, not education.
+
+   Write it only once they have confirmed:
+
+   ```bash
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+       set funnel --json '{"experience_enabled": true, "candidate_years": 4}'
+   ```
+
+   What to tell them if they ask what it does: postings state a minimum in plain text
+   ("5+ years", "3-7 years"), it is read directly with no model and no cost, and
+   anything within six months of the bar still counts as a match. It never rejects
+   them for having *too much* experience, and the ~quarter of postings that state
+   nothing are always kept.
+
+   If they would rather not filter on this at all, write
+   `'{"experience_enabled": false}'` and move on — do not argue the point.
+
+8. **Which job boards** → `enabled_platforms` (phase `scraper`), a list. Present as
    a time trade-off, not a list of vendor names:
 
    > The default sweep covers about 16,000 employers. Turning on the two slower
@@ -320,19 +350,19 @@ Three things that trip people up:
    multiplier for the extra time — nobody has timed it yet. Say "considerably
    longer" until a real timed run exists.
 
-8. **How often to re-run**, in hours → `poll_interval_hours` on the **`scraper`**
+9. **How often to re-run**, in hours → `poll_interval_hours` on the **`scraper`**
    phase, default 4. This is what `/hireshire:start-orchestration` sweeps on; the
    monitor cannot read `${user_config.*}`, so this value is the only way the user's
    answer reaches it.
 
-9. **Scoring backend** → `matcher.provider`.
+10. **Scoring backend** → `matcher.provider`.
    - **Their Claude subscription** (`claude_code`) — the default, and the reason
      this plugin exists. No API key, no per-job cost. Then ask for `model` and
      `effort` (low / medium / high / xhigh / max; medium is a good default).
    - **An API key** (`openai` etc.) — tell them to put the key in their
      environment and install `requirements-byo-key.txt` into the plugin venv.
 
-10. **Auto-apply?** → `applier.enable_applier`. Default to **no**, and only turn it
+11. **Auto-apply?** → `applier.enable_applier`. Default to **no**, and only turn it
     on if they ask for it. If yes, collect first name, last name, email and phone,
     and say plainly, before writing the setting:
 

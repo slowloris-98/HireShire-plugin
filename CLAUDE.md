@@ -125,6 +125,7 @@ detail hydration    only for DETAIL_SOURCES       detail_fetcher.py:20
 cross-encoder 68m   full description → logit      rerank.py
 cluster             one call per requisition      cluster.py — needs those logits
 min_score cutoff    per job, per batch → LLM      matcher.py:_process_batch
+years-of-experience free, regex, per cluster      experience.py — after the cutoff
 top_k               a fuse on calls, not a gate   matcher.py:_CallBudget
 ```
 
@@ -191,6 +192,42 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
   real bug: one wastes the funnel, the other permanently discards a job that was only
   unlucky. `rerank_below_top_k` stays listed as retryable for rows written before the
   split.
+- **The years-of-experience gate is a regex, and that is not a compromise.**
+  `hireshire/funnel/experience.py` reads a stated minimum out of the description with
+  no model at all. An encoder cannot do this — a bi-encoder pools to one vector and a
+  cross-encoder to one logit, so neither has a span output, and pooled embeddings are
+  bad at magnitude anyway ("2+ years" sits near "12+ years"). An LLM can, and
+  `analysis/extraction_spike.py` measured Haiku doing it, but the cost was a wash:
+  ~20 Sonnet-equivalents to save 18 judge calls. Measured against that spike's own
+  213 labels the regex reads *higher* than the label **zero** times — the only error
+  direction that kills a job wrongly — and the safety floor passes with the best
+  judge score among 19 casualties at 31, against a shortlist threshold of 65–75
+  (`analysis/results/yoe_gate.md`).
+
+  Four rules hold it together, and each reverses an instinct:
+
+  - **Lowest stated requirement governs.** A posting listing `8+ / 12+ / 3+` compares
+    against 3. Taking the first or the highest scored better against the labels (82%
+    and 80% versus 76%) and both over-read, which is the only failure that discards a
+    job wrongly. Agreement is not the objective; error direction is.
+  - **"Preferred" is treated exactly like "required"**, which is where the spike's
+    prompt differed and why it returned null on most preference-phrased postings.
+  - **It gates only from below.** `5-10 years` is read as *at least 5*; the upper
+    bound is matched solely so it is consumed and cannot look like a second
+    requirement. Nothing is dropped for being over-qualified.
+  - **It runs after the `min_score` cutoff, not before it.** Both are LLM-free, so
+    the ordering buys two other things: `stages["above_cutoff"]` keeps meaning what
+    the matching report says it means, and a wrong `candidate_years` can only touch
+    jobs that were about to cost a call. YoE drops are counted into `above_cutoff`
+    for the same reason cap drops are.
+
+  `yoe_below_requirement` is a **verdict** and stays out of `_RETRYABLE_SKIP_REASONS`
+  — same description, same `candidate_years`, same answer. This reverses
+  `analysis/results/extraction_prefilter.md`, which required extraction drops to be
+  retryable; that was written about an LLM extractor, where a misparse is transient.
+  `yoe_required` is recorded on every reranked row even when the gate is switched
+  off, so "what would enabling this cost me" is answerable from a real run.
+
 - **The search profile never reaches the scoring prompt.** It states transferable
   and inferred framing ("React → component-based UI development"). It is the
   reranker's query only. A judge reading it would credit the candidate for skills

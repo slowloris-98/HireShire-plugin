@@ -209,6 +209,27 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 "logit, not a percentage — calibrate it, do not guess. Higher means "
                 "fewer, better-matched jobs scored.",
             ),
+            # Spelled out rather than reusing the bare `enabled` / `tolerance` keys.
+            # This whitelist is flat — one namespace for the whole phase — so a
+            # second `enabled` would be indistinguishable from `funnel.enabled`
+            # above, which is the same collision the encoder_threshold note warns
+            # about one field up.
+            "experience_enabled": FieldSpec(
+                ("funnel", "experience", "enabled"), "bool",
+                "Drop postings asking for meaningfully more experience than the "
+                "candidate has. Needs candidate_years to be set as well.",
+            ),
+            "candidate_years": FieldSpec(
+                ("funnel", "experience", "candidate_years"), "float",
+                "The candidate's own total years of professional experience. "
+                "Personal, and every drop this stage makes is relative to it — "
+                "confirm it with the user, never infer it silently.",
+            ),
+            "experience_tolerance": FieldSpec(
+                ("funnel", "experience", "tolerance_years"), "float",
+                "How far below a stated requirement still counts as a match, in "
+                "years. 0.5 keeps a 4.5-year candidate against a '5+ years' posting.",
+            ),
             "top_k": FieldSpec(
                 ("funnel", "top_k"), "int",
                 "Maximum LLM calls per run — a cost fuse, not how jobs are chosen "

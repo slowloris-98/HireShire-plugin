@@ -103,6 +103,41 @@ class DetailFetchConfig(BaseModel):
     timeout_s: float = 20.0  # per-call httpx timeout for the detail client
 
 
+class ExperienceConfig(BaseModel):
+    """Deterministic years-of-experience gate. Costs nothing per job — see
+    funnel/experience.py for why a regex rather than an encoder or an LLM.
+
+    OFF by default, and the default `candidate_years` of 0 is a second lock on the
+    same door. An install that predates this feature, or one whose setup was skipped,
+    must not silently start dropping jobs against a candidate with "no experience".
+    Both `enabled` and a positive `candidate_years` are required before it runs.
+    """
+
+    enabled: bool = False
+
+    #: The candidate's own total years of professional experience.
+    #:
+    #: PERSONAL, like `rerank.min_score`, and every drop this stage makes is relative
+    #: to it — a value that is two years low silently discards two years' worth of
+    #: legitimate jobs, with no error anywhere. /hireshire:setup proposes a number
+    #: from the resume and makes the user confirm it rather than writing it unseen.
+    #:
+    #: Correcting it later does NOT resurrect jobs already retired against the old
+    #: value: the drop is a verdict, so those job_ids are in `seen_jobs`. Same
+    #: behaviour as raising `min_score`, and for the same reason.
+    candidate_years: float = Field(0.0, ge=0.0, le=60.0)
+
+    #: Slack below a stated requirement, in years. A posting asking for 5 does
+    #: interview a candidate with 4.5, so a strict comparison would be wrong more
+    #: often than the thing it filters.
+    #:
+    #: NOTE this is far tighter than the +2 the offline spike
+    #: (analysis/results/extraction_prefilter.md) measured its safety floor at. That
+    #: floor does not transfer to this value — re-run analysis/yoe_gate_eval.py before
+    #: treating a change here as safe.
+    tolerance_years: float = Field(0.5, ge=0.0, le=10.0)
+
+
 class DedupeConfig(BaseModel):
     """Collapse repeated requisitions so one employer cannot eat the whole budget.
 
@@ -131,6 +166,7 @@ class FunnelConfig(BaseModel):
     enabled: bool = False
     encoder: EncoderConfig = Field(default_factory=EncoderConfig)
     rerank: RerankConfig = Field(default_factory=RerankConfig)
+    experience: ExperienceConfig = Field(default_factory=ExperienceConfig)
     dedupe: DedupeConfig = Field(default_factory=DedupeConfig)
     detail_fetch: DetailFetchConfig = Field(default_factory=DetailFetchConfig)
 

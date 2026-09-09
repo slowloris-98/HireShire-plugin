@@ -161,6 +161,15 @@ class MatchResult(BaseModel):
     # Which pass produced `rerank_score`: "single" now, "wide" or "refined" on rows
     # from before the cascade was collapsed.
     rerank_stage: Optional[str] = None
+    # Years of experience the POSTING asks for, read out of the description by
+    # funnel/experience.py. Recorded on every reranked row whether or not the
+    # experience gate is switched on, so a user can see what enabling it would cost.
+    #
+    # Deliberately NOT `years_experience_required` below, which is the LLM judge's
+    # own reading of the same question. Two sources, two columns: merging them would
+    # make the all-jobs export unable to say which produced any given value, and the
+    # regex covers rows the judge never saw.
+    yoe_required: Optional[float] = None
 
     # --- Clustering ----------------------------------------------------------
     # Set on jobs that inherited their score from a cluster representative rather

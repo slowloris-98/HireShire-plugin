@@ -63,6 +63,7 @@ class MatchStore:
             result.encoder_score,
             result.rerank_score_wide,
             result.rerank_score,
+            result.yoe_required,
         )
 
     def finalise(

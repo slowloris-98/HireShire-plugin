@@ -62,6 +62,29 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Added
 
+- **Jobs that ask for far more experience than you have are skipped, for free.**
+  Postings state a minimum in plain text — "5+ years", "at least five years",
+  "3-7 years" — so it is read with a pattern match rather than a model. No API call,
+  no cost, and it runs once per group of duplicate postings rather than once per job.
+
+  It only ever filters from **below**: "5-10 years" means "at least 5", and you are
+  never dropped for being over-qualified. Anything within six months of the stated
+  bar still counts as a match, "preferred" is treated the same as "required" because
+  employers use the words interchangeably, and the roughly one posting in four that
+  states no requirement is always kept.
+
+  **Off until `/hireshire:setup` asks you.** Setup reads a number off your resume and
+  makes you confirm it, because every skipped job is measured against that one value
+  and a value set two years low would quietly cost you two years' worth of jobs.
+  Re-run setup to change it — though jobs already skipped stay skipped, the same way
+  raising the relevance cutoff does not bring back what it rejected.
+
+  Measured against a real sweep: of 61 jobs that reached the LLM, it skips 19, and
+  the best score among them was 31 out of 100 against a shortlist bar of 65-75. The
+  new `yoe_required` column in the all-jobs CSV records what each posting asked for —
+  on **every** job, whether or not the filter is switched on, so you can see what
+  turning it on would have cost you before you do.
+
 - **`hireshire.sh --stop`.** The recurring sweep is meant to end with the session
   that started it; on Windows it has outlived one more than once, leaving a sweeper
   on the database reachable only through Task Manager. `--stop` kills the recorded

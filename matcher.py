@@ -27,7 +27,8 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 from rich.table import Table
 
 from hireshire import paths
-from hireshire.funnel import cluster
+from hireshire.funnel import cluster, experience
+from hireshire.funnel.config import ExperienceConfig
 from hireshire.funnel.detail_fetcher import DETAIL_SOURCES
 from hireshire.funnel.funnel import Funnel
 from hireshire.funnel.rerank import RERANK_STAGE, Reranker
@@ -69,6 +70,20 @@ CAP_SKIP_REASON = "llm_call_cap_reached"
 # The pre-cutoff budget drop. Nothing writes it any more; it is kept so the reports
 # can still label rows from runs made before the funnel became a streaming cutoff.
 BUDGET_SKIP_REASON = "rerank_below_top_k"
+
+# The posting asks for meaningfully more experience than the candidate has, read
+# straight out of the description by `funnel/experience.py`.
+#
+# A VERDICT, like the cutoff above, and deliberately absent from
+# _RETRYABLE_SKIP_REASONS for exactly the same reason: the same description and the
+# same `candidate_years` produce the same answer every time, so retrying it would
+# re-run a deterministic computation ~6 times a day to reach the identical result.
+#
+# This reverses the guidance in analysis/results/extraction_prefilter.md, which
+# required extraction drops to be RETRYABLE. That was written about an LLM extractor,
+# where a misparse is a transient failure of the same class as the `--json-schema`
+# bug that once retired 100 jobs permanently. A regex has no transient failure mode.
+YOE_SKIP_REASON = "yoe_below_requirement"
 
 # A repeat posting of a requisition whose representative WAS scored. Distinct from a
 # budget drop because it is a verdict, not a deferral: the job has been judged, just
@@ -189,7 +204,10 @@ def _passthrough_result(job, run_id: str, score=None) -> MatchResult:
 
 
 def _apply_rerank_scores(
-    result: MatchResult, score: float | None, cluster_size: int = 1
+    result: MatchResult,
+    score: float | None,
+    cluster_size: int = 1,
+    yoe_required: float | None = None,
 ) -> MatchResult:
     """Copy a cross-encoder logit onto a result row.
 
@@ -200,8 +218,23 @@ def _apply_rerank_scores(
     if score is not None:
         result.rerank_score = score
         result.rerank_stage = RERANK_STAGE
+    if yoe_required is not None:
+        result.yoe_required = yoe_required
     result.cluster_size = cluster_size
     return result
+
+
+def _yoe_required(job: Job) -> float | None:
+    """What this posting asks for in years, or None if it says nothing.
+
+    Recorded on EVERY reranked row regardless of whether the gate is switched on.
+    Reading the number is free, and a column that only appears once the gate is
+    enabled would leave a user with no way to find out what enabling it would cost
+    them — the same reason budget drops are persisted individually rather than
+    rolled into `finalise`'s summary stats.
+    """
+    req = experience.parse_requirement(job.content_text)
+    return req.min_years if req else None
 
 
 def _log_usage(scorer, quiet: bool) -> None:
@@ -298,6 +331,7 @@ async def _process_batch(
     run_id: str,
     dedupe: bool = True,
     max_word_diff: int = cluster.DEFAULT_MAX_WORD_DIFF,
+    exp_cfg: ExperienceConfig | None = None,
 ) -> tuple[list[tuple[Job, float]], list[MatchResult], dict[str, list[tuple[Job, float]]]]:
     """Rerank one batch and decide, per job, whether it is worth an LLM call.
 
@@ -320,6 +354,14 @@ async def _process_batch(
     collapses 31 copies of one requisition into one LLM call; no global pass is
     needed for that. The thing top-K needed globally was *ranking* companies against
     each other, and nothing does that any more.
+
+    **The experience gate runs after the cutoff, not before it.** Both are free of
+    LLM cost, so the ordering is chosen for two other reasons. It keeps
+    `stages["above_cutoff"]` meaning what the matching report says it means — a large
+    "reached the reranker" with nothing above the cutoff is the tell for a mis-set
+    `min_score`, and a second killer running ahead of it would deflate that signal
+    silently. And it holds the blast radius of a wrong `candidate_years` down to jobs
+    that were about to cost an LLM call anyway.
 
     **Rerank before cluster, not after.** `cluster.group` anchors each cluster on its
     best-scoring member, so it needs `by_id` already populated — which is also what
@@ -360,12 +402,22 @@ async def _process_batch(
     dropped: list[MatchResult] = []
     siblings: dict[str, list[tuple[Job, float]]] = {}
 
+    yoe_gated = bool(exp_cfg and exp_cfg.enabled and exp_cfg.candidate_years > 0)
+
     for rep, others in representatives:
         size = len(others) + 1
         score = by_id[rep.job_id]
+        # Once per cluster, not once per posting: `cluster.group` keys on
+        # (board_token, description), so every sibling parses to the same number.
+        req = experience.parse_requirement(rep.content_text)
+        yoe = req.min_years if req else None
 
         if gated and score < min_score:
             reason = CUTOFF_SKIP_REASON
+        elif yoe_gated and not experience.meets(
+            req, exp_cfg.candidate_years, exp_cfg.tolerance_years
+        ):
+            reason = YOE_SKIP_REASON
         elif not budget.take():
             reason = CAP_SKIP_REASON
         else:
@@ -379,7 +431,7 @@ async def _process_batch(
         for job in (rep, *others):
             dropped.append(
                 _apply_rerank_scores(
-                    filtered_result(job, reason, run_id), by_id[job.job_id], size
+                    filtered_result(job, reason, run_id), by_id[job.job_id], size, yoe
                 )
             )
 
@@ -572,7 +624,7 @@ async def main(
             else:
                 breaker.last_error = scorer.last_error or breaker.last_error
             breaker.record(result)
-        _apply_rerank_scores(result, score, cluster_size)
+        _apply_rerank_scores(result, score, cluster_size, _yoe_required(job))
         await persist(result)
         # In queue mode, forward shortlisted (result, job) pairs immediately
         if out_queue is not None and is_shortlisted(result, settings.threshold):
@@ -667,10 +719,15 @@ async def main(
                         to_score, reranker, min_score, budget, run_id,
                         config.funnel.dedupe.enabled,
                         config.funnel.dedupe.max_word_diff,
+                        config.funnel.experience,
                     )
                     stages["reranked"] += len(to_score)
+                    # YoE drops cleared the cutoff — they are counted here for the
+                    # same reason cap drops are, or the "above cutoff" number stops
+                    # answering the question the report asks it.
                     stages["above_cutoff"] += len(winners) + sum(
-                        1 for r in dropped if r.skip_reason == CAP_SKIP_REASON
+                        1 for r in dropped
+                        if r.skip_reason in (CAP_SKIP_REASON, YOE_SKIP_REASON)
                     )
                     stages["judged"] += len(winners)
 
@@ -764,10 +821,13 @@ async def main(
         # two cannot drift apart in what they gate, cluster or retire.
         winners, cut_dropped, siblings = await _process_batch(
             gated, reranker, min_score, budget, run_id, config.funnel.dedupe.enabled,
-            config.funnel.dedupe.max_word_diff,
+            config.funnel.dedupe.max_word_diff, config.funnel.experience,
         )
         stages["gated"] = stages["reranked"] = len(gated)
-        stages["above_cutoff"] = len(winners) + budget.refused
+        # See the queue-mode counter: a YoE drop happened above the cutoff.
+        stages["above_cutoff"] = len(winners) + budget.refused + sum(
+            1 for r in cut_dropped if r.skip_reason == YOE_SKIP_REASON
+        )
         stages["judged"] = len(winners)
         jobs_to_score = winners
         for r in cut_dropped:
