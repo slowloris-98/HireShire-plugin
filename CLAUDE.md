@@ -142,7 +142,7 @@ Five things follow that are easy to break:
   bi-encoder buys CPU seconds and skipped detail fetches, never LLM calls, and pays
   for them in recall at the *title-only* stage. This is the single most common wrong
   instinct about this funnel.
-- **The bi-encoder threshold is deliberately low (0.25)** and does not transfer
+- **The bi-encoder threshold is deliberately low (0.30)** and does not transfer
   between users. Outside tech, titles are branded and generic (Account Manager,
   Client Partner, Growth Partner), so their cosines bunch into a narrow band and a
   threshold tuned on engineering titles passes everything or nothing. Note also that
@@ -150,8 +150,12 @@ Five things follow that are easy to break:
   loosens the gate further on its own.
 - **`min_score` is a raw logit and is personal.** Not a probability, not comparable
   between users, and void the moment `rerank.model` changes. `scripts/calibrate_cutoffs.py`
-  derives it from the user's own `matches` rows; the shipped 0.0 is a defensible
-  starting point (the models' own decision boundary), not a tuned value.
+  derives it from the user's own `matches` rows; the shipped 3.0 is a starting point
+  borrowed from this project's own analysis corpus (where it admits ~61 jobs a sweep,
+  inside `top_k`), not a value tuned to any particular user. It sits deliberately well
+  above 0.0 — the models' own decision boundary, which shipped through 0.2.x and was
+  permissive enough that the budget rather than the cutoff usually decided what got
+  scored.
 - **Clustering still works per batch, and this is load-bearing.** Postings group by
   `board_token` plus description, and the scraper emits one employer per queue item,
   so every member of a cluster is in the same batch by construction. That is what let

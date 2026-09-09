@@ -47,6 +47,28 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Changed
 
+- **`funnel.rerank.min_score` now defaults to 3.0, up from 0.0.** 0.0 is the
+  cross-encoder's own decision boundary, which is permissive enough that the cutoff
+  rarely bound — most of what reached the reranker went on to cost an LLM call, and
+  the budget, not the cutoff, decided who got scored. 3.0 is the operating point
+  every study in `analysis/results/` was run at; on that corpus it admits 61 jobs a
+  sweep, well inside `top_k`. The docs already described the funnel this way
+  (`docs/sys_arch.md`), so this brings the code and the shipped YAML in line with
+  them. **The number is still a raw logit and still personal** — it is not a
+  percentage, it means nothing if `rerank.model` changes, and
+  `scripts/calibrate_cutoffs.py` remains the way to derive your own. Existing
+  installs keep whatever is in their own `config/matcher.yaml`; this changes new
+  installs only. Anyone whose sweeps come back emptier than before should lower it.
+
+- **`funnel.encoder.threshold` now defaults to 0.30, up from 0.25.** The title gate
+  stays a recall net — everything in its comment block still holds, in particular
+  that tightening it saves no money, since both title gates run locally and only
+  `rerank.min_score` decides what reaches the LLM. What it buys is CPU seconds and
+  skipped detail fetches on Workday/BambooHR, paid for in recall at the stage that
+  sees the least. `docs/sys_arch.md` already documented 0.30. Like the cutoff, this
+  does not transfer between users: outside tech, titles bunch into a narrow cosine
+  band, and max-over-targets loosens the gate on its own as `targets` grows.
+
 - **Scale numbers corrected everywhere — they were understated by ~60%.** The shipped
   slug lists had grown well past the figures in the docs: **40,068** boards, not
   24,754, and a default sweep of **15,868**, not ~10,000 (Workday 12,884, BambooHR
@@ -79,8 +101,10 @@ All notable changes to this plugin are documented here. Versions follow
   Re-run setup to change it — though jobs already skipped stay skipped, the same way
   raising the relevance cutoff does not bring back what it rejected.
 
-  Measured against a real sweep: of 61 jobs that reached the LLM, it skips 19, and
-  the best score among them was 31 out of 100 against a shortlist bar of 65-75. The
+  Measured against a real sweep: of 61 jobs that got past the relevance cutoff, it
+  skips 19. Nine of those nineteen had actually been scored, and the best of them
+  managed 31 out of 100 against a shortlist bar of 65-75 — while every job the
+  scorer rated 53 or higher survived the filter untouched. The
   new `yoe_required` column in the all-jobs CSV records what each posting asked for —
   on **every** job, whether or not the filter is switched on, so you can see what
   turning it on would have cost you before you do.
