@@ -131,15 +131,21 @@ async def _launch_skill(skill_name: str, extra: str = "") -> bool:
         if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
     }
 
+    # The prompt goes on STDIN, never in argv. A SKILL.md opens with `---` YAML
+    # frontmatter, and the CLI parses a leading-dash argument as an option:
+    #     error: unknown option '---\nname: apply...'
+    # That failed every apply phase with exit code 1, visible only as one line in a
+    # 1.4 MB log. stdin is used rather than a `--` separator because it also keeps
+    # the prompt off the process table and has no length limit to trip over.
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p",
         "--permission-mode", "auto",
-        skill_prompt,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=skill_env,
     )
-    stdout, stderr = await proc.communicate()
+    stdout, stderr = await proc.communicate(skill_prompt.encode("utf-8"))
     if stdout:
         logger.info("%s output:\n%s", skill_name, stdout.decode(errors="replace"))
     if proc.returncode != 0:

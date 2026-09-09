@@ -4,7 +4,7 @@ Run from the SessionStart hook. Two rules shape this file:
 
 * The venv goes in the **data** dir, never the install dir. The install dir is
   replaced wholesale on every plugin update, which would silently delete a
-  2.5 GB torch install and leave the engine unable to import.
+  ~1.2 GB torch install and leave the engine unable to import.
 * Idempotency is decided by comparing the shipped requirements against a lock
   copy in the data dir, not by testing whether the venv directory exists. A
   half-finished install leaves a directory behind; it does not leave a matching
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import venv
@@ -120,6 +121,62 @@ def status() -> int:
     return 0
 
 
+def stop() -> int:
+    """Stop a recurring sweep, then clear the status file.
+
+    The monitor is deliberately not detached — it is meant to stop with the session
+    that started it — but on Windows it has repeatedly outlived one, leaving a sweeper
+    writing to the database with no way to reach it short of Task Manager. Without
+    this the user's only recourse is finding a PID by hand.
+
+    The kill must be **tree-wide**. `run_orchestration.py` re-execs twice (system
+    interpreter -> venv -> engine), so the `pid` in the status file is a leaf two
+    levels below the process that owns the terminal, and killing it alone leaves the
+    parents alive to be misread as a live sweep.
+
+    Failure to kill is reported, never raised: the status file is cleared regardless,
+    because a stale document that says "running" is the more harmful of the two states
+    and `describe` already treats a quiet heartbeat as stopped.
+    """
+    doc = orchestration_status.read(DATA)
+    if not doc or not orchestration_status.is_running(DATA):
+        orchestration_status.clear(DATA)
+        print("HireShire orchestration: not running; nothing to stop.")
+        return 0
+
+    pid = doc.get("pid")
+    killed = False
+    if isinstance(pid, int):
+        if sys.platform == "win32":
+            cmd = ["taskkill", "/PID", str(pid), "/T", "/F"]
+        else:
+            cmd = ["pkill", "-TERM", "-P", str(pid)]
+        try:
+            killed = subprocess.run(
+                cmd, capture_output=True, text=True
+            ).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            killed = False
+        if not killed and sys.platform != "win32":
+            # pkill only reached the children; the recorded process itself is still up.
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed = True
+            except OSError:
+                killed = False
+
+    orchestration_status.clear(DATA)
+    if killed:
+        print(f"HireShire orchestration: stopped (pid {pid}).")
+        return 0
+    print(
+        f"HireShire orchestration: could not stop pid {pid}; status cleared anyway.\n"
+        "  If a sweep is still writing, end it from Task Manager (Windows) or "
+        "`kill` it directly."
+    )
+    return 1
+
+
 def check() -> int:
     """Session-start probe. Recovers stranded data, reports readiness, installs nothing.
 
@@ -194,4 +251,6 @@ if __name__ == "__main__":
         sys.exit(paths())
     if "--status" in argv:
         sys.exit(status())
+    if "--stop" in argv:
+        sys.exit(stop())
     sys.exit(check() if "--check" in argv else main())

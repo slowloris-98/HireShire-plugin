@@ -129,8 +129,8 @@ def test_read_only_browser_tools_are_approved(tool):
     "mcp__plugin_hireshire_playwright__browser_run_code_unsafe",
 ])
 def test_browser_tools_that_change_state_still_prompt(tool):
-    """Once `dry_run` is off these submit a real application to a real employer.
-    The permission prompt is the last human checkpoint before that, so it stays."""
+    """These submit a real application to a real employer. With `dry_run` gone the
+    permission prompt is the last human checkpoint before that, so it stays."""
     assert approve.decide({"tool_name": tool, "tool_input": {}}) is None
 
 

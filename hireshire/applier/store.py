@@ -18,8 +18,7 @@ class ApplyRecord(BaseModel):
     title: str
     absolute_url: str
     applied_at: datetime
-    status: str  # "dry_run" | "submitted" | "error" | "skipped"
-    dry_run: bool
+    status: str  # "submitted" | "error" | "skipped"
     screenshot: Optional[str] = None
     error: Optional[str] = None
 
@@ -44,7 +43,7 @@ class AppliedStore:
         self._applied_ids.add(record.job_id)
         self._db.record_applied(
             record.job_id, record.board_token, record.title, record.absolute_url,
-            record.applied_at.isoformat(), record.status, record.dry_run,
+            record.applied_at.isoformat(), record.status,
             record.screenshot, record.error,
         )
         logger.info("Saved apply record for %s (status=%s)", record.job_id, record.status)

@@ -659,17 +659,15 @@ class Database:
         return {r["job_id"] for r in rows}
 
     def load_applied(self) -> list[dict]:
+        # `dry_run` is deliberately not selected. The column survives in the schema
+        # because rows written before the applier became on/off carry real values and
+        # SQLite makes dropping a column awkward, but nothing reads it any more.
         with self._lock:
             rows = self._conn.execute(
                 "SELECT job_id, board_token, title, absolute_url, applied_at, status, "
-                "dry_run, screenshot, error FROM applied ORDER BY applied_at"
+                "screenshot, error FROM applied ORDER BY applied_at"
             ).fetchall()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["dry_run"] = bool(d["dry_run"])
-            out.append(d)
-        return out
+        return [dict(r) for r in rows]
 
     def record_applied(
         self,
@@ -679,18 +677,20 @@ class Database:
         absolute_url: str,
         applied_at: str,
         status: str,
-        dry_run: bool,
         screenshot: str | None,
         error: str | None,
     ) -> None:
+        # The legacy `dry_run` column is written as 0 rather than left NULL, so old
+        # readers that still coerce it with bool() see "not a rehearsal" instead of
+        # tripping over None.
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO applied"
                 "(job_id, board_token, title, absolute_url, applied_at, status, "
                 " dry_run, screenshot, error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
                 (job_id, board_token, title, absolute_url, applied_at, status,
-                 int(dry_run), screenshot, error),
+                 screenshot, error),
             )
 
     # -- retention (manual, via scripts/prune_runs.py) -----------------------

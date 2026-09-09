@@ -1,7 +1,7 @@
 # HireShire
 
 **An automated job search that runs on your own machine, on your own Claude
-subscription.** HireShire sweeps job board APIs across **24,754 employer boards**,
+subscription.** HireShire sweeps job board APIs across **40,000+ employer boards**,
 scores every opening against your resume, and fills out the applications.
 
 Your resume never leaves your disk. The sweep runs from your own IP. Scoring runs
@@ -36,8 +36,8 @@ first — point setup at an empty folder and it builds the layout for you, copyi
 in a resume from wherever you keep it.
 
 **Requirements:** Claude Code with a Pro or Max subscription (an OpenAI API key
-works as an alternative), Python 3.10+, and about 3 GB of disk for the models.
-Node 18+ only if you want auto-apply.
+works as an alternative), Python 3.10+, and about 2 GB of disk — most of it PyTorch,
+the rest the two small models the funnel uses. Node 18+ only if you want auto-apply.
 
 ### Platform support
 
@@ -64,9 +64,11 @@ work on a Mac, where there is no bare `python` at all.
 | `/hireshire:setup` | One-time guided setup. Asks about ten questions in plain English and does the first-run downloads. |
 | `/hireshire:find-jobs` | One sweep, scored and ranked, written to a CSV. |
 | `/hireshire:start-orchestration` | Keeps sweeping on a schedule while the session is open. |
-| `/hireshire:apply` | Fills out the application forms. Never submits until you say so. |
+| `/hireshire:apply` | Fills out and **submits** the application forms. Off until you turn it on — see [Safety](#safety). |
 
 ## How it decides what to score
+
+Diagrams of the whole flow and of the funnel below: [docs/sys_arch.md](docs/sys_arch.md).
 
 Scoring every posting with an LLM is what makes a search this wide accurate — and
 also what makes it expensive. HireShire spends that budget deliberately:
@@ -82,7 +84,7 @@ LLM score                a real 0-100 verdict on what is left
 ```
 
 Everything above the last line runs on your own machine and costs nothing, so the
-cutoff is the only thing standing between a 10,000-employer sweep and a very large
+cutoff is the only thing standing between a 15,000-employer sweep and a very large
 bill.
 
 The reranker is the part that matters. It reads your profile and the job
@@ -104,23 +106,27 @@ engineering.
 
 ## Scale
 
-| Board | Companies |
-|---|---:|
-| BambooHR | 8,763 |
-| Workday | 6,017 |
-| Greenhouse | 5,432 |
-| Ashby | 2,518 |
-| Lever | 2,024 |
-| **Total** | **24,754** |
+| Board | Companies | In the default sweep |
+|---|---:|:--:|
+| Workday | 12,884 | |
+| BambooHR | 11,316 | |
+| Greenhouse | 8,333 | ✓ |
+| Lever | 4,369 | ✓ |
+| Ashby | 3,163 | ✓ |
+| Direct portals | 3 | ✓ |
+| **Total** | **40,068** | **15,868** |
 
-**The default sweep is about 10,000 of these** — Greenhouse, Ashby, Lever and the
-direct portals. Workday and BambooHR are off by default because they are slow:
-Workday is POST-based and BambooHR needs two requests per company. Turning them
-on is one answer during setup, and it makes each run considerably longer.
+**The default sweep is 15,868 of these** — Greenhouse, Ashby, Lever and the direct
+portals (Apple, Google, Intuit, which post outside the big platforms). Workday and
+BambooHR are off by default because they are slow: Workday is POST-based and BambooHR
+needs two requests per company. Turning them on is one answer during setup, and it
+makes each run considerably longer.
 
-Dead slugs are recorded and skipped before any HTTP call, so runs get faster over
-time. Each release ships a refreshed list, and anything your own install
-discovers is kept separately so an update never erases it.
+That 40,068 is the shipped list, not a promise of 40,068 live boards. Dead slugs are
+recorded and skipped before any HTTP call, so runs get faster over time and the
+reachable count drifts down as your install learns. Each release ships a refreshed
+list, and anything your own install discovers is kept separately so an update never
+erases it.
 
 ## Where your data lives
 
@@ -131,15 +137,20 @@ holds only shipped, read-only content.
 
 ## Safety
 
-The applier submits **real applications**. Two independent gates, both shipped
+The applier submits **real applications**, and there is exactly one gate, shipped
 in the safe position:
 
 - `enable_applier: false` — the phase does not run at all.
-- `dry_run: true` — fills every form, never clicks submit.
 
-Watch it work in dry-run and read the screenshots before you change either. The
-applier will not invent experience you do not have: if a required question cannot
-be answered honestly from your resume, it records an error and moves on.
+Turn it on and every sweep opens a browser on its own and submits applications to
+real employers, with no confirmation step. There is deliberately no rehearsal mode:
+a `dry_run` setting used to fill forms without submitting, but a rehearsal left on
+indefinitely is indistinguishable from a broken applier, which is what it became.
+
+Two things still limit the blast radius. `exclude_companies` skips employers whose
+portals need an account login — those are listed for you to apply to by hand. And the
+applier will not invent experience you do not have: if a required question cannot be
+answered honestly from your resume, it records an error and moves on.
 
 ## Development
 
@@ -149,8 +160,20 @@ claude --plugin-dir .                 # load this repo as a plugin locally
 pytest                                # the test suite
 ```
 
+When a sweep misbehaves, the launcher answers the diagnostic questions without
+building anything:
+
+```bash
+sh scripts/hireshire.sh --paths       # where ROOT and DATA actually resolve to
+sh scripts/hireshire.sh --status      # is a recurring sweep running?
+sh scripts/hireshire.sh --stop        # stop one, killing the whole process tree
+```
+
 Running the engine directly from a checkout works too — with no plugin
-environment variables set, everything falls back to `./data/`.
+environment variables set, everything falls back to `./data/`. Note that this is a
+*separate* install from your real one: config written this way does not reach
+`~/.claude/plugins/data/`, and the first such command builds a second venv under
+`./data/`. Check `--paths` first if you meant to touch the real one.
 
 ```bash
 python scraper.py                     # sweep the boards

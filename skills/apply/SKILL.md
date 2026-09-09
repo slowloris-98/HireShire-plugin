@@ -1,16 +1,17 @@
 ---
 name: apply
-description: Fill out application forms for shortlisted jobs using a real browser, uploading your resume and answering questions from it. Respects dry_run.
+description: Fill out and submit application forms for shortlisted jobs using a real browser, uploading your resume and answering questions from it.
 ---
 
 # Apply
 
-Fills and (optionally) submits applications for the jobs shortlisted by the last
-run, driving a real browser through Playwright MCP.
+Fills and submits applications for the jobs shortlisted by the last run, driving a
+real browser through Playwright MCP.
 
-**This submits real applications when `dry_run` is false.** Two gates protect
-that: `enable_applier` and `dry_run`, both of which setup leaves in the safe
-position. Never change either on the user's behalf.
+**This submits real applications to real employers.** There is no rehearsal mode —
+`dry_run` was removed, because a permanent rehearsal is indistinguishable from a
+broken applier. `enable_applier` is the only gate, setup leaves it off, and you must
+never turn it on for the user.
 
 Playwright tools are namespaced by the plugin. Use the full names:
 `mcp__plugin_hireshire_playwright__browser_navigate`,
@@ -31,9 +32,12 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --paths
 
 It prints `ROOT=<path>` and `DATA=<path>`.
 
-Read `<DATA>/config/applier.yaml` for `dry_run`, `first_name`, `last_name`,
+Read `<DATA>/config/applier.yaml` for `enable_applier`, `first_name`, `last_name`,
 `email`, `phone`, `resume_path`, `inter_job_delay_s`, `applied_dir`,
 `generate_cover_letter` and `exclude_companies`.
+
+If `enable_applier` is false, stop here and say so. Do not apply to anything, and do
+not offer to flip it.
 
 Read `<DATA>/last_run.json` and open the file its `json` field points at. That
 pointer exists because the results root is now a folder the user chose and can move
@@ -52,7 +56,7 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/applied_cli.py list
 ```
 
 If the plugin venv is not ready, this first launcher call installs it — a one-time
-~2.5 GB download taking 10-15 minutes. Tell the user before you run it, so the wait
+~2 GB download taking 10-15 minutes. Tell the user before you run it, so the wait
 is expected rather than a hang.
 
 Queue a job when **all** of these hold:
@@ -62,11 +66,17 @@ Queue a job when **all** of these hold:
   the applier cannot get past them; the user applies to those manually)
 - `relevance_score` is present, or scoring was skipped for the run
 
+**Keep the excluded ones in a separate list as you go.** They are not failures and
+must not be silently dropped: a whole shortlist can consist of them — one real run
+shortlisted three jobs, all at an excluded employer, and the applier would have
+reported nothing to do without ever saying why. You report them in Step 4.
+
 Upload `settings.resume_path` for every job — the user's own resume. Skip any job
 whose resume file does not exist on disk, and say so rather than continuing
 silently.
 
-If the queue is empty, say why (nothing new, or everything excluded) and stop.
+If the queue is empty, say why — nothing new, or every shortlisted job was at an
+excluded employer — and print the "Apply manually" list from Step 4 before stopping.
 
 ## Step 2 — Read the resume once
 
@@ -122,21 +132,21 @@ job, record it as an error explaining which question blocked it, and move on.
 
 Multi-page forms: fill what is visible, click Next/Continue, snapshot, repeat.
 
-### 3f. Screenshot, then decide
+### 3f. Screenshot, then submit
 
-Take a screenshot and keep the path.
+Take a screenshot and keep the path — it is the only record of what the form looked
+like, so take it *before* submitting.
 
-- **`dry_run: true`** — do not click submit, apply, or send. Status `dry_run`.
-- **`dry_run: false`** — click submit, confirm it went through (confirmation text
-  or page change). Status `submitted`, or `error` if it did not.
+Then click submit, apply, or send, and confirm it went through (confirmation text or
+a page change). Status `submitted`, or `error` if it did not.
 
 ### 3g. Record
 
 ```bash
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/applied_cli.py record \
   --job-id "<job_id>" --board-token "<company>" --title "<title>" \
-  --url "<job_url>" --status "dry_run|submitted|error" \
-  --dry-run "true|false" [--screenshot "<path>"] [--error "<message>"]
+  --url "<job_url>" --status "submitted|error" \
+  [--screenshot "<path>"] [--error "<message>"]
 ```
 
 Omit `--screenshot` and `--error` when there is no value.
@@ -147,11 +157,17 @@ Wait `inter_job_delay_s` seconds before the next job.
 
 ## Step 4 — Summary
 
-A table of Company / Title / Status / Screenshot, then totals for submitted,
-dry_run and error.
+A table of Company / Title / Status / Screenshot, then totals for submitted and
+error.
 
-If everything ran in dry-run, say so explicitly and tell the user where to look
-at the screenshots — they should watch it work before turning `dry_run` off.
+Then, **always**, an **Apply manually** section listing the shortlisted jobs you set
+aside in Step 1 because their company is in `exclude_companies` — company, title and
+the job URL for each. Print the heading even when the list is empty, and say the list
+is empty; the whole point is that an excluded job never disappears without a trace.
+
+Introduce it with one line of why: those employers require an account login before
+the form appears, so the applier cannot complete them and the user needs to apply
+themselves.
 
 ## Errors
 

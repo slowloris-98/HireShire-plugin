@@ -9,14 +9,16 @@ from hireshire import paths
 
 
 class ApplierSettings(BaseModel):
-    enable_applier: bool = False  # orchestrator default: run the applier after each pipeline run
-    dry_run: bool = True
+    # The single gate. True means the applier fills and SUBMITS real applications
+    # after each pipeline run, unattended. There is no rehearsal mode: `dry_run` was
+    # removed because a permanent rehearsal is indistinguishable from a broken
+    # applier, which is what it turned out to be in practice.
+    enable_applier: bool = False
     matches_dir: str = "matches"
     applied_dir: str = "applied"
     runs_dir: str = "scraped"
     db_path: str = "hireshire.db"
     resume_path: str = ""  # the user's own resume PDF; set by /hireshire:setup
-    headless: bool = True
     inter_job_delay_s: float = 10.0
     max_steps: int = 40
 

@@ -1,8 +1,13 @@
 settings:
-  # The applier submits REAL applications. Two independent gates, both of which
-  # /hireshire:setup leaves in the safe position:
-  enable_applier: false   # the applier phase does not run at all
-  dry_run: true           # fills every form but never clicks submit
+  # The applier submits REAL applications to real employers, unattended. This is the
+  # only gate, and /hireshire:setup leaves it in the safe position.
+  #
+  # There is deliberately no rehearsal mode. `dry_run` used to fill every form and
+  # stop short of submitting, which read as a safety net and was not one: the run it
+  # rehearsed was not the run that followed, and leaving it on indefinitely produced
+  # a plugin that looked like it was working and never applied to anything. On or
+  # off is the honest choice.
+  enable_applier: false   # true = fills and SUBMITS applications, with no further prompt
 
   db_path: hireshire.db   # shared SQLite datastore — reads shortlisted matches, writes `applied`
   applied_dir: applied    # on-disk home for screenshots/ (records go to the applied table)

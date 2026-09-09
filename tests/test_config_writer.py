@@ -203,9 +203,11 @@ def test_shipped_defaults_carry_no_personal_or_role_specific_data():
     assert m["funnel"]["encoder"]["targets"] == []
 
     a = yaml.safe_load(applier)
-    # Both safety gates ship in the safe position.
+    # The applier's one gate ships in the safe position. There is no second gate:
+    # `dry_run` was removed, so `enable_applier` alone decides whether real
+    # applications are submitted.
     assert a["settings"]["enable_applier"] is False
-    assert a["settings"]["dry_run"] is True
+    assert "dry_run" not in a["settings"]
     assert a["settings"]["email"] == ""
 
     # workspace_dir is the first setting whose natural value is an absolute path on

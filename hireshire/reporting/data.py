@@ -183,13 +183,13 @@ def applied_summary(db: Database) -> dict[str, Any]:
     """
     rows = db.load_applied()
     submitted = [r for r in rows if r.get("status") == "submitted"]
-    dry_run = [r for r in rows if r.get("status") == "dry_run"]
     errors = [r for r in rows if r.get("status") == "error"]
+    skipped = [r for r in rows if r.get("status") == "skipped"]
     return {
         "total": len(rows),
         "submitted": len(submitted),
-        "dry_run": len(dry_run),
         "errors": len(errors),
+        "skipped": len(skipped),
         "recent": list(reversed(rows))[:15],
     }
 

@@ -18,6 +18,7 @@
 #   hireshire.sh --check                  session-start probe; installs nothing
 #   hireshire.sh --paths                  print ROOT= and DATA=; installs nothing
 #   hireshire.sh --status                 is a recurring sweep running? installs nothing
+#   hireshire.sh --stop                   stop a running sweep; installs nothing
 #   hireshire.sh --approve                PreToolUse guard; reads a hook payload on stdin
 #   hireshire.sh --bootstrap              create/refresh the venv
 #   hireshire.sh --monitor                run the recurring sweep (start in background)
@@ -32,6 +33,12 @@
 # --monitor is the only entrypoint that honours the user's poll_interval_hours;
 # `orchestrate.py` defaults to 4 hours and never reads their config.
 #
+# --stop is the counterpart to --monitor. The sweep is meant to end with the session
+# that started it, but on Windows it has outlived one more than once, leaving a
+# sweeper on the database that the user could only reach through Task Manager. The
+# kill is tree-wide because the monitor re-execs twice, so the pid on record is a leaf
+# and killing it alone strands its parents.
+#
 # --approve is what the PreToolUse hook runs, via scripts/approve.sh. It decides
 # whether a command is one of this plugin's own and can skip the permission prompt,
 # which is what stops setup asking a dozen times for its own plumbing. It installs
@@ -40,7 +47,7 @@
 #
 # --check is what the SessionStart hook runs. It must stay fast: a hook blocks the
 # user's first turn, so anything slow there is silence they cannot explain. The
-# 2.5 GB install belongs to --bootstrap, which the setup skill runs *after* telling
+# ~2 GB install belongs to --bootstrap, which the setup skill runs *after* telling
 # them how long it will take.
 
 set -e
@@ -70,9 +77,10 @@ case "$1" in
     --check)     exec "$PY" "$ROOT/scripts/bootstrap.py" --check ;;
     --paths)     exec "$PY" "$ROOT/scripts/bootstrap.py" --paths ;;
     --status)    exec "$PY" "$ROOT/scripts/bootstrap.py" --status ;;
+    --stop)      exec "$PY" "$ROOT/scripts/bootstrap.py" --stop ;;
     --approve)   exec "$PY" "$ROOT/scripts/approve.py" ;;
     --bootstrap) exec "$PY" "$ROOT/scripts/bootstrap.py" ;;
     --monitor)   exec "$PY" "$ROOT/scripts/run_orchestration.py" ;;
-    "")          echo "usage: hireshire.sh [--check|--paths|--status|--approve|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
+    "")          echo "usage: hireshire.sh [--check|--paths|--status|--stop|--approve|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
     *)           exec "$PY" "$ROOT/scripts/run_engine.py" "$@" ;;
 esac

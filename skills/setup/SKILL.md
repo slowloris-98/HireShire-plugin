@@ -168,7 +168,7 @@ rather than one call per question:
 | `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `poll_interval_hours`, `workspace_dir` |
 | `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
 | `funnel` | `targets`, `top_k`, `rerank_min_score` |
-| `applier` | `enable_applier`, `dry_run`, `resume_path`, `first_name`, `last_name`, `email`, `phone` |
+| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone` |
 
 So it is `set matcher --json '{"exclude_keywords": [...]}'` — **not**
 `'{"title_filter": {"exclude_keywords": [...]}}'`, which is rejected.
@@ -311,12 +311,12 @@ Three things that trip people up:
 7. **Which job boards** → `enabled_platforms` (phase `scraper`), a list. Present as
    a time trade-off, not a list of vendor names:
 
-   > The default sweep covers about 10,000 employers. Turning on the two slower
-   > board types adds roughly 15,000 more, but each run takes considerably
+   > The default sweep covers about 16,000 employers. Turning on the two slower
+   > board types adds roughly 24,000 more, but each run takes considerably
    > longer.
 
-   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~9,974 companies. Adding
-   `workday` and `bamboohr` takes it to 24,754. Do not quote a specific
+   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~15,868 companies. Adding
+   `workday` and `bamboohr` takes it to 40,068. Do not quote a specific
    multiplier for the extra time — nobody has timed it yet. Say "considerably
    longer" until a real timed run exists.
 
@@ -332,10 +332,17 @@ Three things that trip people up:
    - **An API key** (`openai` etc.) — tell them to put the key in their
      environment and install `requirements-byo-key.txt` into the plugin venv.
 
-10. **Auto-apply?** → `applier.enable_applier`. If yes, collect first name, last
-    name, email and phone. **Leave `dry_run: true`.** Say plainly that it will
-    fill forms and stop short of submitting until they change that themselves,
-    after they have watched it work.
+10. **Auto-apply?** → `applier.enable_applier`. Default to **no**, and only turn it
+    on if they ask for it. If yes, collect first name, last name, email and phone,
+    and say plainly, before writing the setting:
+
+    > Each sweep will open a browser on its own and **submit real applications** to
+    > real employers, with no confirmation step. There is no rehearsal mode. The only
+    > way to stop it is to set `enable_applier` back to false.
+
+    Do not soften that. It used to be guarded by a second `dry_run` gate that filled
+    forms without submitting; that gate is gone, so `enable_applier: true` means
+    applications go out from the very first sweep.
 
 ## Step 3 — warm the models
 

@@ -58,7 +58,7 @@ time. The results root is `<workspace_dir>/hireshire_run_results/`, or
 `<DATA>/results/` when `workspace_dir` is empty.
 
 If the plugin venv is not ready — a fresh install, or one whose setup never
-finished — the launcher installs it first, which adds a one-time ~2.5 GB download
+finished — the launcher installs it first, which adds a one-time ~2 GB download
 and 10-15 minutes before the sweep even starts. **Say so before you launch**, not
 after they have watched a still spinner for ten minutes.
 
