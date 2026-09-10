@@ -82,21 +82,29 @@ def test_session_end_hook_stops_the_sweep_through_the_one_launcher():
     assert 0 < cmd.get("timeout", 0) <= 60
 
 
-def test_the_monitor_hands_the_sweep_the_session_pids_to_watch():
-    """The watchdog only arms when these are set, and `--monitor` is the only thing
-    that sets them.
+def test_the_launcher_never_passes_a_shell_pid_to_the_watchdog():
+    """This shipped once and killed a healthy sweep 60 seconds in.
 
-    `$$` and `$PPID` mean different things per platform and both spellings are needed:
-    under Git Bash `exec` cannot replace the process, so `$$` names the surviving
-    `sh.exe` and catches "the user killed the shell task"; on POSIX `exec` preserves
-    the pid so `$$` becomes the monitor's own and `$PPID` does the work. Dropping
-    either one costs a platform its signal.
+    `--monitor` used to export `$$` and `$PPID` for the sweep's watchdog to poll. Git
+    Bash is MSYS and MSYS keeps its own pid namespace, so those are not Windows pids —
+    `ps` reports PID 1684 for a shell Windows calls WINPID 14072 — while the watchdog
+    polls them with Win32 `OpenProcess`, which knows only Windows pids. It read two
+    meaningless numbers as dead and stopped the sweep on its first tick.
+
+    The session pid comes from `CLAUDE_PID` in the environment now. Nothing about the
+    session may be sourced from the shell again.
     """
     sh = (ROOT / "scripts" / "hireshire.sh").read_text(encoding="utf-8")
-    monitor = sh.split("--monitor)", 1)[1].split(";;", 1)[0]
-    assert "HIRESHIRE_SHELL_PID=$$" in monitor
-    assert "HIRESHIRE_CLI_PID=$PPID" in monitor
-    assert "export HIRESHIRE_SHELL_PID HIRESHIRE_CLI_PID" in monitor
+    dispatch = sh.split('case "$1" in', 1)[1]
+    # Comments are stripped: the file explains this bug at length on purpose, and the
+    # assertion is about what the script *runs*, not what it documents.
+    code = "\n".join(
+        line for line in dispatch.splitlines() if not line.lstrip().startswith("#")
+    )
+    for forbidden in ("HIRESHIRE_SHELL_PID", "HIRESHIRE_CLI_PID", "$PPID"):
+        assert forbidden not in code, (
+            f"{forbidden} is an MSYS pid on Windows and must not reach the watchdog"
+        )
 
 
 def test_check_mode_cannot_install_anything():

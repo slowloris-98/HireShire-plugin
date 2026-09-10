@@ -108,13 +108,22 @@ Consequences already worked out, which should not be re-derived:
   sufficient alone**. The `SessionEnd` hook runs `--stop` on an orderly exit, filtered
   on the payload's `reason` so a `/clear` does not kill a live sweep; it cannot fire
   when Claude Code is force-killed or crashes. So `run_orchestration.py`'s heartbeat
-  also watches the two pids `hireshire.sh --monitor` hands it and exits within one
-  interval when either goes. Those two pids mean different things per platform and
-  **both spellings are needed**: under Git Bash `exec` cannot replace the process, so
-  `$$` names the surviving `sh.exe` and is how a killed shell task is detected, while
-  on POSIX `exec` preserves the pid, `$$` becomes the monitor's own, and only `$PPID`
-  does any work. The watchdog is armed solely by those variables being present, which
-  is what keeps it inert for the scheduled route (`orchestrate.py --once`, no session).
+  also watches **`CLAUDE_PID`** — Claude Code publishes its own pid there — and exits
+  within one interval once it is gone. Absence of that variable means **do not arm**,
+  which is what keeps the watchdog inert for a plain terminal and the scheduled route;
+  unknown must never mean kill.
+
+  **Never source that pid from the shell.** `--monitor` used to export `$$` and
+  `$PPID`, and it killed a healthy sweep 60 seconds in. Git Bash is MSYS and MSYS keeps
+  its **own pid namespace** — `ps` reports PID 1684 for a shell Windows calls WINPID
+  14072 — while `process_liveness.is_alive` asks Win32 `OpenProcess`, which knows only
+  Windows pids. Two meaningless numbers read as dead on the first tick. Walking the
+  tree instead is no better: the measured ancestry under the VS Code extension is
+  `python → bash → bash → bash → claude.exe → Code.exe`, so no fixed-depth `getppid()`
+  rule can be right. Coverage is therefore deliberately partial — a closed CLI and a
+  crash, not a killed background Bash task, which waits for `SessionEnd` or `--stop`.
+  `tests/test_process_liveness.py` pins a live pid reading as live, which is the
+  assertion whose absence let the MSYS pid through.
 
   **Killing the leaf is enough, because the chain unwinds itself.** Every parent in the
   re-exec chain is blocked in `subprocess.run`, so each exits as soon as its child
@@ -350,6 +359,53 @@ Four consequences that should not be re-derived:
 - **The dashboard's meta refresh is armed only while the pipeline's `runs` row is
   absent**, so the final refresh must run *after* `finalise_run`. Refreshing before
   it leaves a finished run reloading itself forever.
+
+**A third page, `overview.py`, is the minimal one, and it ships at two scopes.**
+`overview.html` at the results root covers every sweep the install has done;
+`<stamp>_overview.html` in a run folder covers that sweep and adds how long it took
+and what it cost. Both are complete local documents. Four numbers, two `<details>`
+accordions (applied, scored-but-not-applied, and the never-scored tail) under the
+dashboard's own `HireShire` / `Control room` header. It explains nothing: past one
+line telling the reader the sections open, the judge's rationales inside an opened job
+are the only sentences on it. **Both scopes are the same markup fed different data**,
+and the two extra tiles are the single deliberate exception — how long it took and
+what it cost are facts about a sweep, not about an install. It does not replace the
+other two pages, which stay for comparison.
+
+Four things about it that are easy to get wrong:
+
+- **Collapsing by default is what makes the meta refresh expensive.** A live page
+  reloads every `REFRESH_S`, and a reload resets every `<details>` — so it used to
+  shut the job whose rationale the reader was halfway through, every 15 seconds. Every
+  `<details>` therefore carries a stable id (`acc:*`, `j:<job_id>`) and `_STATE_SCRIPT`
+  restores the open set from `sessionStorage`, guarded, because a `file://` origin can
+  be opaque enough that touching storage throws. Session, not local: reopening the
+  file tomorrow should give the resting state. Note the tail's rows are script-built
+  and fill while its accordion is still shut, so opening it is instant and the scroll
+  listener cannot misfire — a hidden box is never scrolled.
+
+- **A cluster sibling is not identified by `skip_reason`.** Siblings inherit the
+  *representative's* reason, so only the lucky ones say `duplicate_of_cluster` and a
+  cluster whose representative hit an API error puts `backend_unavailable` on all of
+  them. `Database._sibling_sql` therefore reads `cluster_representative` out of
+  `raw_json` — via `json_extract`, probed once at connect because JSON1 was opt-in
+  before SQLite 3.38 and the interpreter is whatever the launcher found. Testing the
+  reason instead dropped six judged jobs into the never-scored table on real data.
+  Note `jobs` has a `raw_json` column too, so the predicate takes a table alias.
+- **`_judged_sql` is a SQL mirror of `data._never_scored` and the two must agree.**
+  The Python one cannot be used across runs (it needs `raw_json` parsed per row) and
+  the SQL one cannot be dropped (the lifetime page groups the whole `matches` table).
+  `tests/test_overview.py` pins them together against a fixture holding both kinds of
+  sibling.
+- **"Judged by proxy" is not the same as "has a verdict".** A sibling of a *failed*
+  representative inherits a placeholder `relevance_score` of 0, and the page renders
+  an em dash for it rather than that 0 — same rule as the all-jobs CSV's blank
+  `llm_score`, and the reason `_job_entry` looks at `skip_reason` rather than trusting
+  the score.
+
+The lifetime page carries its own throttle (`LIFETIME_INTERVAL_S`, 60 s) because its
+queries group a table that has no `run_id` filter to narrow them; everything else in
+`refresh` is indexed on `run_id` and stays cheap however long the user has been at it.
 
 All three tables now fill continuously — `run_companies`, `jobs` and `matches` — because
 selection is a per-job cutoff and each employer's batch is judged as it arrives. Both

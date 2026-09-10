@@ -74,12 +74,16 @@ def _is_alive_posix(pid: int) -> bool:
 def is_alive(pid: int) -> bool:
     """Whether `pid` names a running process.
 
+    `pid` must be an **OS** pid — the number the kernel uses, which is what Win32
+    `OpenProcess` and `os.kill` understand. This is not pedantry: the first version of
+    the caller passed `$$` from Git Bash, and MSYS keeps a pid namespace of its own, so
+    a live shell that Windows called 14072 arrived here as 1684. Nothing failed loudly;
+    the function simply answered "not running" about a process that was fine, and a
+    healthy sweep was killed a minute after starting. Anything sourced from a shell,
+    `ps`, or an MSYS tool needs converting to a WINPID before it comes here.
+
     Never raises: every caller is a watchdog deciding whether to keep going, and an
     exception there would end the sweep for the wrong reason.
-
-    A process asking about *itself* always gets True, which is load-bearing rather
-    than incidental — see the `$$` note in `scripts/hireshire.sh`, where the pid the
-    monitor is handed on POSIX is its own.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False

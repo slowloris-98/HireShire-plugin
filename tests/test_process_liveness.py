@@ -49,32 +49,52 @@ def test_nonsense_never_raises(pid):
 # --- which pids the monitor watches ----------------------------------------------
 
 
-def _watched(monkeypatch, **env):
+def _session_pid(monkeypatch, value=None):
     import run_orchestration
 
-    for name in run_orchestration._SESSION_PID_VARS:
-        monkeypatch.delenv(name, raising=False)
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    return run_orchestration._watched_session_pids()
+    if value is None:
+        monkeypatch.delenv(run_orchestration._SESSION_PID_VAR, raising=False)
+    else:
+        monkeypatch.setenv(run_orchestration._SESSION_PID_VAR, value)
+    return run_orchestration._session_pid()
 
 
-def test_the_watchdog_is_inert_without_the_environment(monkeypatch):
-    """Opt-in by construction. `hireshire.sh --monitor` is the only thing that sets
-    these, so a sweep with no session behind it — the scheduled route, or a bare
-    checkout — can never acquire one by accident."""
-    assert _watched(monkeypatch) == {}
+def test_the_session_pid_comes_from_claude_pid(monkeypatch):
+    """Claude Code publishes its own pid there, in the OS namespace `is_alive` needs.
+
+    The predecessor took `$$`/`$PPID` from Git Bash, which are MSYS pids, and killed a
+    healthy sweep on its first tick. See
+    `test_the_launcher_never_passes_a_shell_pid_to_the_watchdog`.
+    """
+    assert _session_pid(monkeypatch, "31292") == 31292
 
 
-def test_both_session_pids_are_watched(monkeypatch):
-    watched = _watched(monkeypatch, HIRESHIRE_CLI_PID="111", HIRESHIRE_SHELL_PID="222")
-    assert watched == {"HIRESHIRE_CLI_PID": 111, "HIRESHIRE_SHELL_PID": 222}
+@pytest.mark.parametrize("junk", [None, "", "   ", "not-a-pid", "0", "-5"])
+def test_the_watchdog_fails_open_when_there_is_no_trustworthy_pid(monkeypatch, junk):
+    """Unknown must never mean kill. A plain terminal, another interface and the OS
+    scheduler route all arrive with no session behind them, and a watchdog that
+    guessed there would stop sweeps nobody asked it to."""
+    assert _session_pid(monkeypatch, junk) is None
 
 
-@pytest.mark.parametrize("junk", ["", "   ", "not-a-pid", "0", "-5"])
-def test_unusable_pids_are_skipped_rather_than_guessed(monkeypatch, junk):
-    watched = _watched(monkeypatch, HIRESHIRE_CLI_PID=junk, HIRESHIRE_SHELL_PID="222")
-    assert watched == {"HIRESHIRE_SHELL_PID": 222}
+def test_a_live_session_pid_reads_as_live(monkeypatch):
+    """The regression guard, and the assertion whose absence let an MSYS pid through:
+    a pid that is definitely running must be seen as running. Everything else in this
+    file can pass while the watchdog still kills every sweep it watches."""
+    pid = _session_pid(monkeypatch, str(os.getpid()))
+    assert pid == os.getpid()
+    assert is_alive(pid) is True
+
+
+@pytest.mark.skipif(
+    not os.environ.get("CLAUDE_PID", "").isdigit(),
+    reason="only meaningful when running under Claude Code",
+)
+def test_the_real_claude_pid_is_an_os_pid():
+    """End to end, against the live host: whatever Claude Code puts in CLAUDE_PID has
+    to be a pid this platform's API recognises. Under Claude Code this fails loudly on
+    any future namespace mismatch; anywhere else it skips."""
+    assert is_alive(int(os.environ["CLAUDE_PID"])) is True
 
 
 # --- the SessionEnd hook's decision ----------------------------------------------

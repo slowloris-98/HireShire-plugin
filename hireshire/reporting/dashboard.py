@@ -201,7 +201,7 @@ def build(snapshot: dict[str, Any], results_root: Path) -> str:
   </footer>
 </div>"""
 
-    return document(TITLE, body, refresh_s=REFRESH_S if live else None)
+    return document(TITLE, body, refresh_s=REFRESH_S if live else None, extra_css=EXTRA)
 
 
 def write(snapshot: dict[str, Any], path: Path) -> Path | None:

@@ -166,6 +166,64 @@ h2.section {
 .track { height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; margin: .5rem 0 .8rem; }
 .fill { height: 100%; background: var(--accent); }
 
+/* The judge's four rationales: three scored categories and two bullet lists.
+   Shared, because the matching report and the overview page render the same
+   `rubric_rows()` / `listing()` fragments. */
+.rubric { margin-top: 1.6rem; }
+.rubric-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.rubric h4 {
+  font-family: "IBM Plex Mono", monospace; font-size: .7rem; font-weight: 600;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft);
+}
+.pts { font-size: .95rem; color: var(--ink-faint); }
+.pts b { font-size: 1.05rem; font-weight: 600; color: var(--ink); }
+.denom { font-size: .78rem; }
+.prose { max-width: 62ch; color: var(--ink-soft); font-size: 1rem; line-height: 1.68; }
+
+.notes { margin-top: 1.4rem; }
+.notes h4 {
+  font-family: "IBM Plex Mono", monospace; font-size: .7rem; font-weight: 600;
+  letter-spacing: .1em; text-transform: uppercase; margin-bottom: .5rem;
+}
+.notes.good h4 { color: var(--accent); }
+.notes.bad h4 { color: var(--warn); }
+.notes ul { list-style: none; display: flex; flex-direction: column; gap: .35rem; max-width: 62ch; }
+.notes li { position: relative; padding-left: 1.1rem; color: var(--ink-soft); font-size: .98rem; line-height: 1.55; }
+.notes li::before { position: absolute; left: 0; top: -.02em; }
+.notes.good li::before { content: "+"; color: var(--accent); }
+.notes.bad li::before { content: "\\2212"; color: var(--warn); }
+
+/* The filter/paginate toolbar and the self-scrolling table it drives. Both pages
+   embed thousands of never-scored rows this way rather than in the document. */
+.toolbar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin-bottom: 1rem; }
+.toolbar input {
+  flex: 1 1 16rem; padding: .55rem .7rem; font-size: .85rem;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 3px;
+}
+.toolbar button {
+  padding: .55rem .9rem; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase;
+  background: var(--panel); color: var(--ink-soft); cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 3px;
+}
+.toolbar button:hover { color: var(--accent); border-color: var(--accent); }
+.filter-note { font-size: .78rem; color: var(--ink-faint); }
+.blank { color: var(--ink-faint); }
+
+/* `overflow: auto` covers both axes, so wide columns scroll sideways in here
+   instead of pushing the body sideways. */
+.scroll-y {
+  max-height: 70vh; overflow: auto;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--panel);
+}
+.scroll-y table { font-size: .84rem; }
+.scroll-y thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--panel); border-bottom: 1px solid var(--rule);
+}
+.scroll-y td, .scroll-y th { padding: .45rem .7rem; }
+.rank-cell { color: var(--ink-faint); text-align: right; width: 1%; }
+
 .scroll-x { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: .86rem; }
 th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
@@ -243,6 +301,74 @@ def local_time(iso: str | None) -> str:
     return dt.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
+def duration(start_iso: str | None, end_iso: str | None = None) -> str:
+    """How long a span took, as "18m 42s" — or how long it has been going.
+
+    A missing ``end_iso`` means the sweep has not finished, so *now* stands in and
+    the figure climbs with each refresh of the page. An em dash when there is no
+    start at all, for the same reason ``num`` uses one: an unmeasured span is not a
+    zero-length one.
+    """
+    if not start_iso:
+        return "—"
+    try:
+        start = datetime.fromisoformat(str(start_iso).replace("Z", "+00:00"))
+        end = (
+            datetime.fromisoformat(str(end_iso).replace("Z", "+00:00"))
+            if end_iso else datetime.now(timezone.utc)
+        )
+    except (ValueError, TypeError):
+        return "—"
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+
+    total = int((end - start).total_seconds())
+    if total < 0:
+        return "—"
+    hours, rest = divmod(total, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
+def rubric_rows(job: dict, rubric) -> str:
+    """The scoring rubric as labelled bars, one per category, with its rationale.
+
+    Shared by the matching report and the overview page. `rubric` is
+    `reporting.data.RUBRIC`, passed in rather than imported so this module stays a
+    pure renderer with no dependency on the data layer.
+    """
+    rows = []
+    for score_key, rationale_key, label, maximum in rubric:
+        value = job.get(score_key)
+        rationale = job.get(rationale_key)
+        if value is None and not rationale:
+            continue
+        rows.append(
+            f'<section class="rubric"><header class="rubric-head">'
+            f"<h4>{e(label)}</h4>"
+            f'<span class="pts"><b>{num(value)}</b><span class="denom">/{maximum}</span></span>'
+            f"</header>"
+            f'<div class="track"><div class="fill" style="width:{pct(value, maximum):.1f}%"></div></div>'
+            f'<p class="prose">{e(rationale or "—")}</p></section>'
+        )
+    return "".join(rows)
+
+
+def listing(job: dict, key: str, title: str, css: str) -> str:
+    """One of the judge's bullet lists — what matched, or what counted against it."""
+    items = [str(x) for x in (job.get(key) or []) if str(x).strip()]
+    if not items:
+        return ""
+    lis = "".join(f"<li>{e(x)}</li>" for x in items)
+    return f'<section class="notes {css}"><h4>{e(title)}</h4><ul>{lis}</ul></section>'
+
+
 def funnel_step(label: str, value: int | None, whole: int | None,
                 note: str = "", drop: bool = False) -> str:
     """One proportional bar in the funnel diagram."""
@@ -257,12 +383,17 @@ def funnel_step(label: str, value: int | None, whole: int | None,
     )
 
 
-def document(title: str, body: str, refresh_s: int | None = None) -> str:
-    """A complete standalone HTML document — for the dashboard, which is local-only.
+def document(title: str, body: str, refresh_s: int | None = None,
+             extra_css: str = "") -> str:
+    """A complete standalone HTML document — for the pages that stay local.
 
     ``refresh_s`` arms a meta refresh, and is passed only while a sweep is actually
     running. A page that keeps reloading after the run has finished burns battery
     and, worse, makes a finished run look like it is still going.
+
+    ``extra_css`` mirrors ``artifact_page``'s. It is not optional decoration: a
+    caller that defines its own rules and cannot pass them here has written dead
+    CSS, silently, which is exactly what happened to the dashboard's pills.
     """
     meta = f'<meta http-equiv="refresh" content="{int(refresh_s)}">\n' if refresh_s else ""
     return (
@@ -270,7 +401,7 @@ def document(title: str, body: str, refresh_s: int | None = None) -> str:
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"{meta}<title>{e(title)}</title>\n{FONTS}\n"
-        f"<style>{BASE_CSS}</style>\n</head>\n<body>\n{body}\n</body>\n</html>\n"
+        f"<style>{BASE_CSS}{extra_css}</style>\n</head>\n<body>\n{body}\n</body>\n</html>\n"
     )
 
 

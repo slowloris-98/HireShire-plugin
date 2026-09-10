@@ -44,9 +44,22 @@ All notable changes to this plugin are documented here. Versions follow
     It filters on the payload's `reason`, so a `/clear` — which leaves the user in a
     live session — does not kill their sweep. It cannot fire if Claude Code is
     force-killed or crashes.
-  - the sweeper's **heartbeat watches the session's own pids** (`hireshire.sh
-    --monitor` hands it the launching shell and the CLI above it) and exits within one
-    interval when either disappears. This is the half that survives a crash.
+  - the sweeper's **heartbeat watches `CLAUDE_PID`**, the pid Claude Code publishes for
+    itself, and exits within one interval once it is gone. This is the half that
+    survives a crash. If that variable is absent the watchdog does not arm at all — a
+    plain terminal or the scheduled route must never be guessed at.
+
+  Coverage is deliberately partial: a closed CLI and a crash, but **not** killing only
+  the background Bash task, which waits for `SessionEnd` or `--stop`. The first version
+  tried to cover that too by exporting `$$` and `$PPID` from the launcher, and it
+  **killed a healthy sweep 60 seconds after it started**. Git Bash is MSYS and MSYS
+  keeps its own pid namespace — `ps` reports PID 1684 for a shell Windows calls WINPID
+  14072 — while the liveness probe uses Win32 `OpenProcess`, which understands only
+  Windows pids. It read two meaningless numbers as dead. Walking the process tree is
+  not a fix either: the ancestry measured under the VS Code extension is
+  `python → bash → bash → bash → claude.exe → Code.exe`, three shell levels with
+  nothing pinning that depth. A test now asserts a live pid reads as live, which is
+  what nothing checked before.
 
   Shutdown is immediate rather than graceful: every job already judged is in `matches`,
   so what is abandoned is the employer batch in flight, not work anyone paid for. An
