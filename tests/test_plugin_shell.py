@@ -139,6 +139,27 @@ def test_the_launcher_exposes_its_read_only_modes_separately():
     # The permission guard runs before the venv exists, so it is a launcher mode
     # rather than an engine entrypoint. See tests/test_approve.py.
     assert "--approve)" in sh
+    # --sweep is one cycle of --monitor, and it is what find-jobs runs.
+    assert "--sweep)" in sh
+
+
+def test_find_jobs_runs_the_registered_sweep_not_the_bare_engine():
+    """`/hireshire:find-jobs` must go through `--sweep`, not `orchestrate.py --once`.
+
+    Both run the same pipeline, but only `--sweep` registers the run in the status
+    file. Through `orchestrate.py` a find-jobs sweep was invisible to `--status`,
+    unreachable by `--stop`, and outlived the session that started it — every teardown
+    mechanism the plugin has was built on the monitor's path and did not cover it.
+    """
+    skill = (ROOT / "skills" / "find-jobs" / "SKILL.md").read_text(encoding="utf-8")
+    run_lines = [
+        ln for ln in skill.splitlines()
+        if "hireshire.sh" in ln and not ln.lstrip().startswith(("#", ">", "*", "-"))
+    ]
+    assert any("--sweep" in ln for ln in run_lines), run_lines
+    # Prose may still name the old form to explain why it is wrong; a command line
+    # may not use it.
+    assert not any("orchestrate.py" in ln for ln in run_lines), run_lines
 
 
 @pytest.mark.parametrize("mode", ["paths", "status", "stop"])

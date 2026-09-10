@@ -98,8 +98,22 @@ Consequences already worked out, which should not be re-derived:
   stdout line reaches the agent, so it emits one summary line per cycle and logs the
   rest to a file; and nothing may detach the process, because the user is told it
   stops with the session. `hireshire/orchestration_status.py` is the single source of
-  truth for "is it running", by heartbeat freshness rather than PID probing — `os.kill(pid, 0)`
-  is not portable to Windows and a recycled PID reads as alive.
+  truth for "is it running", by heartbeat freshness **with a dead PID as a veto**.
+
+  Freshness alone shipped first and was not enough, for a reason worth keeping. A
+  heartbeat is refreshed only every `HEARTBEAT_INTERVAL_S`, so a sweep killed just after
+  a tick still reads as running for the whole `STALE_AFTER_S` window — five minutes. Two
+  things go wrong inside it, and the second is the expensive one: `--status` reports a
+  pid that does not exist (observed: `running (pid 25860)` against nothing), and the
+  sweeper's own start-up guard **refuses to start a new sweep** because a dead one still
+  looks alive (observed: `already running — not starting a second` against dead pid
+  26616). The first misleads a human; the second silently blocks the user's work.
+
+  The original objections still hold and are both answered rather than ignored.
+  `os.kill(pid, 0)` is not portable to Windows, so the probe goes through
+  `process_liveness.is_alive`, which asks Win32 `OpenProcess` there. A recycled PID
+  reads as alive, so the probe is a **veto and never the primary signal** — recycling
+  can only make a dead sweep look alive, and the stale heartbeat still catches that.
 
   **"Session-scoped" is now enforced, not assumed.** Being a child of the session is
   not enough on Windows: an orphan there is re-parented in silence — no process group,
@@ -109,9 +123,47 @@ Consequences already worked out, which should not be re-derived:
   on the payload's `reason` so a `/clear` does not kill a live sweep; it cannot fire
   when Claude Code is force-killed or crashes. So `run_orchestration.py`'s heartbeat
   also watches **`CLAUDE_PID`** — Claude Code publishes its own pid there — and exits
-  within one interval once it is gone. Absence of that variable means **do not arm**,
+  once it is gone. That watchdog is a **separate task from the heartbeat, on its own
+  `_WATCHDOG_INTERVAL_S` (5 s)**; the two were one loop, which tied how fast a sweep
+  noticed a dead session to how often the status file needs refreshing. They are
+  unrelated: `HEARTBEAT_INTERVAL_S` is chosen against `STALE_AFTER_S`, while this one is
+  the delay the user feels between closing the CLI and everything stopping. It also
+  kills **its own process tree** rather than calling `os._exit` alone — the scorer runs
+  up to `concurrency` `claude -p` children, and on Windows those are re-parented in
+  silence and would linger until `claude_cli_timeout_s` (600 s). Measured end to end:
+  session force-killed, sweep and all three processes gone in **3 s**, status cleared.
+  Absence of that variable means **do not arm**,
   which is what keeps the watchdog inert for a plain terminal and the scheduled route;
   unknown must never mean kill.
+
+  **The `SessionEnd` hook must check whose sweep it is, and this is not optional.** It
+  fires for *every* Claude Code session that ends anywhere on the machine — including
+  the short-lived `claude -p` sessions the scorer itself spawns, which come and go
+  constantly. It used to call `stop()` unconditionally, killing whatever pid the status
+  file named. The result was that a sweep died 1–2½ minutes after starting, every time,
+  and it was **misdiagnosed for two days** as a crash: `taskkill /T /F` sets exit code
+  **1** and terminates without unwinding, so there was no traceback, no `ERROR` line, no
+  `finally`, and a status file left stale. Measured directly, with `stop()` neutered
+  behind a sentinel file: two `--session-end` calls arrived within three seconds
+  (`CLAUDE_PID` 18024 and 16700, neither the owner nor the operator's session), and the
+  sweep — which had never survived past 148 s — ran on untouched.
+
+  So `run_orchestration.py` records `session_pid` at start-up and
+  `bootstrap._ending_session_owns_sweep` compares it against the `CLAUDE_PID` the hook
+  inherits from the session that is ending. The two fallbacks are deliberately
+  **opposite**, and both directions matter: *no recorded owner* stops the sweep, so
+  pre-existing and scheduled sweeps do not become unstoppable by the hook meant to reap
+  them; *an owner recorded but the ending session unidentifiable* leaves it alone,
+  because there the sweep is known to belong to somebody and guessing is precisely what
+  caused the bug.
+
+  Note what this rules out for the next person debugging a vanished sweep: it is not the
+  watchdog (a run with `CLAUDE_PID` cleared, which logs `watchdog is NOT armed`, died
+  identically), not `is_alive` (9,000 calls in isolation, no crash, no handle leak), not
+  memory (peak RSS 1.16 GB against 2.7 GB free), not a native fault (`PYTHONFAULTHANDLER=1`
+  printed nothing), and not the host's background-task lifecycle (a fully detached run
+  died too). Exit code 1 with empty stderr means `TerminateProcess`, which means
+  something called `stop()`.
 
   **Never source that pid from the shell.** `--monitor` used to export `$$` and
   `$PPID`, and it killed a healthy sweep 60 seconds in. Git Bash is MSYS and MSYS keeps

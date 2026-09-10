@@ -396,13 +396,20 @@ If the user wants sweeps to continue after they close it, offer an OS scheduler
 entry running:
 
 ```bash
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" orchestrate.py --once
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --sweep
 ```
 
 via `schtasks` (Windows), `launchd` (macOS) or `cron` (Linux). In the scheduler
-entry use the venv interpreter's **absolute path** plus `orchestrate.py` rather
-than the launcher — a scheduled task runs with a minimal environment and may not
-have `sh` or the same PATH.
+entry use the venv interpreter's **absolute path** plus `scripts/run_orchestration.py
+--once` rather than the launcher — a scheduled task runs with a minimal environment
+and may not have `sh` or the same PATH.
+
+Point it at `scripts/run_orchestration.py --once`, **not** `orchestrate.py --once`.
+The former registers the run in the status file, so `--status` reports it and a
+manual sweep will not start a second writer alongside it; the latter registers
+nothing. The session watchdog stays inert either way, which is what a scheduled run
+needs: it reads `CLAUDE_PID`, a scheduled task has none, and absence means do not
+arm.
 
 This is a real change to their system. **Print the exact command and get explicit
 confirmation before running it**, and tell them how to remove it afterwards.
