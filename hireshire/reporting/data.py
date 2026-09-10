@@ -174,6 +174,82 @@ def reason_label(reason: str | None) -> str:
     return REASON_LABELS.get(key, key.replace("_", " ").capitalize() or "—")
 
 
+# Caps on what the overview page renders. A closed `<details>` still costs its full
+# DOM, so an uncapped lifetime page on a mature install would be tens of megabytes
+# reloading itself every fifteen seconds. The summaries print the true count either
+# way, so a capped list says how much it is not showing.
+MAX_JOB_ROWS = 300
+MAX_TAIL_ROWS = 5000
+
+
+def overview_snapshot(
+    db: Database,
+    run_id: str | None = None,
+    live: bool | None = None,
+    run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Everything the overview page renders, at one scope or the other.
+
+    `run_id` selects the scope: a run id gives the per-sweep page beside that run's
+    CSVs, `None` gives the lifetime page at the results root. The two go through
+    different loaders — one run's rows are already indexed and cheap, the whole
+    install's need grouping and a cap — but come back in the same shape, so the
+    renderer is written once.
+
+    Applications are the one figure that cannot be scoped cleanly: `applied` has no
+    `run_id`. At run scope it means "applications to jobs this sweep saw", which is
+    the closest honest reading and is the same rule `overview_counts` applies.
+
+    `run` lets a caller hand in a `run_snapshot` it already has. `reporting.refresh`
+    always does: it builds one for the matching report a few lines earlier, and
+    re-deriving it here would double that query on a callback that fires every ten
+    seconds for the length of a sweep.
+    """
+    counts = db.overview_counts(run_id)
+    applied = db.load_applied_matches(run_id)
+    applied_ids = {r.get("job_id") for r in applied}
+
+    if run_id:
+        scored, tail = split_matches(db.load_all_matches(run_id))
+    else:
+        scored = db.load_lifetime_matches(judged=True, limit=MAX_JOB_ROWS + len(applied))
+        tail = db.load_lifetime_matches(judged=False, limit=MAX_TAIL_ROWS)
+
+    # "Scored but not applied" — the second accordion. Applied jobs are already in
+    # the first one, and showing a job in both would double the page's only real
+    # list of things left to do.
+    scored = [r for r in scored if r.get("job_id") not in applied_ids]
+    tail = [r for r in tail if r.get("job_id") not in applied_ids]
+
+    snapshot: dict[str, Any] = {
+        "run_id": run_id,
+        "counts": counts,
+        "applied": applied[:MAX_JOB_ROWS],
+        "applied_total": len(applied),
+        "scored": scored[:MAX_JOB_ROWS],
+        "scored_total": len(scored),
+        "tail": tail[:MAX_TAIL_ROWS],
+        "tail_total": len(tail),
+        "started_at": None,
+        "finished_at": None,
+        "usage": None,
+    }
+
+    if run_id:
+        run = run if run is not None else run_snapshot(db, run_id)
+        snapshot["started_at"] = run.get("started_at")
+        snapshot["finished_at"] = run.get("finished_at")
+        snapshot["usage"] = run.get("usage")
+        snapshot["live"] = run.get("in_progress") if live is None else live
+    else:
+        # The lifetime page has no run of its own to ask about, and scanning every
+        # run for one still in progress would count a crashed sweep as live forever.
+        # Its caller knows — `reporting.refresh` is always driven by a live run — so
+        # it passes the answer in, and the default is the safe one.
+        snapshot["live"] = bool(live)
+    return snapshot
+
+
 def applied_summary(db: Database) -> dict[str, Any]:
     """Applications, cumulative.
 

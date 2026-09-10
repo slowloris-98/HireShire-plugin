@@ -360,6 +360,39 @@ Four consequences that should not be re-derived:
   absent**, so the final refresh must run *after* `finalise_run`. Refreshing before
   it leaves a finished run reloading itself forever.
 
+**A third page, `overview.py`, is the minimal one, and it ships at two scopes.**
+`overview.html` at the results root covers every sweep the install has done;
+`<stamp>_overview.html` in a run folder covers that sweep and adds how long it took
+and what it cost. Both are complete local documents. Four numbers, two `<details>`
+accordions (applied, then scored-but-not-applied), and the never-scored tail — no
+prose at all, because the judge's rationales inside an opened job are meant to be the
+only sentences on it. It does not replace the other two, which stay for comparison.
+
+Three things about it that are easy to get wrong:
+
+- **A cluster sibling is not identified by `skip_reason`.** Siblings inherit the
+  *representative's* reason, so only the lucky ones say `duplicate_of_cluster` and a
+  cluster whose representative hit an API error puts `backend_unavailable` on all of
+  them. `Database._sibling_sql` therefore reads `cluster_representative` out of
+  `raw_json` — via `json_extract`, probed once at connect because JSON1 was opt-in
+  before SQLite 3.38 and the interpreter is whatever the launcher found. Testing the
+  reason instead dropped six judged jobs into the never-scored table on real data.
+  Note `jobs` has a `raw_json` column too, so the predicate takes a table alias.
+- **`_judged_sql` is a SQL mirror of `data._never_scored` and the two must agree.**
+  The Python one cannot be used across runs (it needs `raw_json` parsed per row) and
+  the SQL one cannot be dropped (the lifetime page groups the whole `matches` table).
+  `tests/test_overview.py` pins them together against a fixture holding both kinds of
+  sibling.
+- **"Judged by proxy" is not the same as "has a verdict".** A sibling of a *failed*
+  representative inherits a placeholder `relevance_score` of 0, and the page renders
+  an em dash for it rather than that 0 — same rule as the all-jobs CSV's blank
+  `llm_score`, and the reason `_job_entry` looks at `skip_reason` rather than trusting
+  the score.
+
+The lifetime page carries its own throttle (`LIFETIME_INTERVAL_S`, 60 s) because its
+queries group a table that has no `run_id` filter to narrow them; everything else in
+`refresh` is indexed on `run_id` and stays cheap however long the user has been at it.
+
 All three tables now fill continuously — `run_companies`, `jobs` and `matches` — because
 selection is a per-job cutoff and each employer's batch is judged as it arrives. Both
 pages' copy was rewritten for that; it used to explain that nothing could be scored

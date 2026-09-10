@@ -40,9 +40,10 @@ from hireshire.reporting.render import (
     artifact_page,
     e,
     funnel_step,
+    listing,
     local_time,
     num,
-    pct,
+    rubric_rows,
     usd,
 )
 
@@ -87,59 +88,6 @@ EXTRA_CSS = """
 .verdict.no { color: var(--warn); }
 .verdict.yes { color: var(--accent); }
 
-.rubric { margin-top: 1.6rem; }
-.rubric-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
-.rubric h4 {
-  font-family: "IBM Plex Mono", monospace; font-size: .7rem; font-weight: 600;
-  letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft);
-}
-.pts { font-size: .95rem; color: var(--ink-faint); }
-.pts b { font-size: 1.05rem; font-weight: 600; color: var(--ink); }
-.denom { font-size: .78rem; }
-.prose { max-width: 62ch; color: var(--ink-soft); font-size: 1rem; line-height: 1.68; }
-
-.notes { margin-top: 1.4rem; }
-.notes h4 {
-  font-family: "IBM Plex Mono", monospace; font-size: .7rem; font-weight: 600;
-  letter-spacing: .1em; text-transform: uppercase; margin-bottom: .5rem;
-}
-.notes.good h4 { color: var(--accent); }
-.notes.bad h4 { color: var(--warn); }
-.notes ul { list-style: none; display: flex; flex-direction: column; gap: .35rem; max-width: 62ch; }
-.notes li { position: relative; padding-left: 1.1rem; color: var(--ink-soft); font-size: .98rem; line-height: 1.55; }
-.notes li::before { position: absolute; left: 0; top: -.02em; }
-.notes.good li::before { content: "+"; color: var(--accent); }
-.notes.bad li::before { content: "\\2212"; color: var(--warn); }
-
-.toolbar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin-bottom: 1rem; }
-.toolbar input {
-  flex: 1 1 16rem; padding: .55rem .7rem; font-size: .85rem;
-  background: var(--panel); color: var(--ink);
-  border: 1px solid var(--rule); border-radius: 3px;
-}
-.toolbar button {
-  padding: .55rem .9rem; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase;
-  background: var(--panel); color: var(--ink-soft); cursor: pointer;
-  border: 1px solid var(--rule); border-radius: 3px;
-}
-.toolbar button:hover { color: var(--accent); border-color: var(--accent); }
-.filter-note { font-size: .78rem; color: var(--ink-faint); }
-.blank { color: var(--ink-faint); }
-
-/* The unscored table scrolls inside itself rather than adding six thousand rows
-   to the page. `overflow: auto` covers both axes, so the wide columns still
-   scroll sideways in here instead of pushing the body sideways. */
-.scroll-y {
-  max-height: 70vh; overflow: auto;
-  border: 1px solid var(--rule); border-radius: 3px; background: var(--panel);
-}
-.scroll-y table { font-size: .84rem; }
-.scroll-y thead th {
-  position: sticky; top: 0; z-index: 1;
-  background: var(--panel); border-bottom: 1px solid var(--rule);
-}
-.scroll-y td, .scroll-y th { padding: .45rem .7rem; }
-.rank-cell { color: var(--ink-faint); text-align: right; width: 1%; }
 .scroll-hint { font-size: .78rem; color: var(--ink-faint); margin-top: .6rem; }
 """
 
@@ -158,32 +106,6 @@ def _rail(job: dict, threshold: int | None) -> str:
             else f'<span class="cutoff-note over">+{-delta} over</span>'
         )
     return gap
-
-
-def _rubric_rows(job: dict) -> str:
-    rows = []
-    for score_key, rationale_key, label, maximum in data.RUBRIC:
-        value = job.get(score_key)
-        rationale = job.get(rationale_key)
-        if value is None and not rationale:
-            continue
-        rows.append(
-            f'<section class="rubric"><header class="rubric-head">'
-            f"<h4>{e(label)}</h4>"
-            f'<span class="pts"><b>{num(value)}</b><span class="denom">/{maximum}</span></span>'
-            f"</header>"
-            f'<div class="track"><div class="fill" style="width:{pct(value, maximum):.1f}%"></div></div>'
-            f'<p class="prose">{e(rationale or "—")}</p></section>'
-        )
-    return "".join(rows)
-
-
-def _listing(job: dict, key: str, title: str, css: str) -> str:
-    items = [str(x) for x in (job.get(key) or []) if str(x).strip()]
-    if not items:
-        return ""
-    lis = "".join(f"<li>{e(x)}</li>" for x in items)
-    return f'<section class="notes {css}"><h4>{e(title)}</h4><ul>{lis}</ul></section>'
 
 
 def _scored_entry(index: int, job: dict, threshold: int | None) -> str:
@@ -226,9 +148,9 @@ def _scored_entry(index: int, job: dict, threshold: int | None) -> str:
             else '<span class="verdict no">not shortlisted</span>'
         )
         + "</p></header>"
-        f"{_rubric_rows(job)}"
-        f'{_listing(job, "match_reasons", "What matched", "good")}'
-        f'{_listing(job, "disqualifiers", "What counted against it", "bad")}'
+        f"{rubric_rows(job, data.RUBRIC)}"
+        f'{listing(job, "match_reasons", "What matched", "good")}'
+        f'{listing(job, "disqualifiers", "What counted against it", "bad")}'
         "</div></article>"
     )
 

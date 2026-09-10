@@ -108,6 +108,11 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 CREATE INDEX IF NOT EXISTS idx_matches_run ON matches(run_id);
 CREATE INDEX IF NOT EXISTS idx_matches_shortlisted ON matches(run_id, shortlisted);
+-- The overview page groups by job_id across every run, and joins `applied` to it.
+-- Unlike a new column, an index in this script does reach an existing database:
+-- `executescript` runs on every connect and CREATE INDEX IF NOT EXISTS is not a
+-- no-op the way CREATE TABLE IF NOT EXISTS is on a table that already exists.
+CREATE INDEX IF NOT EXISTS idx_matches_job ON matches(job_id);
 
 CREATE TABLE IF NOT EXISTS seen_jobs (
     job_id     TEXT PRIMARY KEY,
@@ -175,6 +180,23 @@ class Database:
         cur.execute("PRAGMA busy_timeout=5000")
         cur.execute("PRAGMA foreign_keys=ON")
         self._conn.commit()
+        self._has_json1 = self._probe_json1()
+
+    def _probe_json1(self) -> bool:
+        """Whether this interpreter's SQLite can read inside a JSON column.
+
+        JSON1 is compiled in by default from SQLite 3.38 (2022) but was an opt-in
+        extension before that, and the interpreter here is whatever the user had —
+        the launcher takes the first Python ≥ 3.10 it can run, not a version this
+        project chose. Probed rather than assumed, because the alternative is a
+        query that raises mid-sweep on somebody else's machine.
+        """
+        try:
+            self._conn.execute("SELECT json_extract('{\"a\":1}', '$.a')").fetchone()
+        except sqlite3.Error:
+            logger.debug("SQLite has no JSON1; falling back to text matching")
+            return False
+        return True
 
     # Columns added to existing tables after the first release. `CREATE TABLE IF NOT
     # EXISTS` is a no-op on a database that already has the table, so a new column in
@@ -323,6 +345,185 @@ class Database:
             "top_score": totals["top_score"],
             "by_reason": {r["reason"]: r["n"] for r in rows},
         }
+
+    def _sibling_sql(self, alias: str = "") -> str:
+        """SQL for "this row inherited its verdict from a cluster representative".
+
+        There is no column for it: `cluster_representative` lives inside `raw_json`.
+        And `skip_reason` cannot stand in for it — a sibling inherits the
+        *representative's* reason, so a cluster whose representative failed carries
+        `backend_unavailable` on all of its members and only the lucky ones say
+        `duplicate_of_cluster`. Testing the reason instead dropped six judged jobs
+        into the never-scored table on a real database.
+
+        `json_extract` is the correct test and ships enabled in SQLite 3.38+, but
+        this runs on whatever interpreter the user has, so it is probed once at
+        connect. The fallback matches the key with a *string* value, which `null`
+        cannot satisfy — sound against the compact `model_dump_json` output that
+        writes every one of these rows.
+
+        `alias` is not optional decoration either: `jobs` has a `raw_json` column
+        too, so this predicate is ambiguous in any query that joins the two.
+        """
+        col = f"{alias}.raw_json" if alias else "raw_json"
+        if self._has_json1:
+            return f"json_extract({col}, '$.cluster_representative') IS NOT NULL"
+        return f"{col} LIKE '%\"cluster_representative\":\"%'"
+
+    def _above_cutoff_sql(self, alias: str = "") -> str:
+        """Rows that cleared the cross-encoder cutoff and could have cost an LLM call.
+
+        The overview page's "filtered" figure. Reproduces the matcher's own
+        `stages["above_cutoff"]` from rows rather than reading the phase blob,
+        because that blob is only written when the matcher finalises and the page has
+        to be right mid-sweep. Cluster siblings are out for the same reason the
+        matcher leaves them out: they were grouped after the rerank and never
+        competed for a slot.
+        """
+        return (
+            "COALESCE(skip_reason,'') <> 'rerank_below_cutoff' "
+            f"AND NOT ({self._sibling_sql(alias)})"
+        )
+
+    def _judged_sql(self, alias: str = "") -> str:
+        """A SQL mirror of `hireshire.reporting.data._never_scored`, negated.
+
+        "A standing LLM verdict backs this row's relevance_score" — either the row
+        was scored directly, or it is a cluster sibling and was scored by proxy. The
+        two implementations must agree; `tests/test_overview.py` pins them together
+        against a fixture that includes a sibling with an inherited drop reason.
+        """
+        return (
+            "relevance_score IS NOT NULL AND "
+            f"(skipped = 0 OR skipped IS NULL OR {self._sibling_sql(alias)})"
+        )
+
+    def overview_counts(self, run_id: str | None = None) -> dict[str, int]:
+        """The overview page's four figures, at run scope or across the install.
+
+        Counted by DISTINCT job_id rather than by row, so a job that resurfaced in
+        several sweeps is one job on the lifetime page — unlike the old dashboard's
+        totals, which sum per-run counts and say so.
+        """
+        run_filter = " AND run_id = ?" if run_id else ""
+        params: tuple = (run_id,) if run_id else ()
+        with self._lock:
+            seen = self._conn.execute(
+                "SELECT COUNT(DISTINCT job_id) AS n FROM jobs WHERE 1=1" + run_filter,
+                params,
+            ).fetchone()
+            filtered = self._conn.execute(
+                "SELECT COUNT(DISTINCT job_id) AS n FROM matches "
+                f"WHERE {self._above_cutoff_sql()}" + run_filter,
+                params,
+            ).fetchone()
+            shortlisted = self._conn.execute(
+                "SELECT COUNT(DISTINCT job_id) AS n FROM matches WHERE shortlisted = 1"
+                + run_filter,
+                params,
+            ).fetchone()
+            # `applied` has no run_id — an application is a fact about a job, not
+            # about the sweep that surfaced it — so run scope means "applications to
+            # jobs this sweep saw" rather than "applications made during it".
+            applied = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM applied a"
+                + (
+                    " WHERE EXISTS (SELECT 1 FROM matches m WHERE m.job_id = a.job_id"
+                    " AND m.run_id = ?)" if run_id else ""
+                ),
+                params,
+            ).fetchone()
+        return {
+            "seen": seen["n"] or 0,
+            "filtered": filtered["n"] or 0,
+            "shortlisted": shortlisted["n"] or 0,
+            "applied": applied["n"] or 0,
+        }
+
+    # The columns every overview loader selects, so the records they return are the
+    # same shape `load_all_matches` returns and the renderer cannot tell them apart.
+    _MATCH_COLUMNS = (
+        "m.raw_json, m.relevance_score, m.encoder_score, m.rerank_score_wide, "
+        "m.rerank_score, m.yoe_required, m.skipped, m.skip_reason, m.shortlisted, "
+        "m.scored_at, j.location, j.updated_at"
+    )
+
+    @staticmethod
+    def _match_record(row: sqlite3.Row) -> dict:
+        record = json.loads(row["raw_json"])
+        record["location"] = row["location"] or record.get("location") or ""
+        record["posted_at"] = row["updated_at"] or ""
+        record["shortlisted"] = bool(row["shortlisted"])
+        return record
+
+    def load_lifetime_matches(self, judged: bool, limit: int) -> list[dict]:
+        """One row per job_id across every run, best first.
+
+        Deduped with ``GROUP BY job_id`` over a single ``MAX()``: SQLite's bare-column
+        rule then fills the other columns from the row that held that maximum, which
+        is the job's best showing in any sweep. ``DESC`` sorts NULLs last, so a job
+        that never reached the reranker falls to the bottom rather than the top.
+
+        ``judged`` selects between the two halves of the page: rows with a standing
+        LLM verdict, ranked by that verdict, and everything else, ranked by the
+        cross-encoder logit that decided whether it was worth one.
+        """
+        sort = "m.relevance_score" if judged else "m.rerank_score"
+        judged_sql = self._judged_sql("m")
+        where = judged_sql if judged else f"NOT ({judged_sql})"
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {self._MATCH_COLUMNS}, MAX({sort}) AS best "
+                "FROM matches m LEFT JOIN jobs j "
+                "  ON j.run_id = m.run_id AND j.job_id = m.job_id "
+                f"WHERE {where} "
+                "GROUP BY m.job_id ORDER BY best DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return [self._match_record(r) for r in rows]
+
+    def load_applied_matches(self, run_id: str | None = None) -> list[dict]:
+        """Every application, carrying the job's best match row where one exists.
+
+        LEFT JOIN because an application can outlive the sweep that found it: the
+        `matches` rows for a run are per-run, `applied` is forever, and a user who
+        prunes old runs should still see what they applied to. Rows with no match
+        keep their title and company from `applied` and simply have no rationales.
+        """
+        scope = (
+            " WHERE EXISTS (SELECT 1 FROM matches mm WHERE mm.job_id = a.job_id"
+            " AND mm.run_id = ?)" if run_id else ""
+        )
+        params: tuple = (run_id,) if run_id else ()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT a.job_id, a.board_token, a.title, a.absolute_url, "
+                "       a.applied_at, a.status, a.error, "
+                f"       {self._MATCH_COLUMNS} "
+                "FROM applied a "
+                "LEFT JOIN matches m ON m.rowid = ("
+                "    SELECT rowid FROM matches WHERE job_id = a.job_id "
+                "    ORDER BY relevance_score IS NULL, relevance_score DESC LIMIT 1) "
+                "LEFT JOIN jobs j ON j.run_id = m.run_id AND j.job_id = m.job_id "
+                + scope +
+                " ORDER BY a.applied_at DESC",
+                params,
+            ).fetchall()
+
+        out: list[dict] = []
+        for r in rows:
+            record = self._match_record(r) if r["raw_json"] else {
+                "job_id": r["job_id"],
+                "board_token": r["board_token"],
+                "title": r["title"],
+                "absolute_url": r["absolute_url"],
+                "location": "",
+            }
+            record["applied_at"] = r["applied_at"]
+            record["applied_status"] = r["status"]
+            record["applied_error"] = r["error"]
+            out.append(record)
+        return out
 
     def calibration_rows(self, run_id: str | None = None) -> list[dict]:
         """(encoder_score, rerank_score, relevance_score) for every genuinely judged job.

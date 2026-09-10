@@ -364,6 +364,11 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
                     "matching_html": str(report_targets["matching"]),
                     "latest_matching_html": str(report_targets["latest_matching"]),
                     "dashboard_html": str(report_targets["dashboard"]),
+                    # The minimal overview: `overview_html` spans every sweep and
+                    # sits at the results root, `run_overview_html` covers this one
+                    # and sits beside its CSVs.
+                    "overview_html": str(report_targets["overview"]),
+                    "run_overview_html": str(report_targets["run_overview"]),
                     "total_results": len(rows),
                     "total_jobs_considered": len(all_rows),
                 },
