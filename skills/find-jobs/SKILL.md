@@ -35,11 +35,21 @@ Start the sweep as a **background** task, so the reports below can be published
 while it is still going:
 
 ```bash
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" orchestrate.py --once
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --sweep
 ```
 
 Go through the launcher rather than calling `python` — it resolves a working
 interpreter on macOS, Linux and Windows and runs inside the plugin venv.
+
+**Use `--sweep`, never `orchestrate.py --once`.** They run the same pipeline, but
+`--sweep` registers the run in the status file, so `--status` can see it, `--stop`
+can end it, and it stops with the session. The old form went through a second
+launcher that did none of that: a find-jobs sweep was invisible to `--status`,
+unreachable by `--stop`, and outlived the session that started it.
+
+If a recurring sweep is already running, `--sweep` will decline rather than start a
+second writer on the same database. That is correct — say so plainly and tell the
+user the running sweep's next cycle covers this.
 
 This takes roughly 20 minutes on the default board set, most of it rate-limited
 waiting on the boards themselves. Tell the user that up front. If they enabled

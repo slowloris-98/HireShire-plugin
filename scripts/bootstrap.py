@@ -203,6 +203,47 @@ def stop() -> int:
 _SESSION_CONTINUES_REASONS = frozenset({"clear", "resume"})
 
 
+def _ending_session_owns_sweep() -> bool:
+    """Whether the sweep on record belongs to the session that is ending.
+
+    This hook fires for *every* Claude Code session that ends, and it used to stop
+    whatever the status file named. With several sessions open — seven were measured on
+    one machine — any of them ending killed another session's sweep, which reads exactly
+    like the sweep crashing: tree-killed, no traceback, no unwind.
+
+    The ending session identifies itself the same way the sweep's own watchdog does. The
+    hook is spawned *by* the session that is ending, so it inherits that session's
+    `CLAUDE_PID`; comparing it against the `session_pid` the sweeper recorded at start-up
+    is enough, and needs nothing from the payload.
+
+    Two fallbacks, deliberately opposite:
+
+    * **No recorded owner** -> stop it. Sweeps started before this field existed, and the
+      scheduled route, must not become unstoppable by the hook that is supposed to reap
+      them. This is the old behaviour, kept for exactly those.
+    * **Owner recorded but the ending session cannot be identified** -> leave it alone.
+      Here we know the sweep belongs to *somebody*, and guessing is what caused the bug.
+      `--stop` and the sweep's own watchdog both remain as backstops.
+    """
+    doc = orchestration_status.read(DATA)
+    if not doc:
+        # Nothing on record, so there is no sweep to protect. `stop()` is a no-op on an
+        # absent document and still clears a corrupt one, so refusing here would only
+        # skip that tidy-up. Refuse when a sweep is known to belong to someone else —
+        # never merely because nothing is known.
+        return True
+
+    owner = doc.get("session_pid")
+    if not isinstance(owner, int) or isinstance(owner, bool) or owner <= 0:
+        return True
+
+    raw = os.environ.get("CLAUDE_PID", "").strip()
+    try:
+        return int(raw) == owner
+    except ValueError:
+        return False
+
+
 def session_end() -> int:
     """Stop the sweep when the session that started it ends.
 
@@ -229,6 +270,8 @@ def session_end() -> int:
     if not isinstance(payload, dict):
         return 0
     if payload.get("reason") in _SESSION_CONTINUES_REASONS:
+        return 0
+    if not _ending_session_owns_sweep():
         return 0
     return stop()
 

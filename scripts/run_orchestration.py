@@ -66,6 +66,16 @@ _CHILD_FLAG = "HIRESHIRE_IN_VENV"
 #: nothing pins that depth, so no `getppid()`-and-its-parent rule can be correct.
 _SESSION_PID_VAR = "CLAUDE_PID"
 
+#: How often the watchdog asks whether the session is still there.
+#:
+#: Deliberately not `status.HEARTBEAT_INTERVAL_S`, which it used to share. That one is
+#: chosen against `STALE_AFTER_S` — how long a status file may look live after the
+#: sweeper dies. This one is what the user feels: the gap between closing the CLI and
+#: the sweep, plus its `claude -p` children, actually stopping. Tying them made a
+#: closed session take up to a minute to take effect for no reason. The probe is a
+#: single `OpenProcess` call, so five seconds costs nothing measurable.
+_WATCHDOG_INTERVAL_S = 5
+
 
 def _session_pid() -> int | None:
     """The session process to watch, or None when there is nothing trustworthy.
@@ -120,6 +130,26 @@ def _end_with_session(pid: int) -> None:
         logging.exception("Could not terminate the apply subprocess")
     status.clear()
     logging.shutdown()
+
+    # Take the whole tree, not just this process. The scorer runs up to `concurrency`
+    # `claude -p` children at a time, and `os._exit` would leave every one of them
+    # re-parented and running — silently on Windows, where an orphan gets no signal
+    # at all. They would eventually hit `claude_cli_timeout_s` (600 s by default), but
+    # "the plugin stops when the session stops" has to mean now, not in ten minutes.
+    #
+    # Killing self tree-wide is enough for everything above, too: each parent in the
+    # re-exec chain is blocked in `subprocess.run` and unwinds as soon as its child is
+    # gone. `os._exit` below is the fallback for the platform paths that do not take
+    # this process down themselves.
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(os.getpid()), "/T", "/F"],
+                           capture_output=True)
+        else:
+            subprocess.run(["pkill", "-KILL", "-P", str(os.getpid())],
+                           capture_output=True)
+    except Exception:  # noqa: BLE001 - the exit below must happen regardless
+        pass
     os._exit(0)
 
 
@@ -140,13 +170,15 @@ def _reexec_in_venv() -> int:
     # summary line that carries a job title becomes a crash nobody is watching.
     env.setdefault("PYTHONIOENCODING", "utf-8:replace")
     return subprocess.run(
-        [str(venv_python()), str(Path(__file__).resolve())],
+        # argv is forwarded so `--once` survives the hop into the venv. Without this the
+        # child always ran recurring, and a one-shot sweep would never return.
+        [str(venv_python()), str(Path(__file__).resolve()), *sys.argv[1:]],
         cwd=str(ROOT),
         env=env,
     ).returncode
 
 
-def _loop() -> int:
+def _loop(once: bool = False) -> int:
     import asyncio
     import logging
     import time
@@ -190,26 +222,49 @@ def _loop() -> int:
     except Exception:
         logging.exception("Could not read applier config; continuing without it")
 
-    status.write(pid=os.getpid(), started_at=time.time(), interval_hours=interval_h,
-                 apply_enabled=apply_enabled, last_sweep=None, last_summary=None,
-                 next_sweep=None)
-    print(f"HireShire orchestration started — sweeping every {interval_h:g}h.", flush=True)
-
     session_pid = _session_pid()
 
+    # `session_pid` is recorded so the SessionEnd hook can tell *whose* sweep this is.
+    # Without it that hook stops whatever the status file names, so with several Claude
+    # Code sessions open, any one of them ending kills another session's sweep. Written
+    # here rather than derived later because this is the only moment the owning session
+    # is known for certain. None is written when the watchdog is unarmed — the scheduled
+    # route has no session, and an absent owner must not read as "owned by everyone".
+    status.write(pid=os.getpid(), started_at=time.time(), interval_hours=interval_h,
+                 apply_enabled=apply_enabled, last_sweep=None, last_summary=None,
+                 next_sweep=None, session_pid=session_pid,
+                 mode="once" if once else "recurring")
+    print(
+        "HireShire: sweeping once." if once
+        else f"HireShire orchestration started — sweeping every {interval_h:g}h.",
+        flush=True,
+    )
+
     async def heartbeat() -> None:
-        """Keep the status file fresh for as long as this process lives, and stop the
-        moment the session that started it is gone.
+        """Keep the status file fresh for as long as this process lives.
 
         Runs alongside the sweep rather than between cycles: a sweep takes ~20
         minutes, longer than the staleness window, so a heartbeat that only ticked
         at cycle boundaries would read as dead mid-sweep and let a second sweeper in.
+        """
+        while True:
+            await asyncio.sleep(status.HEARTBEAT_INTERVAL_S)
+            status.write()
 
-        The session check rides along here because this is already the one thing that
-        ticks reliably while a sweep is deep in the pipeline. It is the half of the
-        teardown that survives a crash: the SessionEnd hook handles an orderly exit,
-        but it cannot fire if Claude Code is force-killed, and on Windows nothing else
-        will — an orphan there is re-parented in silence.
+    async def watchdog() -> None:
+        """Stop the moment the session that started this sweep is gone.
+
+        The half of the teardown that survives a crash: the SessionEnd hook handles an
+        orderly exit, but it cannot fire if Claude Code is force-killed, and on Windows
+        nothing else will — an orphan there is re-parented in silence.
+
+        **Separate from the heartbeat, and ticking far faster.** It used to ride along
+        with the status write, which tied how quickly a sweep noticed a dead session to
+        how often the status file needs refreshing. Those are unrelated: the status
+        interval is chosen against `STALE_AFTER_S`, while this one is the delay the user
+        experiences between closing the CLI and the sweep — plus its `claude -p`
+        children — actually stopping. A minute of that is a sweep that outlives its
+        session for a minute.
         """
         from hireshire.process_liveness import is_alive
 
@@ -220,13 +275,13 @@ def _loop() -> int:
                 "and `--stop` still apply.",
                 _SESSION_PID_VAR,
             )
-        else:
-            logging.info("Watching the session: %s %s.", _SESSION_PID_VAR, session_pid)
+            return
+
+        logging.info("Watching the session: %s %s.", _SESSION_PID_VAR, session_pid)
         while True:
-            await asyncio.sleep(status.HEARTBEAT_INTERVAL_S)
-            if session_pid is not None and not is_alive(session_pid):
+            await asyncio.sleep(_WATCHDOG_INTERVAL_S)
+            if not is_alive(session_pid):
                 _end_with_session(session_pid)
-            status.write()
 
     async def cycles() -> None:
         while True:
@@ -240,6 +295,13 @@ def _loop() -> int:
                 summary = (f"{len(rows)} new match(es) this sweep"
                            + (f", best score {best}" if best is not None else ""))
 
+            if once:
+                # One cycle is the whole job: `next_sweep` would be a promise nothing
+                # is left running to keep, and `--status` renders it as a due date.
+                status.write(last_sweep=time.time(), last_summary=summary)
+                print(f"HireShire: {summary}.", flush=True)
+                return
+
             status.write(last_sweep=time.time(), last_summary=summary,
                          next_sweep=time.time() + interval_h * 3600)
             print(f"HireShire: {summary}. Next in {interval_h:g}h.", flush=True)
@@ -247,10 +309,12 @@ def _loop() -> int:
 
     async def run() -> None:
         beat = asyncio.create_task(heartbeat())
+        guard = asyncio.create_task(watchdog())
         try:
             await cycles()
         finally:
             beat.cancel()
+            guard.cancel()
 
     try:
         asyncio.run(run())
@@ -264,4 +328,11 @@ def _loop() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(_loop() if os.environ.get(_CHILD_FLAG) else _reexec_in_venv())
+    # `--once` is what `/hireshire:find-jobs` and the OS scheduler use. It is the same
+    # program as the recurring sweep with the loop stopped after one cycle, which is the
+    # point: find-jobs used to run `orchestrate.py --once` through `run_engine.py`, a
+    # second program with no status registration and no session watchdog, so every
+    # teardown mechanism the plugin has was built on the monitor and simply did not
+    # cover it. One leaf, one registration, one watchdog.
+    _once = "--once" in sys.argv[1:]
+    sys.exit(_loop(_once) if os.environ.get(_CHILD_FLAG) else _reexec_in_venv())

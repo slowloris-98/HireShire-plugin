@@ -133,6 +133,60 @@ def test_an_unfamiliar_reason_still_stops_the_sweep(monkeypatch):
     assert _session_end(monkeypatch, "") == ["stop"]
 
 
+# --- whose sweep is it? ------------------------------------------------------------
+
+
+def _session_end_owned(monkeypatch, tmp_path, owner, ending, payload='{"reason": "other"}'):
+    """Run the hook against a status file owned by `owner`, as session `ending`."""
+    import bootstrap
+    from hireshire import orchestration_status as status
+
+    fields = {"pid": os.getpid(), "interval_hours": 4}
+    if owner is not None:
+        fields["session_pid"] = owner
+    status.write(tmp_path, **fields)
+
+    stopped: list[str] = []
+    monkeypatch.setattr(bootstrap, "DATA", tmp_path)
+    monkeypatch.setattr(bootstrap, "stop", lambda: stopped.append("stop") or 0)
+    monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(payload))
+    if ending is None:
+        monkeypatch.delenv("CLAUDE_PID", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_PID", str(ending))
+
+    assert bootstrap.session_end() == 0
+    return stopped
+
+
+def test_another_sessions_sweep_is_left_alone(monkeypatch, tmp_path):
+    """The bug this exists to stop. The hook fires for EVERY session that ends, and it
+    used to kill whatever the status file named. With several Claude Code sessions open
+    — seven were measured on one machine — any of them ending took down another
+    session's sweep, which looks exactly like the sweep crashing: tree-killed, exit 1,
+    no traceback, no unwind."""
+    assert _session_end_owned(monkeypatch, tmp_path, owner=1111, ending=2222) == []
+
+
+def test_the_owning_session_ending_does_stop_the_sweep(monkeypatch, tmp_path):
+    """The scoping must not defeat the hook's whole purpose."""
+    assert _session_end_owned(monkeypatch, tmp_path, owner=1111, ending=1111) == ["stop"]
+
+
+def test_a_sweep_with_no_recorded_owner_is_still_stoppable(monkeypatch, tmp_path):
+    """Sweeps started before `session_pid` existed must not become unstoppable by the
+    hook meant to reap them. Absence of an owner is not evidence of another owner."""
+    assert _session_end_owned(monkeypatch, tmp_path, owner=None, ending=2222) == ["stop"]
+
+
+def test_an_unidentifiable_ending_session_leaves_an_owned_sweep_alone(monkeypatch, tmp_path):
+    """The opposite fallback to the one above, and deliberately so: here we know the
+    sweep belongs to *somebody*, and guessing is what caused the bug. `--stop` and the
+    sweep's own watchdog remain as backstops."""
+    assert _session_end_owned(monkeypatch, tmp_path, owner=1111, ending=None) == []
+    assert _session_end_owned(monkeypatch, tmp_path, owner=1111, ending="not-a-pid") == []
+
+
 @pytest.mark.parametrize("payload", ["not json", "[]", "null", '"a string"'])
 def test_an_unreadable_payload_leaves_the_sweep_alone(monkeypatch, payload):
     """Silence is the default, as in the permission guard: a broken payload must not

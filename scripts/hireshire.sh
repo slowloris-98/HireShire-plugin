@@ -23,6 +23,7 @@
 #   hireshire.sh --approve                PreToolUse guard; reads a hook payload on stdin
 #   hireshire.sh --bootstrap              create/refresh the venv
 #   hireshire.sh --monitor                run the recurring sweep (start in background)
+#   hireshire.sh --sweep                  run ONE sweep, then exit (find-jobs, scheduler)
 #   hireshire.sh <script.py> [args...]    run an engine entrypoint in the venv
 #
 # --paths exists because skills must not name the data directory themselves.
@@ -99,6 +100,12 @@ case "$1" in
     # `run_orchestration.py` reads CLAUDE_PID out of the environment instead: Claude
     # Code sets it, in the right namespace, and it is inherited without help.
     --monitor)   exec "$PY" "$ROOT/scripts/run_orchestration.py" ;;
-    "")          echo "usage: hireshire.sh [--check|--paths|--status|--stop|--session-end|--approve|--bootstrap|--monitor|<script.py> [args]]" >&2; exit 2 ;;
+    # --sweep is one cycle of exactly the same program, and it is what
+    # /hireshire:find-jobs and the OS scheduler entry run. It replaces
+    # `hireshire.sh orchestrate.py --once`, which went through run_engine.py — a second
+    # launcher with no status registration and no session watchdog, so a find-jobs sweep
+    # was invisible to --status, unreachable by --stop, and outlived its session.
+    --sweep)     exec "$PY" "$ROOT/scripts/run_orchestration.py" --once ;;
+    "")          echo "usage: hireshire.sh [--check|--paths|--status|--stop|--session-end|--approve|--bootstrap|--monitor|--sweep|<script.py> [args]]" >&2; exit 2 ;;
     *)           exec "$PY" "$ROOT/scripts/run_engine.py" "$@" ;;
 esac

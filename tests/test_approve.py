@@ -34,6 +34,9 @@ APPROVED = [
     "--status",
     "--bootstrap",
     "--monitor",
+    # The command `/hireshire:find-jobs` runs. Without it the plugin's most common
+    # action prompts on every use, which is the friction this guard exists to remove.
+    "--sweep",
     "orchestrate.py --once",
     "scripts/setup_cli.py install-config",
     "scripts/setup_cli.py warm-models",

@@ -31,6 +31,59 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Fixed
 
+- **The recurring sweep was killed by other Claude Code sessions ending, roughly a
+  minute after it started, every time.** The `SessionEnd` hook fires for *every*
+  session that ends anywhere on the machine — including the short-lived `claude -p`
+  sessions the scorer itself spawns — and it called `stop()` unconditionally, killing
+  whatever pid the status file named.
+
+  It presented as a crash and was misdiagnosed as one for two days. `taskkill /T /F`
+  sets exit code **1** and terminates without unwinding, so the sweep left no
+  traceback, no `ERROR` line, no `finally`, and a stale status file. Six runs died at
+  61, 64, 85, 99, 136 and 148 seconds with nothing in any log.
+
+  `run_orchestration.py` now records `session_pid` at start-up, and the hook stops the
+  sweep only when the ending session's `CLAUDE_PID` matches it. A sweep with no
+  recorded owner is still stopped, so pre-existing and scheduled sweeps do not become
+  unreapable; a sweep with an owner whose ending session cannot be identified is left
+  alone, because guessing there is what caused this.
+
+- **`--status` reported dead sweeps as running for up to five minutes, and blocked new
+  ones.** Liveness was decided purely by heartbeat freshness, and a heartbeat is only
+  refreshed once a minute against a five-minute staleness window. Inside that gap
+  `--status` printed `running (pid 25860)` against a process that did not exist, and
+  — worse — the start-up guard refused a new sweep with `already running — not
+  starting a second` against dead pid 26616.
+
+  A recorded pid that is definitively gone now vetoes the answer. It stays a veto
+  rather than the primary signal, which keeps the original reasoning intact: a
+  recycled pid can only make a dead sweep read as alive, and the stale heartbeat still
+  catches that. The probe goes through `process_liveness.is_alive` (Win32
+  `OpenProcess`), not `os.kill(pid, 0)`, which is not portable to Windows.
+
+- **`/hireshire:find-jobs` had no teardown at all, and now shares the monitor's.** It
+  ran `orchestrate.py --once` through `run_engine.py` — a second launcher that
+  registered nothing and watched nothing. A find-jobs sweep was invisible to
+  `--status`, unreachable by `--stop` (which reported *"not running; nothing to stop"*
+  while a full sweep plus up to four `claude -p` scorers ran), and outlived the session
+  that started it.
+
+  Both skills now run the same program: `hireshire.sh --sweep` is one cycle of
+  `--monitor`. The OS scheduler entry uses `scripts/run_orchestration.py --once` for
+  the same reason. `orchestrate.py` remains as the developer entrypoint; nothing in
+  the plugin invokes it.
+
+  Consequence worth knowing: find-jobs now inherits the single-instance guard, so it
+  declines rather than putting a second writer on the same SQLite database while a
+  recurring sweep runs.
+
+- **The session watchdog reacted up to a minute late and orphaned its children.** It
+  shared the heartbeat's 60-second loop, though the two measure unrelated things, and
+  it called `os._exit` — leaving the scorer's `claude -p` children re-parented and
+  running until their 600-second timeout. It is now a separate task at 5 seconds and
+  kills its own process tree. Measured: session force-killed, sweep and all three
+  processes gone in 3 seconds, status cleared.
+
 - **The recurring sweep did not stop with the session, and now it does.** Users are
   told it is a session watcher rather than a background service; on Windows that was
   untrue. An orphan there is re-parented in silence — no process group, no SIGHUP —
