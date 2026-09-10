@@ -108,13 +108,22 @@ Consequences already worked out, which should not be re-derived:
   sufficient alone**. The `SessionEnd` hook runs `--stop` on an orderly exit, filtered
   on the payload's `reason` so a `/clear` does not kill a live sweep; it cannot fire
   when Claude Code is force-killed or crashes. So `run_orchestration.py`'s heartbeat
-  also watches the two pids `hireshire.sh --monitor` hands it and exits within one
-  interval when either goes. Those two pids mean different things per platform and
-  **both spellings are needed**: under Git Bash `exec` cannot replace the process, so
-  `$$` names the surviving `sh.exe` and is how a killed shell task is detected, while
-  on POSIX `exec` preserves the pid, `$$` becomes the monitor's own, and only `$PPID`
-  does any work. The watchdog is armed solely by those variables being present, which
-  is what keeps it inert for the scheduled route (`orchestrate.py --once`, no session).
+  also watches **`CLAUDE_PID`** — Claude Code publishes its own pid there — and exits
+  within one interval once it is gone. Absence of that variable means **do not arm**,
+  which is what keeps the watchdog inert for a plain terminal and the scheduled route;
+  unknown must never mean kill.
+
+  **Never source that pid from the shell.** `--monitor` used to export `$$` and
+  `$PPID`, and it killed a healthy sweep 60 seconds in. Git Bash is MSYS and MSYS keeps
+  its **own pid namespace** — `ps` reports PID 1684 for a shell Windows calls WINPID
+  14072 — while `process_liveness.is_alive` asks Win32 `OpenProcess`, which knows only
+  Windows pids. Two meaningless numbers read as dead on the first tick. Walking the
+  tree instead is no better: the measured ancestry under the VS Code extension is
+  `python → bash → bash → bash → claude.exe → Code.exe`, so no fixed-depth `getppid()`
+  rule can be right. Coverage is therefore deliberately partial — a closed CLI and a
+  crash, not a killed background Bash task, which waits for `SessionEnd` or `--stop`.
+  `tests/test_process_liveness.py` pins a live pid reading as live, which is the
+  assertion whose absence let the MSYS pid through.
 
   **Killing the leaf is enough, because the chain unwinds itself.** Every parent in the
   re-exec chain is blocked in `subprocess.run`, so each exits as soon as its child

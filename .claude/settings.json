@@ -19,7 +19,12 @@
       "Bash(export PYTHONIOENCODING=utf-8)",
       "Bash(\"C:/Users/atrey/.claude/plugins/data/hireshire-hireshire/venv/Scripts/python.exe\" \"C:/Users/atrey/AppData/Local/Temp/claude/d--Atreya-College-Projects-HireShire-plugin/bc70b9d2-0b24-4dff-850e-62e75f03a17d/scratchpad/measure_extract.py\")",
       "Bash(\"C:/Users/atrey/.claude/plugins/data/hireshire-hireshire/venv/Scripts/python.exe\" -m pytest tests/test_experience.py -q)",
-      "Bash(python analysis/yoe_gate_eval.py --db \"C:/Users/atrey/.claude/plugins/data/hireshire-hireshire/hireshire.db\" --candidate-years 4 --tolerance 0.5)"
+      "Bash(python analysis/yoe_gate_eval.py --db \"C:/Users/atrey/.claude/plugins/data/hireshire-hireshire/hireshire.db\" --candidate-years 4 --tolerance 0.5)",
+      "Bash(sed -n '/--monitor\\)/,/;;/p' scripts/hireshire.sh)",
+      "Bash(sed -n '/--session-end is what makes/,/Neither half is sufficient alone/p' scripts/hireshire.sh)",
+      "Bash(python -m compileall -q scripts/run_orchestration.py hireshire/process_liveness.py)",
+      "Bash(python -m pytest tests/test_process_liveness.py -q -v)",
+      "Bash(python -m pytest \"tests/test_process_liveness.py::test_the_real_claude_pid_is_an_os_pid\" -v)"
     ],
     "additionalDirectories": [
       "\\tmp"

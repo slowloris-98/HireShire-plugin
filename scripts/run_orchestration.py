@@ -49,35 +49,48 @@ from bootstrap import DATA, ROOT, is_current, main as bootstrap_main, venv_pytho
 
 _CHILD_FLAG = "HIRESHIRE_IN_VENV"
 
-#: Environment variables naming the session processes this sweep must not outlive.
-#: `scripts/hireshire.sh --monitor` is the only thing that sets them, and
-#: `_reexec_in_venv` copies the environment down, so they arrive here unaided.
+#: Claude Code publishes its own process id here, and it is the only session signal
+#: this file trusts. `_reexec_in_venv` copies the environment down, so it arrives at
+#: the leaf unaided — nothing has to pass it along.
 #:
-#: Their absence is what keeps the watchdog inert everywhere it would be wrong. The
-#: scheduled route `/hireshire:setup` offers runs `orchestrate.py --once` and never
-#: this file, so it is unaffected either way — but a sweep with no session behind it
-#: must never acquire one by accident, which is why this is opt-in by construction
-#: rather than a platform check.
-_SESSION_PID_VARS = ("HIRESHIRE_CLI_PID", "HIRESHIRE_SHELL_PID")
+#: The obvious alternative — have `hireshire.sh --monitor` hand over `$$` and `$PPID`
+#: — shipped once and was a real bug. Git Bash is MSYS, MSYS keeps its **own** pid
+#: namespace, and `is_alive` asks Win32 about Windows pids, so the watchdog polled two
+#: numbers that meant nothing in the namespace it was querying, read them as dead, and
+#: stopped a healthy sweep on its first tick. Measured: `ps` reports PID 1684 for a
+#: shell that Windows calls WINPID 14072.
+#:
+#: Walking the process tree instead does not work either, and the reason is worth
+#: keeping. The ancestry measured under the VS Code extension was
+#: `python -> bash -> bash -> bash -> claude.exe -> Code.exe`: three shell levels, and
+#: nothing pins that depth, so no `getppid()`-and-its-parent rule can be correct.
+_SESSION_PID_VAR = "CLAUDE_PID"
 
 
-def _watched_session_pids() -> dict[str, int]:
-    """The session pids to watch, skipping anything absent or unparseable."""
-    watched: dict[str, int] = {}
-    for name in _SESSION_PID_VARS:
-        raw = os.environ.get(name, "").strip()
-        if not raw:
-            continue
-        try:
-            pid = int(raw)
-        except ValueError:
-            continue
-        if pid > 0:
-            watched[name] = pid
-    return watched
+def _session_pid() -> int | None:
+    """The session process to watch, or None when there is nothing trustworthy.
+
+    **Absence must mean "do not arm".** A plain terminal, a different interface, or the
+    OS scheduler route all reach this file with no session behind them, and a watchdog
+    that guessed there would stop sweeps nobody asked it to. Unknown never means kill:
+    the `SessionEnd` hook still covers an orderly exit, and `--stop` is always there.
+
+    Only "the user closed the CLI" and a crash are covered by design. Killing the
+    background Bash task alone leaves this sweep running until one of those two: the
+    CLI's pid is a measured signal, a parent-shell pid would have been a reasoned one,
+    and a false stop is the failure that already cost a real run.
+    """
+    raw = os.environ.get(_SESSION_PID_VAR, "").strip()
+    if not raw:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
 
 
-def _end_with_session(gone: dict[str, int]) -> None:
+def _end_with_session(pid: int) -> None:
     """Leave now, because the session this sweep belongs to is gone.
 
     Immediate rather than graceful, deliberately. Every job already judged is in the
@@ -99,8 +112,7 @@ def _end_with_session(gone: dict[str, int]) -> None:
     from hireshire import orchestration_status as status
 
     logging.warning(
-        "Session ended (%s); stopping the sweep.",
-        ", ".join(f"{name} {pid} is gone" for name, pid in gone.items()),
+        "Session ended (%s %s is gone); stopping the sweep.", _SESSION_PID_VAR, pid
     )
     try:
         orchestrate.terminate_apply_subprocess()
@@ -183,7 +195,7 @@ def _loop() -> int:
                  next_sweep=None)
     print(f"HireShire orchestration started — sweeping every {interval_h:g}h.", flush=True)
 
-    watched = _watched_session_pids()
+    session_pid = _session_pid()
 
     async def heartbeat() -> None:
         """Keep the status file fresh for as long as this process lives, and stop the
@@ -201,16 +213,19 @@ def _loop() -> int:
         """
         from hireshire.process_liveness import is_alive
 
-        if watched:
+        if session_pid is None:
             logging.info(
-                "Watching the session: %s.",
-                ", ".join(f"{name} {pid}" for name, pid in watched.items()),
+                "No usable %s in the environment, so the session watchdog is NOT "
+                "armed; this sweep will not notice a closed CLI. The SessionEnd hook "
+                "and `--stop` still apply.",
+                _SESSION_PID_VAR,
             )
+        else:
+            logging.info("Watching the session: %s %s.", _SESSION_PID_VAR, session_pid)
         while True:
             await asyncio.sleep(status.HEARTBEAT_INTERVAL_S)
-            gone = {n: p for n, p in watched.items() if not is_alive(p)}
-            if gone:
-                _end_with_session(gone)
+            if session_pid is not None and not is_alive(session_pid):
+                _end_with_session(session_pid)
             status.write()
 
     async def cycles() -> None:
