@@ -1,4 +1,4 @@
-"""The minimal overview page — the two accordions, the tail, and its two scopes.
+"""The minimal overview page — its three accordions, and its two scopes.
 
 The page's whole promise is that a job appears in exactly one of its three lists,
 and that a number on it means what its label says. Most of what follows pins those
@@ -231,19 +231,39 @@ def test_an_unmeasured_sweep_shows_a_dash_not_zero_dollars(tmp_path):
 
 
 def test_the_lifetime_page_has_no_duration_or_cost(tmp_path):
-    """Neither is a fact about an install — the tiles belong to one sweep."""
+    """Neither is a fact about an install — the tiles belong to one sweep. They are
+    the *only* difference between the two scopes; everything else on the lifetime
+    page is the same markup fed different data."""
     html = overview.build(data.overview_snapshot(_populated(tmp_path), None), None)
     assert ">Took<" not in html
     assert "Est. cost" not in html
 
 
+def test_both_scopes_carry_the_same_header(tmp_path):
+    db = _populated(tmp_path)
+    per_run = overview.build(_snapshot(db), RUN)
+    lifetime = overview.build(data.overview_snapshot(db, None), None)
+
+    for html in (per_run, lifetime):
+        assert "<span>HireShire</span>" in html
+        assert "<h1>Control room</h1>" in html
+        # One line of instruction, and it sits between the tiles and the first section.
+        assert html.count('<p class="hint">') == 1
+        assert html.index('class="stats"') < html.index('class="hint"') < html.index('class="acc"')
+
+    # The scope is the eyebrow's second word, and it is what tells the two apart.
+    assert "<span>All sweeps</span>" in lifetime
+    assert f"<span>Run {RUN}</span>" in per_run
+
+
 # --- the page itself ----------------------------------------------------------
 
 
-def test_both_accordions_render_with_their_counts(tmp_path):
+def test_all_three_accordions_render_with_their_counts(tmp_path):
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
-    assert html.count('<details class="acc">') == 2
+    assert html.count('<details class="acc"') == 3
     assert "Applied" in html and "Scored, not applied" in html
+    assert "Not scored" in html and "<h2" not in html
     # One applied; three scored-not-applied — j2 and the two siblings j4 and j5.
     assert '<span class="n">1</span>' in html
     assert '<span class="n">3</span>' in html
@@ -291,6 +311,26 @@ def test_a_duplicate_sibling_keeps_the_score_it_inherited(tmp_path):
     # is over in the applied list, flagged.
     assert '<span class="job-s">82</span>' in html
     assert '<span class="job-s hit">82</span>' in html
+
+
+def test_open_accordions_survive_the_meta_refresh(tmp_path):
+    """A live page reloads every 15 seconds. Every `<details>` therefore needs a
+    stable id and the script that puts the open ones back, or the refresh shuts the
+    job whose rationale the reader is halfway through."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert 'id="acc:applied"' in html and 'id="acc:scored"' in html
+    assert 'id="acc:tail"' in html
+    assert 'id="j:j2"' in html
+    assert "hs-overview-open" in html
+
+
+def test_the_state_script_survives_storage_being_unavailable(tmp_path):
+    """A `file://` origin can be opaque enough that touching sessionStorage throws.
+    A report degrades; it does not die."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    state = html.split('KEY = "hs-overview-open"')[1]
+    assert "try { store = window.sessionStorage" in state
+    assert "catch (e) { return; }" in state
 
 
 def test_the_page_is_a_complete_local_document(tmp_path):

@@ -364,11 +364,25 @@ Four consequences that should not be re-derived:
 `overview.html` at the results root covers every sweep the install has done;
 `<stamp>_overview.html` in a run folder covers that sweep and adds how long it took
 and what it cost. Both are complete local documents. Four numbers, two `<details>`
-accordions (applied, then scored-but-not-applied), and the never-scored tail — no
-prose at all, because the judge's rationales inside an opened job are meant to be the
-only sentences on it. It does not replace the other two, which stay for comparison.
+accordions (applied, scored-but-not-applied, and the never-scored tail) under the
+dashboard's own `HireShire` / `Control room` header. It explains nothing: past one
+line telling the reader the sections open, the judge's rationales inside an opened job
+are the only sentences on it. **Both scopes are the same markup fed different data**,
+and the two extra tiles are the single deliberate exception — how long it took and
+what it cost are facts about a sweep, not about an install. It does not replace the
+other two pages, which stay for comparison.
 
-Three things about it that are easy to get wrong:
+Four things about it that are easy to get wrong:
+
+- **Collapsing by default is what makes the meta refresh expensive.** A live page
+  reloads every `REFRESH_S`, and a reload resets every `<details>` — so it used to
+  shut the job whose rationale the reader was halfway through, every 15 seconds. Every
+  `<details>` therefore carries a stable id (`acc:*`, `j:<job_id>`) and `_STATE_SCRIPT`
+  restores the open set from `sessionStorage`, guarded, because a `file://` origin can
+  be opaque enough that touching storage throws. Session, not local: reopening the
+  file tomorrow should give the resting state. Note the tail's rows are script-built
+  and fill while its accordion is still shut, so opening it is instant and the scroll
+  listener cannot misfire — a hidden box is never scrolled.
 
 - **A cluster sibling is not identified by `skip_reason`.** Siblings inherit the
   *representative's* reason, so only the lucky ones say `duplicate_of_cluster` and a

@@ -3,8 +3,15 @@
 The other two reports explain themselves at length, and that is the right call for
 a diagnostic someone opens when a sweep did something surprising. This one is for
 the other 95% of the time, when the question is just *what have I got*. So it
-carries no prose at all: the only sentences on the page are the judge's own
-rationales, and they appear only inside a job the reader opened.
+explains nothing: past one line telling the reader the sections open, the only
+sentences on the page are the judge's own rationales, and those appear only inside a
+job the reader opened. That one line earns its place because everything is collapsed
+by default — without it the accordions read as headings rather than as things to
+click.
+
+Both scopes render from the same code and differ only in the data they are handed,
+with one exception: how long it took and what it cost belong to a sweep, so those
+two tiles appear on the per-run page alone.
 
 Written at two scopes from one renderer:
 
@@ -107,7 +114,10 @@ OVERVIEW_CSS = """
 }
 
 .empty { color: var(--ink-faint); font-family: "IBM Plex Mono", monospace; font-size: .8rem; padding: .5rem .25rem 1rem; }
-h2.section .n { color: var(--ink-faint); }
+
+/* The one instruction on the page. Everything collapses by default, so without it
+   the accordions read as headings rather than as things to click. */
+.hint { color: var(--ink-faint); font-size: .92rem; margin: 0 0 2.25rem; }
 
 /* Locations run to "Hyderabad, Telangana, India ; Bengaluru, Karnataka, India ; …"
    and `th, td` are nowrap, so an uncapped column pushed the cross-encoder score —
@@ -158,7 +168,7 @@ def _job_entry(job: dict, applied: bool = False) -> str:
         body += f'<p style="margin-top:1.4rem"><a class="src" href="{e(url)}" target="_blank" rel="noopener">Open posting →</a></p>'
 
     return (
-        '<details class="job"><summary>'
+        f'<details class="job" id="j:{e(job.get("job_id"))}"><summary>'
         f'<span class="job-s{" hit" if shortlisted else ""}">{num(score)}</span>'
         f'<span class="job-t">{e(job.get("title"))}</span>'
         f'<span class="job-m">{e(meta)}</span>'
@@ -167,14 +177,15 @@ def _job_entry(job: dict, applied: bool = False) -> str:
     )
 
 
-def _accordion(label: str, jobs: list[dict], total: int, applied: bool = False) -> str:
+def _accordion(key: str, label: str, jobs: list[dict], total: int,
+               applied: bool = False) -> str:
     shown = "".join(_job_entry(j, applied) for j in jobs) or '<p class="empty">Nothing yet.</p>'
     capped = (
         f'<p class="empty">Showing the first {num(len(jobs))} of {num(total)}.</p>'
         if total > len(jobs) else ""
     )
     return (
-        '<details class="acc"><summary>'
+        f'<details class="acc" id="acc:{e(key)}"><summary>'
         f'<span>{e(label)}<span class="n">{num(total)}</span></span>'
         f'</summary><div class="acc-body">{shown}{capped}</div></details>'
     )
@@ -265,6 +276,46 @@ _SCRIPT = """
 """
 
 
+# Every `<details>` on the page carries a stable id, and this puts the open ones back
+# after a reload. Not a nicety: while a sweep is running the page meta-refreshes every
+# REFRESH_S seconds, and without this it slams shut every accordion the reader had
+# opened — including the job whose rationale they were halfway through. Under the old
+# always-expanded layout a refresh cost only scroll position; collapsing by default is
+# what makes losing the open set expensive.
+#
+# `sessionStorage` rather than `localStorage`: reopening the file tomorrow should give
+# the resting state, not whatever was open during last night's sweep. Every access is
+# guarded — a file:// origin can be opaque enough that touching storage throws, and a
+# report must degrade rather than die.
+_STATE_SCRIPT = """
+<script>
+(function () {
+  var KEY = "hs-overview-open", store;
+  try { store = window.sessionStorage; if (!store) return; } catch (e) { return; }
+
+  function read() {
+    try { return JSON.parse(store.getItem(KEY) || "[]"); } catch (e) { return []; }
+  }
+  var open = read();
+  for (var i = 0; i < open.length; i++) {
+    var el = document.getElementById(open[i]);
+    if (el) el.open = true;
+  }
+  // `toggle` does not bubble, so listen in the capture phase to catch every one.
+  document.addEventListener("toggle", function (ev) {
+    var el = ev.target;
+    if (!el || el.tagName !== "DETAILS" || !el.id) return;
+    var set = read(), at = set.indexOf(el.id);
+    if (el.open && at === -1) set.push(el.id);
+    else if (!el.open && at !== -1) set.splice(at, 1);
+    else return;
+    try { store.setItem(KEY, JSON.stringify(set)); } catch (e) {}
+  }, true);
+})();
+</script>
+"""
+
+
 def _stat(value: str, label: str, css: str = "") -> str:
     return (
         f'<div class="stat{css}"><span class="stat-n">{value}</span>'
@@ -301,11 +352,17 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     scope = f"Run {stamp}" if per_run and stamp else "All sweeps"
     live_chip = '<span class="chip live">running</span>' if snapshot["live"] else ""
 
+    # The third accordion. Its rows are built by script rather than written out as
+    # markup, but that is orthogonal to being collapsed: the script runs on load and
+    # fills a `<tbody>` that happens to be inside a closed `<details>`, so the list is
+    # ready the moment it opens. The scroll listener cannot misfire while it is shut
+    # either — a hidden box is never scrolled.
     tail, tail_total = snapshot["tail"], snapshot["tail_total"]
     tail_html = ""
     if tail:
         tail_html = f"""
-  <h2 class="section">Not scored <span class="n">{num(tail_total)}</span></h2>
+  <details class="acc" id="acc:tail"><summary><span>Not scored<span class="n">{num(tail_total)}</span></span></summary>
+  <div class="acc-body">
   <div class="toolbar">
     <input id="ov-filter" type="search" placeholder="Filter" aria-label="Filter jobs">
     <span class="filter-note" id="ov-note"></span>
@@ -316,21 +373,24 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
       <tbody id="ov-rows"></tbody>
     </table>
   </div>
-  <script type="application/json" id="ov-tail-data">{_tail_payload(tail)}</script>"""
+  <script type="application/json" id="ov-tail-data">{_tail_payload(tail)}</script>
+  </div></details>"""
 
     body = f"""<div class="wrap">
-  <p class="eyebrow"><span>{e(scope)}</span>{live_chip}</p>
+  <p class="eyebrow"><span>HireShire</span><span>{e(scope)}</span>{live_chip}</p>
+  <h1>Control room</h1>
 
   <div class="stats">{''.join(tiles)}</div>
+  <p class="hint">Click a section to open it, then any job for the full reasoning behind its score.</p>
 
-  {_accordion("Applied", snapshot["applied"], snapshot["applied_total"], applied=True)}
-  {_accordion("Scored, not applied", snapshot["scored"], snapshot["scored_total"])}
+  {_accordion("applied", "Applied", snapshot["applied"], snapshot["applied_total"], applied=True)}
+  {_accordion("scored", "Scored, not applied", snapshot["scored"], snapshot["scored_total"])}
 {tail_html}
 </div>"""
 
     return document(
         f"{TITLE} — {stamp}" if per_run and stamp else TITLE,
-        body + (_SCRIPT if tail else ""),
+        body + (_SCRIPT if tail else "") + _STATE_SCRIPT,
         refresh_s=REFRESH_S if snapshot["live"] else None,
         extra_css=OVERVIEW_CSS,
     )
