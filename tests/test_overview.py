@@ -1,9 +1,13 @@
-"""The minimal overview page — its three accordions, and its two scopes.
+"""The minimal overview page — its four sections, and its two scopes.
 
-The page's whole promise is that a job appears in exactly one of its three lists,
+The page's whole promise is that a job appears in exactly one of its four lists,
 and that a number on it means what its label says. Most of what follows pins those
 two claims, because both are invisible when they break: a job showing up twice
 still renders, and a count that quietly means something else still prints.
+
+The tiles and the sections deliberately do *not* agree: the tiles are a cumulative
+funnel, the sections a partition. Tests that look like they contradict each other on
+that point are testing the two different things.
 """
 from __future__ import annotations
 
@@ -117,40 +121,92 @@ def _snapshot(db: Database, run_id: str | None = RUN, **over) -> dict:
     return snap
 
 
-# --- the three lists partition the jobs ---------------------------------------
+# --- the four lists partition the jobs -----------------------------------------
+
+_SECTIONS = ("applied", "shortlisted", "filtered", "seen")
 
 
-def test_an_applied_job_appears_once_and_only_in_the_applied_list(tmp_path):
-    """The page's one real job of work. A job in both accordions would double the
-    only list on it that says what is left to do."""
+def _section_of(snap: dict, job_id: str) -> list[str]:
+    """Every section holding this job. The point is that it is never more than one."""
+    return [s for s in _SECTIONS if job_id in [r["job_id"] for r in snap[s]]]
+
+
+def test_every_job_appears_in_exactly_one_section(tmp_path):
+    """The page's one real job of work. A job in two sections would double the only
+    list on it that says what is left to do."""
     snap = _snapshot(_populated(tmp_path))
 
-    assert [r["job_id"] for r in snap["applied"]] == ["j1"]
-    assert "j1" not in [r["job_id"] for r in snap["scored"]]
-    assert "j1" not in [r["job_id"] for r in snap["tail"]]
+    assert _section_of(snap, "j1") == ["applied"]
+    for job_id in ("j2", "j3", "j4", "j5"):
+        assert len(_section_of(snap, job_id)) == 1, job_id
 
 
-def test_a_cluster_sibling_is_scored_not_tail(tmp_path):
+def test_a_cluster_sibling_follows_its_verdict_not_the_tail(tmp_path):
     """It was judged, just once for the whole cluster — the same rule
-    `data._never_scored` applies, reached here through SQL."""
+    `data._never_scored` applies, reached here through SQL. j4 carries j1's 82
+    without j1's shortlist flag, so it belongs with the judged-but-not-picked."""
     snap = _snapshot(_populated(tmp_path))
-    assert "j4" in [r["job_id"] for r in snap["scored"]]
-    assert "j4" not in [r["job_id"] for r in snap["tail"]]
+    assert _section_of(snap, "j4") == ["filtered"]
 
 
-def test_the_tail_holds_only_jobs_no_one_judged(tmp_path):
+def test_the_last_section_holds_what_a_free_gate_killed(tmp_path):
+    """j3 is `rerank_below_cutoff` — a verdict from the cross-encoder, which costs
+    nothing to run. That is what separates the last section from the one above it,
+    where the rows cleared both free gates and merely never got a call."""
     snap = _snapshot(_populated(tmp_path))
-    assert [r["job_id"] for r in snap["tail"]] == ["j3"]
+    assert [r["job_id"] for r in snap["seen"]] == ["j3"]
 
 
-def test_the_tail_is_ordered_by_the_cross_encoder(tmp_path):
+def test_a_call_cap_drop_is_filtered_not_seen(tmp_path):
+    """The distinction the last two sections turn on. A cap drop cleared every free
+    gate and ran out of budget — it is still a relevant job and comes back next
+    sweep — so it sits with "yet to be scored", not with the gate casualties."""
     db = _populated(tmp_path)
     _match(db, RUN, "j6", score=0, skipped=True, reason="llm_call_cap_reached",
            rerank=4.40)
     db.insert_jobs(RUN, [_job("j6")])
 
     snap = _snapshot(db)
-    assert [r["rerank_score"] for r in snap["tail"]] == [4.40, 1.02]
+    assert _section_of(snap, "j6") == ["filtered"]
+    assert [r["job_id"] for r in snap["seen"]] == ["j3"]
+
+
+def test_a_yoe_drop_falls_to_the_last_section(tmp_path):
+    """The other free-gate verdict, and the one this page used to count as relevant.
+    Same description, same `candidate_years`, same answer — a verdict, not a
+    deferral."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=0, skipped=True, reason="yoe_below_requirement",
+           rerank=6.80)
+    db.insert_jobs(RUN, [_job("j6")])
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j6") == ["seen"]
+
+
+def test_the_last_section_is_ordered_by_the_cross_encoder(tmp_path):
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=0, skipped=True, reason="rerank_below_cutoff",
+           rerank=2.40)
+    db.insert_jobs(RUN, [_job("j6")])
+
+    snap = _snapshot(db)
+    assert [r["rerank_score"] for r in snap["seen"]] == [2.40, 1.02]
+
+
+def test_a_title_gate_job_reaches_the_page_with_no_score(tmp_path):
+    """The rejections `matcher.py` deliberately keeps out of `matches` — there can be
+    tens of thousands a run. They exist only in `jobs`, so `load_unmatched_jobs` is
+    the only way onto the page, and they sort last because they have no score at
+    all."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j9", title="Barista")])
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j9") == ["seen"]
+    # After the rows that do carry a logit, never before them.
+    assert [r["job_id"] for r in snap["seen"]] == ["j3", "j9"]
+    assert snap["seen"][-1].get("rerank_score") is None
 
 
 def test_the_sql_judged_predicate_matches_never_scored(tmp_path):
@@ -173,12 +229,41 @@ def test_the_sql_judged_predicate_matches_never_scored(tmp_path):
 # --- the four numbers ---------------------------------------------------------
 
 
-def test_filtered_counts_survivors_of_the_cross_encoder(tmp_path):
-    """Not "reached the reranker" and not "thrown away" — what cleared `min_score`
-    and was therefore eligible for an LLM call. Cluster siblings are out, exactly as
-    the matcher's own `stages["above_cutoff"]` leaves them out."""
+def test_relevant_counts_survivors_of_every_free_gate(tmp_path):
+    """Not "reached the reranker" and not "thrown away" — what cleared both LLM-free
+    gates and was therefore worth a call. Cluster siblings are out, as the matcher's
+    own `stages["above_cutoff"]` leaves them out."""
     counts = _populated(tmp_path).overview_counts(RUN)
-    assert counts == {"seen": 5, "filtered": 2, "shortlisted": 1, "applied": 1}
+    assert counts == {"seen": 5, "relevant": 2, "shortlisted": 1, "applied": 1}
+
+
+def test_a_yoe_drop_is_not_a_relevant_job(tmp_path):
+    """The tile's one semantic change. The YoE gate runs *after* the `min_score`
+    cutoff, so its casualties used to be counted as relevant — a job the resume
+    cannot qualify for, printed as though it were still in the running.
+
+    Note this deliberately diverges from the matcher's own `stages["above_cutoff"]`,
+    which counts YoE drops in on purpose. The tile and that console line answer
+    different questions."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=0, skipped=True, reason="yoe_below_requirement",
+           rerank=6.80)
+    db.insert_jobs(RUN, [_job("j6")])
+
+    counts = db.overview_counts(RUN)
+    assert counts["seen"] == 6
+    assert counts["relevant"] == 2
+
+
+def test_a_call_cap_drop_is_still_a_relevant_job(tmp_path):
+    """The other side of that line, and the reason the rule is a list of two reasons
+    rather than "anything skipped". A cap drop is a deferral, not a verdict."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=0, skipped=True, reason="llm_call_cap_reached",
+           rerank=4.40)
+    db.insert_jobs(RUN, [_job("j6")])
+
+    assert db.overview_counts(RUN)["relevant"] == 3
 
 
 def test_lifetime_counts_a_resurfaced_job_once(tmp_path):
@@ -259,14 +344,29 @@ def test_both_scopes_carry_the_same_header(tmp_path):
 # --- the page itself ----------------------------------------------------------
 
 
-def test_all_three_accordions_render_with_their_counts(tmp_path):
+def test_all_four_accordions_render_with_their_counts(tmp_path):
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
-    assert html.count('<details class="acc"') == 3
-    assert "Applied" in html and "Scored, not applied" in html
-    assert "Not scored" in html and "<h2" not in html
-    # One applied; three scored-not-applied — j2 and the two siblings j4 and j5.
+    assert html.count('<details class="acc"') == 4
+    for label in ("Jobs Applied", "Jobs Shortlisted (to be applied)",
+                  "Jobs Filtered (yet to be scored or not picked)",
+                  "Total Jobs Seen"):
+        assert label in html
+    assert "<h2" not in html
+    # One applied (j1); none shortlisted-but-unapplied; three filtered — j2 and the
+    # two siblings j4 and j5; one seen — j3, below the cutoff.
     assert '<span class="n">1</span>' in html
     assert '<span class="n">3</span>' in html
+
+
+def test_the_tiles_say_what_they_count(tmp_path):
+    """The page's other promise. Nothing else asserts these strings, and a label that
+    quietly means something else still prints."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    for label in ("Jobs in scope", "Relevant jobs", "Jobs shortlisted", "Jobs applied"):
+        assert f">{label}</span>" in html
+    # The qualifier that does not fit in a tile lives in the tooltip and the hint.
+    assert 'title="Total jobs in the given location and time window"' in html
+    assert "In scope means matching your location" in html
 
 
 def test_the_only_prose_is_the_judges_own_reasoning(tmp_path):
@@ -318,8 +418,8 @@ def test_open_accordions_survive_the_meta_refresh(tmp_path):
     stable id and the script that puts the open ones back, or the refresh shuts the
     job whose rationale the reader is halfway through."""
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
-    assert 'id="acc:applied"' in html and 'id="acc:scored"' in html
-    assert 'id="acc:tail"' in html
+    for acc in ("applied", "shortlisted", "filtered", "seen"):
+        assert f'id="acc:{acc}"' in html
     assert 'id="j:j2"' in html
     assert "hs-overview-open" in html
 

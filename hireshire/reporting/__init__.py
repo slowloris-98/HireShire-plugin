@@ -70,9 +70,16 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
     the one that must not be skipped, because it is the only one that sees the
     completed run.
 
-    Cost, for the throttled calls: while a sweep is in flight the `matches` table
-    is empty (top-K is global, so the budget is spent at the sentinel), which means
-    the row-loading branch below does no work at all for the first ~18 minutes.
+    Cost, for the throttled calls: `matches` now fills from the first employer on,
+    because selection is a streaming per-job cutoff rather than a global top-K
+    resolved at the sentinel. So the row load below is real work for most of a sweep,
+    and what keeps an early refresh cheap is the `snapshot["candidates"]` guard, not
+    an empty table. Do not restore the old claim — a reader who believed it would
+    conclude these calls are free and remove the throttle.
+
+    `snapshot` and `records` are handed to both reports rather than re-derived by
+    each. The overview used to load the identical rows a second time, which on a
+    clock-driven refresh is the same query ~300 times a sweep for nothing.
     """
     global _last_refresh, _last_lifetime
 
@@ -93,7 +100,7 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
         dashboard.write(data.dashboard_snapshot(db), targets["dashboard"])
 
         overview.write(
-            data.overview_snapshot(db, run_id, run=snapshot),
+            data.overview_snapshot(db, run_id, run=snapshot, records=records),
             targets["run_overview"], stamp,
         )
         # The lifetime page rides its own, slower throttle — but never skips the

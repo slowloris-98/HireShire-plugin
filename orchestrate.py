@@ -23,6 +23,7 @@ import threading
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from dotenv import load_dotenv
 from rich.console import Console
@@ -413,6 +414,63 @@ def _log_scrape_milestone(done: int, total: int, seen: set[int]) -> None:
             )
 
 
+# How often the reports are *offered* a rebuild while a sweep is in flight.
+#
+# Deliberately half the throttle floor, and derived from it rather than written out:
+# `reporting.refresh` stays the single authority on cadence and this only guarantees
+# the floor is actually exercised. Two numbers maintained independently would drift,
+# and the failure would be silent — the same argument that keeps interpreter and
+# directory discovery in one place each.
+_REPORT_TICK_S = reporting.MIN_INTERVAL_S / 2
+
+
+async def _tick_reports(schedule: Callable[[], None]) -> None:
+    """Offer the reports a rebuild on a clock, for as long as this task lives.
+
+    This exists because refreshing on pipeline *events* does not survive contact with
+    the funnel. The two callbacks that used to drive it both stop: `on_company_start`
+    ends with the scrape, and `on_job_score` fires only on an LLM score, which
+    `top_k` caps. On the sweep that prompted this, ten scores landed in the first four
+    minutes and the reports then sat frozen for the next forty-seven while the matcher
+    recorded ~1,470 further rows — the user was reading a page that could not move.
+
+    A clock cannot run out. It also makes a missed row self-correcting: the refresh a
+    callback schedules can read SQLite before the row it was fired for has committed,
+    and under the old wiring the last such miss was permanent (nothing fired again).
+    Now the next tick simply picks it up.
+
+    Never raises: `schedule` hands work to an executor and `reporting.refresh`
+    swallows everything, but a stray exception here would cancel the sweep it is
+    supposed to be reporting on.
+    """
+    while True:
+        await asyncio.sleep(_REPORT_TICK_S)
+        try:
+            schedule()
+        except Exception:  # noqa: BLE001 - a report is never worth a run
+            logger.exception("Scheduling a report refresh failed")
+
+
+async def _stop_report_ticker(ticker: asyncio.Task, busy: threading.Lock) -> None:
+    """End the ticker and wait for any rebuild it already started.
+
+    Both halves are required, and the ordering they protect is documented in
+    CLAUDE.md: the dashboard's meta refresh is armed only while the pipeline's `runs`
+    row is absent, so the `final=True` write must be the last one. Cancelling the task
+    alone is not enough — `schedule` dispatches to an executor thread, so a rebuild
+    fired a moment earlier can still be mid-write and would land *after* the final
+    one, re-arming the refresh and leaving a finished run reloading itself forever.
+
+    Draining goes through `asyncio.to_thread` because the lock is held by an executor
+    thread doing blocking SQLite work; acquiring it on the event loop would stall the
+    loop that thread is racing against.
+    """
+    ticker.cancel()
+    await asyncio.gather(ticker, return_exceptions=True)
+    await asyncio.to_thread(busy.acquire)
+    busy.release()
+
+
 def _make_progress() -> Progress:
     """One Progress shared by every phase, rendered inside the single Live.
 
@@ -511,20 +569,28 @@ async def run_pipeline(
     )
     try:
         with live:
-            if skip_matcher:
-                await scraper.main(quiet=True, run_id=run_id, on_company_start=on_company_start)
-                await q3.put(None)
-                await _track_results(q3, results_dir, run_id, stamp, quiet)
-            else:
-                tasks["match"] = progress.add_task("[bold]Matching[/bold]", total=None, count_str="0 scored")
-                q1: asyncio.Queue = asyncio.Queue()
-                q2: asyncio.Queue = asyncio.Queue()
-                await asyncio.gather(
-                    scraper.main(out_queue=q1, quiet=True, run_id=run_id, on_company_start=on_company_start),
-                    matcher.main(in_queue=q1, out_queue=q2, quiet=True, run_id=run_id, skip_llm=skip_llm, on_job_score=on_job_score),
-                    _collect_results(q2, q3),
-                    _track_results(q3, results_dir, run_id, stamp, quiet),
-                )
+            # Covers both branches below, and is stopped before `_finalise_pipeline`
+            # rather than at the end of the run — see `_stop_report_ticker`.
+            ticker = asyncio.create_task(_tick_reports(schedule_report_refresh))
+            try:
+                if skip_matcher:
+                    await scraper.main(quiet=True, run_id=run_id, on_company_start=on_company_start)
+                    await q3.put(None)
+                    await _track_results(q3, results_dir, run_id, stamp, quiet)
+                else:
+                    tasks["match"] = progress.add_task("[bold]Matching[/bold]", total=None, count_str="0 scored")
+                    q1: asyncio.Queue = asyncio.Queue()
+                    q2: asyncio.Queue = asyncio.Queue()
+                    await asyncio.gather(
+                        scraper.main(out_queue=q1, quiet=True, run_id=run_id, on_company_start=on_company_start),
+                        matcher.main(in_queue=q1, out_queue=q2, quiet=True, run_id=run_id, skip_llm=skip_llm, on_job_score=on_job_score),
+                        _collect_results(q2, q3),
+                        _track_results(q3, results_dir, run_id, stamp, quiet),
+                    )
+            finally:
+                # In a `finally` so a failed sweep still leaves the reports settled
+                # and no rebuild running against a database nobody is writing.
+                await _stop_report_ticker(ticker, report_busy)
 
             await _finalise_pipeline(run_id, results_dir, started_at, stamp)
 
@@ -534,6 +600,14 @@ async def run_pipeline(
             if apply and not skip_matcher:
                 apply_task = progress.add_task("[bold]Applying[/bold]", total=None, count_str="running")
                 await _launch_apply()
+                # The `applied` table is only written during the phase above, and
+                # `_finalise_pipeline`'s refresh ran before it — so without this the
+                # Applied section reads empty on a run that did apply. Safe after
+                # `finalise_run`: the `runs` row now exists, so this renders the run
+                # as complete instead of re-arming the dashboard's meta refresh.
+                await asyncio.to_thread(
+                    reporting.refresh, run_id, results_dir, stamp, True
+                )
                 progress.update(apply_task, count_str="done")
 
         logger.info("Pipeline complete — run %s", run_id)

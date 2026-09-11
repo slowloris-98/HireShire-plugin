@@ -9,12 +9,16 @@ the difference between a report and a misleading report.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+import time
 
 import pytest
 
+import orchestrate
 from hireshire import reporting
-from hireshire.reporting import dashboard, data, matching
+from hireshire.reporting import dashboard, data, matching, overview
 
 
 def snapshot(**over) -> dict:
@@ -455,6 +459,29 @@ class _ReportDB:
     def load_applied(self):
         return []
 
+    # --- the overview page's reads --------------------------------------------
+    # These were missing, and their absence was invisible: `overview_snapshot` raised
+    # `AttributeError`, `refresh` swallowed it by design, and the overview was simply
+    # never written while the assertions below said "both reports" and checked the
+    # other two. A fake that is missing a method the real path calls is a hole in the
+    # test, not a simplification.
+
+    def overview_counts(self, run_id=None):
+        return {"seen": 8504, "relevant": 2, "shortlisted": 0, "applied": 0}
+
+    def load_applied_matches(self, run_id=None):
+        return []
+
+    def load_lifetime_matches(self, judged, limit):
+        return [r for r in self._all_rows
+                if bool(r.get("relevance_score") is not None
+                        and not r.get("skipped")) is judged]
+
+    def load_unmatched_jobs(self, run_id, limit):
+        return [{"job_id": "direct:google:99", "board_token": "google",
+                 "title": "Barista", "location": "Mountain View, CA",
+                 "absolute_url": "https://example.com/j99"}]
+
 
 def _finalise_with_reports(tmp_path, monkeypatch, stamp="2026-08-25_153432"):
     import asyncio
@@ -476,12 +503,31 @@ def _finalise_with_reports(tmp_path, monkeypatch, stamp="2026-08-25_153432"):
     return db, results_dir
 
 
-def test_finalising_a_run_writes_both_reports(tmp_path, monkeypatch):
+def test_finalising_a_run_writes_every_report(tmp_path, monkeypatch):
     db, results_dir = _finalise_with_reports(tmp_path, monkeypatch)
 
     assert (results_dir / matching.matching_name("2026-08-25_153432")).exists()
     assert (tmp_path / matching.LATEST_NAME).exists()
     assert (tmp_path / dashboard.DASHBOARD_NAME).exists()
+    # Both overview scopes. `refresh` swallows every exception, so a page that stops
+    # being written fails nothing unless something asserts it exists.
+    assert (results_dir / overview.run_overview_name("2026-08-25_153432")).exists()
+    assert (tmp_path / overview.OVERVIEW_NAME).exists()
+
+
+def test_the_overview_survives_the_finalise_path(tmp_path, monkeypatch):
+    """Not just written — written with its sections populated. `refresh` catching
+    everything means a broken snapshot is indistinguishable from a quiet one, so this
+    reads the page back."""
+    _, results_dir = _finalise_with_reports(tmp_path, monkeypatch)
+    html = (results_dir / overview.run_overview_name("2026-08-25_153432")).read_text(
+        encoding="utf-8"
+    )
+
+    assert "Total Jobs Seen" in html
+    assert "Jobs Filtered (yet to be scored or not picked)" in html
+    # The title-gate job reached the page, which it can only do via the jobs table.
+    assert "Barista" in html
 
 
 def test_the_pointer_file_names_the_reports_for_the_skills(tmp_path, monkeypatch):
@@ -518,3 +564,151 @@ def test_known_skip_reasons_get_a_readable_label(reason, expected):
 def test_an_unknown_skip_reason_is_shown_verbatim_not_bucketed():
     """A reason nobody has labelled yet is exactly the one worth reading."""
     assert data.reason_label("some_new_failure") == "Some new failure"
+
+
+# --- staying fresh while a sweep runs -----------------------------------------
+
+
+def test_the_ticker_refreshes_with_no_scoring_events_at_all(monkeypatch):
+    """The condition that froze a live run for forty-seven minutes.
+
+    Report refreshes used to come off two pipeline callbacks, and both stop:
+    `on_company_start` ends with the scrape, and `on_job_score` fires only on an LLM
+    score, which `top_k` caps. On the sweep that prompted this the tenth and last
+    score landed four minutes in, and nothing refreshed the reports again while the
+    matcher recorded ~1,470 further rows. So the guarantee under test is precisely
+    "fires when nothing is being scored".
+    """
+    monkeypatch.setattr(orchestrate, "_REPORT_TICK_S", 0.01)
+    calls = []
+
+    async def drive():
+        ticker = asyncio.create_task(orchestrate._tick_reports(lambda: calls.append(1)))
+        await asyncio.sleep(0.08)
+        ticker.cancel()
+        await asyncio.gather(ticker, return_exceptions=True)
+
+    asyncio.run(drive())
+    assert len(calls) >= 2, "a clock-driven refresh must not depend on funnel events"
+
+
+def test_a_raising_scheduler_never_takes_down_the_sweep(monkeypatch):
+    """Same trade `reporting.refresh` and `write_all_jobs_csv` document: a report is
+    a diagnostic, and losing one must not cancel the run it describes."""
+    monkeypatch.setattr(orchestrate, "_REPORT_TICK_S", 0.01)
+    calls = []
+
+    def explode():
+        calls.append(1)
+        raise RuntimeError("boom")
+
+    async def drive():
+        ticker = asyncio.create_task(orchestrate._tick_reports(explode))
+        await asyncio.sleep(0.05)
+        alive = not ticker.done()
+        ticker.cancel()
+        await asyncio.gather(ticker, return_exceptions=True)
+        return alive
+
+    assert asyncio.run(drive()) is True
+    assert len(calls) >= 2, "it should keep ticking after a failure, not stop at one"
+
+
+def test_stopping_the_ticker_waits_for_a_rebuild_already_running(monkeypatch):
+    """Why cancelling the task is not enough on its own.
+
+    The ticker dispatches to an executor thread, so a rebuild fired a moment before
+    the stop can still be mid-write. If it landed after `_finalise_pipeline`'s
+    `final=True` write it would re-arm the dashboard's meta refresh and leave a
+    finished run reloading itself forever — the failure
+    `test_a_finished_run_leaves_a_dashboard_that_stops_reloading` pins from the
+    other side.
+    """
+    monkeypatch.setattr(orchestrate, "_REPORT_TICK_S", 0.01)
+    busy = threading.Lock()
+    released = []
+
+    async def drive():
+        ticker = asyncio.create_task(orchestrate._tick_reports(lambda: None))
+        await asyncio.sleep(0.03)
+        busy.acquire()                      # stand in for a rebuild in flight
+
+        def finish_rebuild():
+            time.sleep(0.05)
+            released.append(True)
+            busy.release()
+
+        threading.Thread(target=finish_rebuild, daemon=True).start()
+        await orchestrate._stop_report_ticker(ticker, busy)
+        return ticker.done()
+
+    assert asyncio.run(drive()) is True, "the ticker must be stopped, not just asked"
+    assert released == [True], "stop returned while a rebuild was still writing"
+    assert not busy.locked(), "the drain must leave the lock free"
+
+
+def test_run_pipeline_keeps_refreshing_through_a_phase_that_scores_nothing(
+    tmp_path, monkeypatch
+):
+    """The wiring, not the helper — the two are separately breakable.
+
+    `_tick_reports` can be perfect and the sweep still freeze if nothing starts it,
+    which is exactly the shape of the original bug: the machinery to refresh existed
+    and was simply never driven once the funnel stopped producing scores. So this
+    drives the real `run_pipeline` with a scraper and matcher that emit no events at
+    all, and asserts the reports moved anyway.
+
+    It also pins the ordering `_stop_report_ticker` exists for: nothing may reach
+    `reporting.refresh` after `_finalise_pipeline` has begun, because that call is
+    the one that renders the run as finished.
+    """
+    monkeypatch.setattr(orchestrate, "_REPORT_TICK_S", 0.01)
+    monkeypatch.setattr(orchestrate.paths, "make_run_dir", lambda stamp: tmp_path)
+
+    calls = []
+    monkeypatch.setattr(
+        reporting, "refresh",
+        lambda run_id, results_dir, stamp, final=False: calls.append(final),
+    )
+
+    async def silent_scraper(*a, out_queue=None, **k):
+        await asyncio.sleep(0.06)          # a phase long enough to need refreshing
+        if out_queue is not None:
+            await out_queue.put(None)
+
+    async def silent_matcher(*a, in_queue=None, out_queue=None, **k):
+        while in_queue is not None and await in_queue.get() is not None:
+            pass
+        await asyncio.sleep(0.06)          # ...and one that never scores a job
+        if out_queue is not None:
+            await out_queue.put(None)
+
+    async def drain(in_q, out_q):
+        while await in_q.get() is not None:
+            pass
+        await out_q.put(None)
+
+    async def sink(q, *a, **k):
+        while await q.get() is not None:
+            pass
+
+    finalised = {}
+
+    async def fake_finalise(run_id, results_dir, started_at, stamp):
+        finalised["refreshes_before"] = len(calls)
+
+    monkeypatch.setattr(orchestrate.scraper, "main", silent_scraper)
+    monkeypatch.setattr(orchestrate.matcher, "main", silent_matcher)
+    monkeypatch.setattr(orchestrate, "_collect_results", drain)
+    monkeypatch.setattr(orchestrate, "_track_results", sink)
+    monkeypatch.setattr(orchestrate, "_finalise_pipeline", fake_finalise)
+
+    assert asyncio.run(orchestrate.run_pipeline(quiet=True)) is not None
+
+    assert finalised["refreshes_before"] >= 2, (
+        "the reports must keep rebuilding through a phase that emits no scores"
+    )
+    assert len(calls) == finalised["refreshes_before"], (
+        "a rebuild landed after _finalise_pipeline began; it would re-arm the "
+        "dashboard's meta refresh on a finished run"
+    )

@@ -5,10 +5,13 @@ it cost to refresh this page?" — has a single answer. Both reports are rebuilt
 repeatedly *during* a sweep, so the shape here matters:
 
 * `run_snapshot` is all counts. It stays cheap for the whole run.
-* `scored_jobs` / `unscored_jobs` load rows, and only ever return anything after
-  the matcher's sentinel has fired — `matches` is empty until then, because top-K
-  is a global decision and the budget is spent at the end. So the expensive path
-  costs nothing for the ~18 minutes where it would be called most often.
+* `overview_snapshot` loads rows, and the rows are real work for most of a sweep —
+  `matches` fills from the first employer on, because selection is a streaming
+  per-job cutoff rather than a global top-K resolved at the sentinel. It therefore
+  takes the caller's already-loaded `run` and `records` rather than re-deriving
+  them, and `reporting.refresh` passes both. Do not assume an early call is free:
+  that was true only under top-K, and `reporting/__init__.py` documents the same
+  correction for the same reason.
 
 Nothing here imports the matcher or funnel config modules. Those pull in pydantic
 and the phase loaders, and this runs on the pipeline's progress callbacks; the two
@@ -158,10 +161,64 @@ def split_matches(records: list[dict]) -> tuple[list[dict], list[dict]]:
     by LLM score, then the cross-encoder logit, then the old wide-pass column —
     three keys applied in sequence rather than merged, because on rows old enough
     to carry both rerank columns they came from different models.
+
+    This is the *matching report's* split and stays two-way. The overview page needs
+    four buckets and uses `partition_jobs` below; both are built on `_never_scored`
+    so there is still only one definition of "judged".
     """
     scored = [r for r in records if not _never_scored(r)]
     unscored = [r for r in records if _never_scored(r)]
     return scored, unscored
+
+
+# The two LLM-free verdicts. A row carrying either was killed by a gate that costs
+# nothing to run, which is what separates the overview page's last section from the
+# one above it. Cluster siblings inherit their representative's reason, so this
+# catches them too — and that is right: nothing judged that cluster.
+_FREE_GATE_VERDICTS = ("rerank_below_cutoff", "yoe_below_requirement")
+
+
+def partition_jobs(
+    records: list[dict], applied_ids: set[str]
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split match rows into the overview page's last three sections, in page order.
+
+    Returns `(shortlisted, filtered, seen)`; the applied section is built from the
+    `applied` table instead, because it carries the timestamp and status that no
+    `matches` row has.
+
+    The sections are **disjoint** — every job renders exactly once. That is the whole
+    point of the page: it is the only list the user has of what is left to do, and a
+    job appearing in two of them would double it. Note the counts therefore do *not*
+    match the tiles above, which are a cumulative funnel.
+
+    Ordering comes free from the caller. `load_all_matches` already returns rows by
+    LLM score, then cross-encoder logit, then the old wide-pass column, and a stable
+    partition preserves that within each bucket.
+
+    One asymmetry with the `relevant` tile, deliberately: the tile excludes cluster
+    siblings, because they were grouped after the rerank and never competed for a
+    slot. Here a sibling follows its verdict — it carries a real score copied from its
+    representative and belongs beside it.
+    """
+    shortlisted: list[dict] = []
+    filtered: list[dict] = []
+    seen: list[dict] = []
+
+    for record in records:
+        if record.get("job_id") in applied_ids:
+            continue
+        if (record.get("skip_reason") or "") in _FREE_GATE_VERDICTS:
+            seen.append(record)
+        elif record.get("shortlisted"):
+            shortlisted.append(record)
+        else:
+            # Everything else cleared both free gates: either the LLM judged it and
+            # it missed the threshold, or it never got a call for a reason that says
+            # nothing about relevance — the run's cap, an API error, no description.
+            filtered.append(record)
+
+    return shortlisted, filtered, seen
 
 
 def reason_label(reason: str | None) -> str:
@@ -187,6 +244,7 @@ def overview_snapshot(
     run_id: str | None = None,
     live: bool | None = None,
     run: dict[str, Any] | None = None,
+    records: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Everything the overview page renders, at one scope or the other.
 
@@ -200,36 +258,46 @@ def overview_snapshot(
     `run_id`. At run scope it means "applications to jobs this sweep saw", which is
     the closest honest reading and is the same rule `overview_counts` applies.
 
-    `run` lets a caller hand in a `run_snapshot` it already has. `reporting.refresh`
-    always does: it builds one for the matching report a few lines earlier, and
-    re-deriving it here would double that query on a callback that fires every ten
-    seconds for the length of a sweep.
+    `run` lets a caller hand in a `run_snapshot` it already has, and `records` the
+    rows from `load_all_matches`. `reporting.refresh` has both a few lines earlier and
+    always passes them: the reports rebuild on a clock for the whole length of a
+    sweep, so re-deriving either here would double that work ~300 times a run.
     """
     counts = db.overview_counts(run_id)
     applied = db.load_applied_matches(run_id)
     applied_ids = {r.get("job_id") for r in applied}
 
     if run_id:
-        scored, tail = split_matches(db.load_all_matches(run_id))
+        rows = db.load_all_matches(run_id) if records is None else records
     else:
-        scored = db.load_lifetime_matches(judged=True, limit=MAX_JOB_ROWS + len(applied))
-        tail = db.load_lifetime_matches(judged=False, limit=MAX_TAIL_ROWS)
+        # Two calls because the lifetime loader ranks each half by the score that
+        # half actually has. Concatenated in that order, the partition below inherits
+        # "LLM score first, then the cross-encoder logit" for free.
+        rows = db.load_lifetime_matches(
+            judged=True, limit=MAX_JOB_ROWS * 2 + len(applied)
+        ) + db.load_lifetime_matches(judged=False, limit=MAX_TAIL_ROWS)
 
-    # "Scored but not applied" — the second accordion. Applied jobs are already in
-    # the first one, and showing a job in both would double the page's only real
-    # list of things left to do.
-    scored = [r for r in scored if r.get("job_id") not in applied_ids]
-    tail = [r for r in tail if r.get("job_id") not in applied_ids]
+    shortlisted, filtered, seen = partition_jobs(rows, applied_ids)
+
+    # The title-gate rejections, which live only in `jobs` — nothing wrote them a
+    # `matches` row. They carry no score, so appending them after the rows that do
+    # keeps the blanks at the bottom of the last section.
+    seen += [
+        r for r in db.load_unmatched_jobs(run_id, MAX_TAIL_ROWS)
+        if r.get("job_id") not in applied_ids
+    ]
 
     snapshot: dict[str, Any] = {
         "run_id": run_id,
         "counts": counts,
         "applied": applied[:MAX_JOB_ROWS],
         "applied_total": len(applied),
-        "scored": scored[:MAX_JOB_ROWS],
-        "scored_total": len(scored),
-        "tail": tail[:MAX_TAIL_ROWS],
-        "tail_total": len(tail),
+        "shortlisted": shortlisted[:MAX_JOB_ROWS],
+        "shortlisted_total": len(shortlisted),
+        "filtered": filtered[:MAX_JOB_ROWS],
+        "filtered_total": len(filtered),
+        "seen": seen[:MAX_TAIL_ROWS],
+        "seen_total": len(seen),
         "started_at": None,
         "finished_at": None,
         "usage": None,
