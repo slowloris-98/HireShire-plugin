@@ -393,7 +393,24 @@ appear on unattended monitor sweeps where no agent turn exists, costs no tokens,
 and keeps the skills reporting numbers they were handed — the same rule as
 `--status` and `--paths`.
 
-Four consequences that should not be re-derived:
+Five consequences that should not be re-derived:
+
+- **Refreshes run on a clock, never on funnel events.** `orchestrate._tick_reports`
+  offers a rebuild every `_REPORT_TICK_S` (half `reporting.MIN_INTERVAL_S`, derived
+  from it so the two cannot drift); the throttle inside `refresh` still decides. This
+  reverses the original event-driven wiring, and the reversal was forced by a live
+  run: refreshes came off `on_company_start` and `on_job_score`, and **both stop**.
+  The first ends with the scrape; the second fires only on an LLM score, which `top_k`
+  caps. On sweep `2026-09-10T21-49-17Z` the tenth and last score landed four minutes
+  in, and the reports then sat frozen for **47 minutes** while the matcher recorded
+  ~1,470 further rows — the user was reading a page that could not move. It also made
+  a missed row permanent: the refresh a callback schedules can read SQLite before that
+  row commits, and with no later callback the page showed 9 of 10 scored jobs forever.
+  A clock cannot run out, and the next tick self-corrects. Note this was invisible
+  under global top-K, where `matches` genuinely stayed empty until the sentinel.
+  `_stop_report_ticker` must run **before** `_finalise_pipeline` and must drain the
+  executor as well as cancel the task, or a late rebuild lands after the `final=True`
+  write and re-arms the meta refresh — the bug the last bullet below describes.
 
 - **Two envelopes, and mixing them breaks the page.** The Artifact tool wraps what
   it publishes in its own `<!doctype html>…<head></head><body>`, so `matching.py`

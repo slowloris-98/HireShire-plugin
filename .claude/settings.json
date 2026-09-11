@@ -24,10 +24,17 @@
       "Bash(sed -n '/--session-end is what makes/,/Neither half is sufficient alone/p' scripts/hireshire.sh)",
       "Bash(python -m compileall -q scripts/run_orchestration.py hireshire/process_liveness.py)",
       "Bash(python -m pytest tests/test_process_liveness.py -q -v)",
-      "Bash(python -m pytest \"tests/test_process_liveness.py::test_the_real_claude_pid_is_an_os_pid\" -v)"
+      "Bash(python -m pytest \"tests/test_process_liveness.py::test_the_real_claude_pid_is_an_os_pid\" -v)",
+      "PowerShell(Get-Date -Format \"yyyy-MM-dd HH:mm:ss\"; \"--- python processes ---\"; Get-CimInstance Win32_Process -Filter \"Name LIKE '%python%'\" | Select-Object ProcessId, ParentProcessId, CreationDate, @{n='cmd';e={$_.CommandLine.Substring\\(0,[Math]::Min\\(110,$_.CommandLine.Length\\)\\)}} | Format-List; \"--- claude -p children \\(scorer\\) ---\"; \\(Get-CimInstance Win32_Process -Filter \"Name = 'claude.exe'\" | Measure-Object\\).Count)",
+      "Bash(echo \"=== status ===\")",
+      "Bash(echo \"=== log mtimes ===\")",
+      "Bash(ls -la __TRACKED_VAR__/logs/)",
+      "Bash(grep -vE '^\\\\s*#|^\\\\s*$' C:/Users/atrey/.claude/plugins/data/hireshire-hireshire/config/matcher.yaml)",
+      "Bash(D=\"C:/Users/atrey/.claude/plugins/data/hireshire-hireshire\"; echo \"=== rerank / top_k / dedupe block ===\"; sed -n '/rerank:/,/^[a-z]/p' \"$D/config/matcher.yaml\" | grep -vE \"^\\\\s*#\" | head -n 25; echo; echo \"=== any top_k anywhere ===\"; grep -n \"top_k\\\\|min_score\\\\|max_age_hours\" \"$D/config/matcher.yaml\" \"$D/config/scraper.yaml\" 2>/dev/null)"
     ],
     "additionalDirectories": [
-      "\\tmp"
+      "\\tmp",
+      "C:\\Users\\atrey\\.claude\\plugins\\data\\hireshire-hireshire\\config"
     ]
   }
 }
