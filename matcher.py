@@ -357,7 +357,7 @@ async def _process_batch(
 
     **The experience gate runs after the cutoff, not before it.** Both are free of
     LLM cost, so the ordering is chosen for two other reasons. It keeps
-    `stages["above_cutoff"]` meaning what the matching report says it means — a large
+    `stages["above_cutoff"]` meaning what the overview page says it means — a large
     "reached the reranker" with nothing above the cutoff is the tell for a mis-set
     `min_score`, and a second killer running ahead of it would deflate that signal
     silently. And it holds the blast radius of a wrong `candidate_years` down to jobs
@@ -427,7 +427,7 @@ async def _process_batch(
             continue
 
         # A whole cluster shares its representative's fate. Every member gets its own
-        # row so the all-jobs export can still show its location and link.
+        # row so the results CSV can still show its location and link.
         for job in (rep, *others):
             dropped.append(
                 _apply_rerank_scores(
@@ -470,7 +470,7 @@ def _sibling_result(job: Job, rep: MatchResult, run_id: str, score, cluster_size
             # Marked skipped so `is_shortlisted` leaves it out of the apply queue:
             # 31 copies of one requisition must not become 31 applications. The
             # inherited relevance_score and rationales are kept regardless, so the
-            # row still explains itself in the all-jobs export, and the user can
+            # row still explains itself in the results CSV, and the user can
             # apply to a specific location by hand from the link it carries.
             "skipped": True,
             "skip_reason": inherited_reason,
@@ -635,7 +635,7 @@ async def main(
         """Score a cluster representative, then copy its verdict to the rest.
 
         One LLM call covers every repeat of the requisition. Siblings are persisted
-        so they appear in the all-jobs export with their own location and link, but
+        so they appear in the results CSV with their own location and link, but
         are not forwarded to the apply queue — see `_sibling_result`."""
         others = siblings.get(job.job_id, [])
         size = len(others) + 1
@@ -646,7 +646,7 @@ async def main(
         """Persist the copies that inherit `rep`'s verdict.
 
         Every winning cluster's siblings must come through here. A sibling that is
-        never emitted has no database row, never reaches the all-jobs export and is
+        never emitted has no database row, never reaches the results CSV and is
         never marked seen — it simply disappears from the run, which is the one
         outcome clustering is supposed to make impossible."""
         out = []

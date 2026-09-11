@@ -110,6 +110,19 @@ def _populated(tmp_path) -> Database:
     return db
 
 
+def _job_block(html: str, job_id: str) -> str:
+    """The markup of one job entry, anchored on its id.
+
+    Closed at the first `</details>` because nothing inside a `.job-body` is a
+    `<details>`. This exists because the obvious version did not work: splitting on
+    a bare `<details class="job">` never matches, since the real tag carries an id,
+    so the "block" came back as the whole document and every assertion against it
+    passed whatever the entry itself actually said.
+    """
+    at = html.index(f'id="j:{job_id}"')
+    return html[at:html.index("</details>", at)]
+
+
 def _snapshot(db: Database, run_id: str | None = RUN, **over) -> dict:
     snap = data.overview_snapshot(db, run_id, run={
         "started_at": "2026-09-09T06:51:12+00:00",
@@ -267,7 +280,8 @@ def test_a_call_cap_drop_is_still_a_relevant_job(tmp_path):
 
 
 def test_lifetime_counts_a_resurfaced_job_once(tmp_path):
-    """Unlike the old dashboard's totals, which sum per-run counts and say so."""
+    """`COUNT(DISTINCT job_id)`, so a job that came back in a later sweep is one
+    job — not one per sweep that saw it."""
     db = _populated(tmp_path)
     db.record_company(OLDER, "acme", "greenhouse", "ok", 1, 0.2, None)
     db.insert_jobs(OLDER, [_job("j1")])
@@ -332,7 +346,9 @@ def test_both_scopes_carry_the_same_header(tmp_path):
     for html in (per_run, lifetime):
         assert "<span>HireShire</span>" in html
         assert "<h1>Control room</h1>" in html
-        # One line of instruction, and it sits between the tiles and the first section.
+        # One line of instruction, and it sits between the tiles and the first
+        # section. This ordering is also why no filter chrome may be hoisted out of
+        # `.acc-body`: the first `class="acc"` has to stay the first section's tag.
         assert html.count('<p class="hint">') == 1
         assert html.index('class="stats"') < html.index('class="hint"') < html.index('class="acc"')
 
@@ -346,7 +362,11 @@ def test_both_scopes_carry_the_same_header(tmp_path):
 
 def test_all_four_accordions_render_with_their_counts(tmp_path):
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    # `class` stays the first attribute of every `.acc` — this count is why. The
+    # ids below are the assertion that actually means "four sections".
     assert html.count('<details class="acc"') == 4
+    for key in ("applied", "shortlisted", "filtered", "seen"):
+        assert f'id="acc:{key}"' in html
     for label in ("Jobs Applied", "Jobs Shortlisted (to be applied)",
                   "Jobs Filtered (yet to be scored or not picked)",
                   "Total Jobs Seen"):
@@ -370,6 +390,9 @@ def test_the_tiles_say_what_they_count(tmp_path):
 
 
 def test_the_only_prose_is_the_judges_own_reasoning(tmp_path):
+    """Also the assertion that fails the moment anyone moves the three rendered
+    lists to a JSON payload: prose reachable only from inside a script block is not
+    on the page in any sense a reader would recognise."""
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
     assert "Strong Python and service work." in html
     assert "Owned a payments service" in html
@@ -386,6 +409,11 @@ def test_a_never_scored_job_carries_no_score_key_at_all(tmp_path):
     )
     assert payload and "relevance_score" not in payload[0]
     assert set(payload[0]) == {"t", "c", "l", "x", "u"}
+    # The column still exists, so all four sections carry the same six — rendered
+    # as a literal dash by a script that has no number to print. An absent key and
+    # a printed dash are not the same thing; only the key would invite a verdict.
+    assert "<th>LLM</th>" in html
+    assert "class='numeric blank'>—<" in html
 
 
 def test_a_failed_representatives_sibling_shows_no_score(tmp_path):
@@ -394,12 +422,9 @@ def test_a_failed_representatives_sibling_shows_no_score(tmp_path):
     0 beside a real job claims a verdict nothing produced. Six of these rendered a
     bold "0" on the first run against live data."""
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
-    entry = [
-        block for block in html.split('<details class="job">')
-        if "Backend unavailable" in block
-    ]
-    assert len(entry) == 1
-    assert '<span class="job-s">—</span>' in entry[0]
+    block = _job_block(html, "j5")          # raises outright if j5 never rendered
+    assert "Backend unavailable" in block   # the inherited reason, on its sub-line
+    assert '<span class="job-s">—</span>' in block
     assert '<span class="job-s">0</span>' not in html
 
 
@@ -409,8 +434,8 @@ def test_a_duplicate_sibling_keeps_the_score_it_inherited(tmp_path):
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
     # j4 in the scored list, carrying j1's 82 without j1's shortlist flag; j1 itself
     # is over in the applied list, flagged.
-    assert '<span class="job-s">82</span>' in html
-    assert '<span class="job-s hit">82</span>' in html
+    assert '<span class="job-s">82</span>' in _job_block(html, "j4")
+    assert '<span class="job-s hit">82</span>' in _job_block(html, "j1")
 
 
 def test_open_accordions_survive_the_meta_refresh(tmp_path):
@@ -434,8 +459,8 @@ def test_the_state_script_survives_storage_being_unavailable(tmp_path):
 
 
 def test_the_page_is_a_complete_local_document(tmp_path):
-    """Both overviews are opened over `file://` and never published, so unlike the
-    matching report they bring their own skeleton."""
+    """Both overviews are opened over `file://` and never published, which is what
+    licenses the meta refresh — so they bring their own skeleton."""
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
     assert html.startswith("<!doctype html>")
     assert "<body>" in html
@@ -449,10 +474,14 @@ def test_it_reloads_only_while_a_sweep_is_running(tmp_path):
 
 def test_the_accordion_css_actually_reaches_the_page(tmp_path):
     """`document()` grew an `extra_css` parameter for this; without it the rules are
-    written and never delivered, which is what happened to the dashboard's pills."""
+    written and never delivered, which is what happened to another page's CSS."""
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
     assert '.acc[open] > summary::after { content: "\\00d7"; }' in html
     assert "summary::-webkit-details-marker" in html
+    # The column header is a sticky grid row, not a `<thead>`, so BASE_CSS's
+    # `.scroll-y thead th` never reaches it and it needs a rule of its own.
+    assert ".job-head, .job > summary {" in html
+    assert "sticky" in html.split(".job-head {")[1].split("}")[0]
 
 
 def test_html_in_a_job_title_is_escaped(tmp_path):
@@ -471,6 +500,127 @@ def test_a_title_cannot_close_the_json_block(tmp_path):
     html = overview.build(_snapshot(db), RUN)
     body = html.split('id="ov-tail-data">')[1].split("</script>")[0]
     assert "and then some" in body
+
+
+# --- every section reads the same way ------------------------------------------
+
+
+def _all_four(tmp_path) -> dict:
+    """A snapshot with all four sections holding something.
+
+    `_populated` leaves Jobs Shortlisted empty on purpose — its one shortlisted job
+    is also the applied one, which is what the partition tests need — so a test
+    about the *layout* of four sections has to add the missing row itself.
+    """
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=79, shortlisted=True, rerank=7.80)
+    db.insert_jobs(RUN, [_job("j6")])
+    return _snapshot(db)
+
+
+def test_each_job_list_is_filterable_and_bounded(tmp_path):
+    """The whole point of the layout. Three of these sections used to be unbounded
+    flat lists beside one that was not, which made a sweep with 300 filtered jobs a
+    wall. The last section is not a `.filterable` — it keeps its own script, because
+    it builds its rows from a payload and pages them in on scroll."""
+    html = overview.build(_all_four(tmp_path), RUN)
+    assert html.count('class="filterable"') == 3
+    assert html.count('class="job-head"') == 3
+    for key in ("applied", "shortlisted", "filtered"):
+        assert f'id="rows:{key}"' in html
+    # Every bounded list keeps its scroll position across the refresh; the paginated
+    # one deliberately does not, since only its first page exists on load.
+    assert html.count('data-keep-scroll="1"') == 3
+
+
+def test_an_empty_section_gets_no_filter_chrome(tmp_path):
+    """A filter over no rows and a header over no data are both noise, and an empty
+    section is what a first-time user sees before their first sweep finishes."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert html.count('class="filterable"') == 2      # applied and filtered only
+    assert "Nothing yet." in html
+
+
+def test_all_four_sections_carry_the_same_six_columns(tmp_path):
+    """Three `<span>` headers and one `<thead>`, but the same labels in the same
+    order — a reader scanning down must not have the columns move under them."""
+    html = overview.build(_all_four(tmp_path), RUN)
+    for label in ("#", "Title", "Company", "Location", "LLM", "Cross"):
+        assert html.count(f">{label}<") == 4, label
+
+
+def test_a_row_carries_a_lowercased_filter_haystack(tmp_path):
+    """Lowercased server-side so filtering is one `indexOf` per row per keystroke,
+    and holding every column the filter claims to search."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    hay = _job_block(html, "j2").split('data-hay="')[1].split('"')[0]
+    assert hay == hay.lower()
+    for part in ("backend engineer", "acme", "remote"):
+        assert part in hay
+
+
+def test_the_rank_is_stamped_server_side(tmp_path):
+    """The same rule the paginated section follows: row 214 stays row 214 rather
+    than becoming "the third result for nurse"."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert '<span class="job-i">1</span>' in _job_block(html, "j1")
+
+
+def test_a_drop_reason_survives_as_a_subline_not_a_column(tmp_path):
+    """The labels are whole sentences, so they cannot be a nowrap column — and Jobs
+    Filtered is the one section whose entire question is *why*."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=0, skipped=True, reason="llm_call_cap_reached",
+           rerank=4.40)
+    db.insert_jobs(RUN, [_job("j6")])
+
+    block = _job_block(overview.build(_snapshot(db), RUN), "j6")
+    assert '<span class="job-sub">Reached the run' in block
+
+
+def test_the_applied_stamp_stays_a_subline(tmp_path):
+    """Status plus timestamp, which is two facts and not a column either."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert '<span class="job-sub">submitted ' in _job_block(html, "j1")
+
+
+def test_the_cross_encoder_column_reads_the_same_everywhere(tmp_path):
+    """Two places, one format. The rendered rows and the payload's `x` key both
+    print two decimals, and both print an em dash where no logit was taken."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert '<span class="job-x">8.10</span>' in _job_block(html, "j1")
+    assert overview._cross({"rerank_score": None}) == "—"
+
+
+def test_one_filter_script_serves_every_rendered_list(tmp_path):
+    """Wired by class, so a fourth filterable section is markup and no script. The
+    id-driven copy belongs to the paginated section alone."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert html.count('querySelectorAll(".filterable")') == 1
+    assert html.count('getElementById("ov-filter")') == 1
+
+
+def test_the_open_set_is_pruned_of_ids_that_no_longer_resolve(tmp_path):
+    """A row leaves the page for good when it drops out of `MAX_JOB_ROWS` or a later
+    sweep moves it to another section. Without the prune its id sits in
+    sessionStorage for the rest of the session."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    state = html.split('KEY = "hs-overview-open"')[1]
+    assert "live.push" in state
+    assert "if (live.length !== open.length) write(KEY, live);" in state
+
+
+def test_scroll_position_inside_a_list_survives_the_refresh(tmp_path):
+    """A loss the bounded box introduced and has to pay for: the browser restores
+    the document's scroll across a meta refresh but never an `overflow: auto`
+    div's, so a reader 200 rows down would be snapped to the top every 15
+    seconds."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    state = html.split('KEY = "hs-overview-open"')[1]
+    assert "hs-overview-scroll" in html
+    assert 'querySelectorAll("[data-keep-scroll]")' in state
+    # Debounced: `scroll` fires per frame and `setItem` is a synchronous write.
+    assert "clearTimeout(pending)" in state
 
 
 # --- placement and wiring -----------------------------------------------------
@@ -531,3 +681,5 @@ def test_an_empty_install_still_renders(tmp_path):
     html = overview.build(data.overview_snapshot(_db(tmp_path), None), None)
     assert "Nothing yet." in html
     assert "ov-tail-data" not in html
+    # No filter box over zero rows, and no script shipped to wire one.
+    assert "filterable" not in html

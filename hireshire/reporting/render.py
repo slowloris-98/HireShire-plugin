@@ -1,28 +1,23 @@
-"""The shared look, and the two different HTML envelopes the reports need.
+"""The shared look, and the one HTML envelope the overview page needs.
 
-One design system, two delivery shapes, and the difference is not cosmetic:
+``document()`` emits a complete document — doctype, ``<html>``, ``<head>`` — and
+may carry a meta refresh, because every page written here is a local file opened
+with ``file://`` from the user's own results folder and none of them is ever
+published. There used to be a second envelope, ``artifact_page``, emitting body
+content only for the Artifact tool to wrap; the report that used it is gone.
 
-* **The dashboard is a local file.** It is opened with ``file://`` from the user's
-  own results folder and is never published, so it is a complete document —
-  doctype, ``<html>``, ``<head>`` — and it may carry a meta refresh.
-* **The matching report is artifact-ready.** Claude Code's Artifact tool wraps the
-  file it publishes in its own ``<!doctype html>…<head></head><body>`` skeleton, so
-  a page that supplies those tags itself ends up nested inside a second copy of
-  them. The matching report therefore emits *body content only*.
-
-That second constraint has a consequence which looks like a bug otherwise: opening
-the matching report straight from disk puts the browser in quirks mode. Everything
-here is written to survive that — an explicit ``box-sizing`` on every element,
-flex and grid for layout, no percentage heights — so the local file and the
-published artifact render the same.
+Opening a local file puts some browsers in quirks mode, and everything here is
+written to survive that — an explicit ``box-sizing`` on every element, flex and
+grid for layout, no percentage heights.
 
 Colour lives in tokens defined three times over (bare ``:root``, then
 ``prefers-color-scheme`` guarded against an explicit light choice, then
-``[data-theme="dark"]``) because the Artifact viewer has three theme states, not
-two: an explicit choice stamps the root element, and the default "system" setting
-stamps nothing at all. A colour whose only definition sits inside a media query
-never applies in that un-stamped state, which is how a page ends up rendering one
-theme's text on the other theme's ground.
+``[data-theme="dark"]``). That is more than a local file strictly needs, and it is
+kept deliberately: it costs nothing, and it is what makes the pages correct under a
+viewer that stamps an explicit theme on the root element as well as one that stamps
+nothing at all. A colour whose only definition sits inside a media query never
+applies in that un-stamped state, which is how a page ends up rendering one theme's
+text on the other theme's ground.
 """
 
 from __future__ import annotations
@@ -30,17 +25,17 @@ from __future__ import annotations
 import html
 from datetime import datetime, timezone
 
-# The one switch for every cost figure on both pages. Set it to False and the stat
-# tiles, the dashboard column and the footnote all disappear together, leaving the
-# reports exactly as they were before scoring cost was recorded — the numbers stay
-# in `runs.stats_json` and in the all-jobs CSV either way. It is a constant rather
-# than a setting because turning it off is an edit to this repo, not a decision a
-# user makes; `config_writer.py` deliberately whitelists what users may change.
+# The one switch for every cost figure the reports print. Set it to False and the
+# `Est. cost` tile disappears, leaving the pages exactly as they were before scoring
+# cost was recorded — the number stays in `runs.stats_json` either way. It is a
+# constant rather than a setting because turning it off is an edit to this repo, not
+# a decision a user makes; `config_writer.py` deliberately whitelists what users may
+# change.
 SHOW_COST = True
 
-# Google Fonts is the only external host the Artifact CSP admits. Every face still
-# names a real fallback stack — on a machine with no network, or inside the local
-# file, the page has to stay readable.
+# Every face names a real fallback stack. These pages are opened from disk and are
+# often read on a machine with no network, or with the fonts blocked, so the page has
+# to stay readable with nothing fetched.
 FONTS = (
     '<link rel="preconnect" href="https://fonts.googleapis.com">'
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
@@ -85,15 +80,14 @@ body {
 }
 .wrap { max-width: 64rem; margin: 0 auto; padding: 3.5rem 1.5rem 6rem; }
 a { color: inherit; }
-a:focus-visible, button:focus-visible, input:focus-visible {
+a:focus-visible, summary:focus-visible, input:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 3px;
 }
 h1, h2, h3, h4, p, ul, ol, figure { margin: 0; }
 ul, ol { padding: 0; }
 
-.mono, .eyebrow, .stat-n, .stat-l, .pts, .rank, .total, .funnel-scores,
-.cutoff-note, .verdict, .chip, th, td, input, button, .step-n, .step-l,
-.step-bar-l, .denom, .filter-note {
+.mono, .eyebrow, .stat-n, .stat-l, .pts, .chip,
+th, td, input, .denom, .filter-note {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
 }
@@ -107,16 +101,6 @@ h1 {
   font-size: clamp(2rem, 5vw, 3rem); font-weight: 600; line-height: 1.1;
   letter-spacing: -.02em; text-wrap: balance; margin-bottom: .9rem;
 }
-.standfirst { max-width: 42rem; color: var(--ink-soft); font-size: 1.08rem; }
-.standfirst b { color: var(--ink); font-weight: 600; }
-
-h2.section {
-  font-size: .74rem; letter-spacing: .14em; text-transform: uppercase;
-  font-family: "IBM Plex Mono", monospace; color: var(--ink-faint);
-  padding-bottom: .6rem; border-bottom: 1px solid var(--rule);
-  margin: 3.25rem 0 1.75rem;
-}
-
 .stats {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   gap: 1px; background: var(--rule); border: 1px solid var(--rule);
@@ -125,16 +109,7 @@ h2.section {
 .stat { background: var(--panel); padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .3rem; }
 .stat-n { font-size: 1.6rem; font-weight: 600; line-height: 1; }
 .stat-l { font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
-.stat.flag .stat-n { color: var(--warn); }
 .stat.good .stat-n { color: var(--accent); }
-
-.note {
-  border-left: 3px solid var(--warn); background: var(--warn-soft);
-  padding: .9rem 1.1rem; border-radius: 0 3px 3px 0; color: var(--ink-soft);
-  font-size: .97rem;
-}
-.note b { color: var(--ink); font-weight: 600; }
-.note.calm { border-left-color: var(--accent); background: var(--accent-soft); }
 
 .chip {
   display: inline-flex; align-items: center; gap: .4rem; font-size: .66rem;
@@ -149,26 +124,11 @@ h2.section {
 @keyframes hs-pulse { 0%,100% { opacity: 1 } 50% { opacity: .2 } }
 @media (prefers-reduced-motion: reduce) { .chip.live::before { animation: none; } }
 
-/* The funnel, drawn as stacked proportional bars. Used by both reports. */
-.funnel { display: flex; flex-direction: column; gap: .1rem; margin-top: 1rem; }
-.step {
-  display: grid; grid-template-columns: 1fr auto; align-items: baseline;
-  gap: 1rem; background: var(--panel); border: 1px solid var(--rule);
-  border-radius: 3px; padding: .75rem .95rem;
-}
-.step-bar-l { font-size: .7rem; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-soft); }
-.step-n { font-size: 1.15rem; font-weight: 600; }
-.step-track { grid-column: 1 / -1; height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; }
-.step-fill { height: 100%; background: var(--accent); }
-.step.drop .step-fill { background: var(--warn); }
-.step-note { grid-column: 1 / -1; font-size: .9rem; color: var(--ink-faint); }
-
 .track { height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; margin: .5rem 0 .8rem; }
 .fill { height: 100%; background: var(--accent); }
 
-/* The judge's four rationales: three scored categories and two bullet lists.
-   Shared, because the matching report and the overview page render the same
-   `rubric_rows()` / `listing()` fragments. */
+/* The judge's four rationales: three scored categories and two bullet lists,
+   rendered by `rubric_rows()` / `listing()` inside an opened job. */
 .rubric { margin-top: 1.6rem; }
 .rubric-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
 .rubric h4 {
@@ -193,20 +153,15 @@ h2.section {
 .notes.good li::before { content: "+"; color: var(--accent); }
 .notes.bad li::before { content: "\\2212"; color: var(--warn); }
 
-/* The filter/paginate toolbar and the self-scrolling table it drives. Both pages
-   embed thousands of never-scored rows this way rather than in the document. */
+/* The filter toolbar and the self-scrolling box it drives. Every job list on the
+   overview page is bounded this way, and the longest of them embeds thousands of
+   never-scored rows as data rather than as markup. */
 .toolbar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin-bottom: 1rem; }
 .toolbar input {
   flex: 1 1 16rem; padding: .55rem .7rem; font-size: .85rem;
   background: var(--panel); color: var(--ink);
   border: 1px solid var(--rule); border-radius: 3px;
 }
-.toolbar button {
-  padding: .55rem .9rem; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase;
-  background: var(--panel); color: var(--ink-soft); cursor: pointer;
-  border: 1px solid var(--rule); border-radius: 3px;
-}
-.toolbar button:hover { color: var(--accent); border-color: var(--accent); }
 .filter-note { font-size: .78rem; color: var(--ink-faint); }
 .blank { color: var(--ink-faint); }
 
@@ -224,21 +179,11 @@ h2.section {
 .scroll-y td, .scroll-y th { padding: .45rem .7rem; }
 .rank-cell { color: var(--ink-faint); text-align: right; width: 1%; }
 
-.scroll-x { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: .86rem; }
 th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
 th { font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; }
 td.wide { white-space: normal; min-width: 18rem; }
 td.numeric { text-align: right; }
-
-footer {
-  margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule);
-  color: var(--ink-faint); font-size: .88rem;
-}
-footer code {
-  font-family: "IBM Plex Mono", monospace; font-size: .82rem;
-  color: var(--ink-soft); overflow-wrap: anywhere;
-}
 """
 
 
@@ -250,7 +195,7 @@ def e(value) -> str:
 def num(value) -> str:
     """Thousands-separated, or an em dash when there is genuinely no number.
 
-    An em dash rather than 0, for the same reason the all-jobs CSV leaves
+    An em dash rather than 0, for the same reason the results CSV leaves
     ``llm_score`` blank: a printed zero reads as a measured zero.
     """
     if value is None:
@@ -339,7 +284,7 @@ def duration(start_iso: str | None, end_iso: str | None = None) -> str:
 def rubric_rows(job: dict, rubric) -> str:
     """The scoring rubric as labelled bars, one per category, with its rationale.
 
-    Shared by the matching report and the overview page. `rubric` is
+    Used by the overview page inside an opened job. `rubric` is
     `reporting.data.RUBRIC`, passed in rather than imported so this module stays a
     pure renderer with no dependency on the data layer.
     """
@@ -369,31 +314,17 @@ def listing(job: dict, key: str, title: str, css: str) -> str:
     return f'<section class="notes {css}"><h4>{e(title)}</h4><ul>{lis}</ul></section>'
 
 
-def funnel_step(label: str, value: int | None, whole: int | None,
-                note: str = "", drop: bool = False) -> str:
-    """One proportional bar in the funnel diagram."""
-    cls = "step drop" if drop else "step"
-    note_html = f'<p class="step-note">{e(note)}</p>' if note else ""
-    return (
-        f'<div class="{cls}">'
-        f'<span class="step-bar-l">{e(label)}</span>'
-        f'<span class="step-n">{num(value)}</span>'
-        f'<div class="step-track"><div class="step-fill" style="width:{pct(value, whole):.2f}%"></div></div>'
-        f"{note_html}</div>"
-    )
-
-
 def document(title: str, body: str, refresh_s: int | None = None,
              extra_css: str = "") -> str:
-    """A complete standalone HTML document — for the pages that stay local.
+    """A complete standalone HTML document. The only envelope there is.
 
     ``refresh_s`` arms a meta refresh, and is passed only while a sweep is actually
     running. A page that keeps reloading after the run has finished burns battery
     and, worse, makes a finished run look like it is still going.
 
-    ``extra_css`` mirrors ``artifact_page``'s. It is not optional decoration: a
-    caller that defines its own rules and cannot pass them here has written dead
-    CSS, silently, which is exactly what happened to the dashboard's pills.
+    ``extra_css`` is not optional decoration: a caller that defines its own rules
+    and cannot pass them here has written dead CSS, silently, which is exactly what
+    once happened to a page whose own rules never reached it.
     """
     meta = f'<meta http-equiv="refresh" content="{int(refresh_s)}">\n' if refresh_s else ""
     return (
@@ -402,18 +333,4 @@ def document(title: str, body: str, refresh_s: int | None = None,
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"{meta}<title>{e(title)}</title>\n{FONTS}\n"
         f"<style>{BASE_CSS}{extra_css}</style>\n</head>\n<body>\n{body}\n</body>\n</html>\n"
-    )
-
-
-def artifact_page(title: str, body: str, extra_css: str = "", tail: str = "") -> str:
-    """Body content only — no doctype, no ``<html>``, ``<head>`` or ``<body>``.
-
-    This is what the Artifact tool expects: it supplies that skeleton itself, and a
-    page that brings its own ends up nested inside it. The ``<title>`` tag stays,
-    because the tool scans the first 8 KB of the file for one to name the artifact
-    — and that name is what makes the rolling-URL lookup work across sessions.
-    """
-    return (
-        f"<title>{e(title)}</title>\n{FONTS}\n"
-        f"<style>{BASE_CSS}{extra_css}</style>\n{body}\n{tail}\n"
     )

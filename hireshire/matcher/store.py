@@ -89,7 +89,7 @@ class MatchStore:
         # Absent, not zeroed, when the backend cannot read its own meters (every
         # provider but claude_code) or when nothing was scored. A reader that finds
         # no key knows the run was not measured; one that finds zeros would think it
-        # was free. Same rule the all-jobs CSV applies to an unscored llm_score.
+        # was free. Same rule the results CSV applies to an unscored llm_score.
         if usage:
             stats["usage"] = usage
         self._db.finalise_run(self.run_id, PHASE_MATCH, started_at.isoformat(), None, stats)

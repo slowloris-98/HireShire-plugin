@@ -40,7 +40,8 @@
       "Bash(sed -i '/^import json$/d' scripts/bootstrap.py)",
       "Bash(python -m compileall -q scripts/bootstrap.py)",
       "Bash(grep -vE \"CHANGELOG|^\\\\s*$\")",
-      "PowerShell(Get-Date -Format \"HH:mm:ss\"; \"--- sweep processes ---\"; $p = Get-CimInstance Win32_Process -Filter \"Name LIKE '%python%'\" | Select-Object ProcessId, CreationDate, @{n='cmd';e={$_.CommandLine.Substring\\(0,[Math]::Min\\(80,$_.CommandLine.Length\\)\\)}}; if \\($p\\) { $p | Format-List } else { \"none running\" }; \"--- DATA dir ---\"; Get-ChildItem \"C:\\\\Users\\\\atrey\\\\.claude\\\\plugins\\\\data\\\\hireshire-hireshire\" | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize)"
+      "PowerShell(Get-Date -Format \"HH:mm:ss\"; \"--- sweep processes ---\"; $p = Get-CimInstance Win32_Process -Filter \"Name LIKE '%python%'\" | Select-Object ProcessId, CreationDate, @{n='cmd';e={$_.CommandLine.Substring\\(0,[Math]::Min\\(80,$_.CommandLine.Length\\)\\)}}; if \\($p\\) { $p | Format-List } else { \"none running\" }; \"--- DATA dir ---\"; Get-ChildItem \"C:\\\\Users\\\\atrey\\\\.claude\\\\plugins\\\\data\\\\hireshire-hireshire\" | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize)",
+      "Bash(python -m pytest tests/test_plugin_shell.py tests/test_config_writer.py tests/test_approve.py tests/test_setup_cli.py -q)"
     ],
     "additionalDirectories": [
       "\\tmp",

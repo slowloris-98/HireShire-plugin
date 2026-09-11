@@ -88,7 +88,7 @@ class RerankConfig(BaseModel):
     # who gets scored. It remains a starting point rather than a tuned value —
     # one corpus, one profile — and `scripts/calibrate_cutoffs.py` is how a user
     # replaces it with their own. Set too high, a user gets zero jobs and no
-    # error, which is why the per-stage counts in the matching report exist.
+    # error, which is why the per-stage counts on the overview page exist.
     min_score: float = 3.0
     # Job descriptions tokenise at ~5.06 chars/token, so this is ~2,960 tokens.
     # 15,000 covers 99.8% of real postings in full; only 5.8% exceed 10,000, so the

@@ -1,15 +1,21 @@
-"""The results CSV.
+"""The run's output files, and what survives a sweep that does not finish.
 
-This file is the plugin's only user-facing output, and since it moved out of the
-plugin's data directory and into the user's own folder it is also a file they open
-in Excel while a sweep is running. Both of those make its two properties worth
-pinning: the column contract, and the fact that a locked file degrades to DB-only
-writes instead of taking down a twenty-minute run.
+The CSV is the plugin's only tabular user-facing output. It used to be appended row
+by row as jobs were judged, which made it a file in processing order that also had
+to survive being open in Excel; it is now written once from the database, sorted
+across the whole sweep.
+
+That trade is the thing most of this file pins. Writing at the end means writing in
+a `finally`, because otherwise a sweep that died fifteen minutes in would leave real
+scored rows reachable only by opening the database by hand — no CSV, no JSON, a
+`last_run.json` still naming the previous run, and two pages left meta-refreshing
+forever on a process that is dead.
 """
 from __future__ import annotations
 
 import asyncio
 import csv
+import json
 from pathlib import Path
 
 import pytest
@@ -18,8 +24,8 @@ import orchestrate
 
 
 class _FakeDB:
-    """Stands in for the SQLite facade — the DB is the source of truth, so these
-    tests assert it keeps receiving rows even when the CSV cannot be written."""
+    """Stands in for the SQLite facade. The DB is the source of truth, so the
+    streaming phase asserts only that rows keep reaching it."""
 
     def __init__(self):
         self.rows: list[tuple[str, dict]] = []
@@ -42,6 +48,24 @@ def _record(title: str, company: str, score: int) -> dict:
     }
 
 
+def _match_row(job_id: str, score: int, **over) -> dict:
+    row = {
+        "job_id": job_id,
+        "board_token": "acme",
+        "title": f"Engineer {job_id}",
+        "location": "Remote",
+        "absolute_url": f"https://example.com/{job_id}",
+        "posted_at": "2026-08-10T00:00:00Z",
+        "relevance_score": score,
+        "rerank_score": 4.4,
+        "shortlisted": True,
+        "skipped": False,
+        "skip_reason": None,
+    }
+    row.update(over)
+    return row
+
+
 @pytest.fixture
 def db(monkeypatch):
     fake = _FakeDB()
@@ -57,73 +81,27 @@ async def _drain(results_dir, stamp, records, run_id="2026-08-12T14-30-05Z"):
     await orchestrate._track_results(q, results_dir, run_id, stamp, quiet=True)
 
 
-def test_csv_is_named_for_the_run_and_carries_the_agreed_columns(tmp_path, db):
-    stamp = "2026-08-12_143005"
-    asyncio.run(_drain(tmp_path, stamp, [_record("Engineer", "Acme", 91)]))
-
-    csv_path = tmp_path / f"{stamp}_results.csv"
-    assert csv_path.exists(), list(tmp_path.iterdir())
-
-    with csv_path.open(newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-
-    assert list(rows[0]) == orchestrate._CSV_FIELDS
-    assert rows[0]["title"] == "Engineer"
-    assert rows[0]["company"] == "Acme"
-    assert rows[0]["relevance_score"] == "91"
-
-
-def test_every_row_reaches_both_the_csv_and_the_database(tmp_path, db):
+def test_the_streaming_phase_writes_rows_to_the_database_only(tmp_path, db):
+    """No file here any more. The CSV is sorted across the whole sweep, so no row's
+    position is known until every row exists — and a half-written file in processing
+    order was the thing a user opened mid-sweep and misread."""
     stamp = "2026-08-12_143005"
     records = [_record("Engineer", "Acme", 91), _record("Analyst", "Globex", 78)]
     asyncio.run(_drain(tmp_path, stamp, records))
 
-    with (tmp_path / f"{stamp}_results.csv").open(newline="", encoding="utf-8") as f:
-        assert len(list(csv.DictReader(f))) == 2
     assert len(db.rows) == 2
+    assert list(tmp_path.iterdir()) == []
 
 
-def test_a_second_pass_appends_without_repeating_the_header(tmp_path, db):
-    """The handle is opened in append mode, so a resumed or re-entered run adds to
-    the file rather than truncating results the user already has."""
-    stamp = "2026-08-12_143005"
-    asyncio.run(_drain(tmp_path, stamp, [_record("Engineer", "Acme", 91)]))
-    asyncio.run(_drain(tmp_path, stamp, [_record("Analyst", "Globex", 78)]))
-
-    text = (tmp_path / f"{stamp}_results.csv").read_text(encoding="utf-8")
-    assert text.count("relevance_score") == 1
-    with (tmp_path / f"{stamp}_results.csv").open(newline="", encoding="utf-8") as f:
-        assert len(list(csv.DictReader(f))) == 2
+# --- the run's output files ---------------------------------------------------
 
 
-def test_a_locked_csv_degrades_to_database_only_instead_of_failing_the_run(
-    tmp_path, db, monkeypatch
-):
-    """`_open_csv_append` returns None once it gives up on a Windows file lock.
-
-    The user having the CSV open in Excel must cost them the CSV for that run, not
-    the run itself — which is why the DB is the source of truth and this path
-    exists at all.
-    """
-    async def _locked(path, attempts=5, base_delay=0.5):
-        return None
-
-    monkeypatch.setattr(orchestrate, "_open_csv_append", _locked)
-
-    stamp = "2026-08-12_143005"
-    records = [_record("Engineer", "Acme", 91), _record("Analyst", "Globex", 78)]
-    asyncio.run(_drain(tmp_path, stamp, records))     # must not raise
-
-    assert len(db.rows) == 2
-    assert not (tmp_path / f"{stamp}_results.csv").exists()
-
-
-class _FinaliseDB(_FakeDB):
-    def __init__(self, rows, all_rows=None, phase_stats=None):
+class _OutputsDB(_FakeDB):
+    def __init__(self, rows, all_rows=None, applied=None):
         super().__init__()
         self._rows = rows
         self._all_rows = all_rows if all_rows is not None else []
-        self._phase_stats = phase_stats if phase_stats is not None else {}
+        self._applied = applied or set()
         self.finalised = None
 
     def load_pipeline_results(self, run_id):
@@ -132,70 +110,85 @@ class _FinaliseDB(_FakeDB):
     def load_all_matches(self, run_id):
         return self._all_rows
 
-    def run_phase_stats(self, run_id):
-        # `_finalise_pipeline` reads the match phase's stats for the run's scoring
-        # cost. Empty by default, which is what a run with no meters looks like.
-        return self._phase_stats
+    def applied_ids(self):
+        return self._applied
 
     def finalise_run(self, run_id, phase, started_at, ended_at, summary):
         self.finalised = (run_id, phase, summary)
 
 
-def _finalise(tmp_path, stamp, rows, monkeypatch, all_rows=None, phase_stats=None):
+def _write_outputs(tmp_path, stamp, rows, monkeypatch, all_rows=None, applied=None,
+                   complete=True):
     from hireshire import paths
 
     monkeypatch.setattr(paths, "LAST_RUN_PATH", tmp_path / "last_run.json")
-    db = _FinaliseDB(rows, all_rows, phase_stats)
+    db = _OutputsDB(rows, all_rows, applied)
     monkeypatch.setattr(orchestrate, "get_db", lambda: db)
     results_dir = tmp_path / stamp
-    results_dir.mkdir()
-    asyncio.run(
-        orchestrate._finalise_pipeline("2026-08-12T14-30-05Z", results_dir, "started", stamp)
+    results_dir.mkdir(exist_ok=True)
+    total = asyncio.run(
+        orchestrate._write_run_outputs(
+            "2026-08-12T14-30-05Z", results_dir, stamp, complete=complete
+        )
     )
-    return db, results_dir
+    return db, results_dir, total
 
 
-def test_finalise_writes_the_pointer_apply_reads(tmp_path, monkeypatch):
+def test_the_outputs_are_the_csv_the_json_and_the_pointer(tmp_path, monkeypatch):
     """/hireshire:apply opens last_run.json rather than guessing where the results
     root is — the root moved into a folder the user can relocate."""
-    import json
-
     stamp = "2026-08-12_143005"
-    db, results_dir = _finalise(tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch)
+    db, results_dir, total = _write_outputs(
+        tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch,
+        all_rows=[_match_row("j1", 91)],
+    )
 
     pointer = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
 
+    assert total == 1
     assert pointer["run_id"] == "2026-08-12T14-30-05Z"
     assert pointer["stamp"] == stamp
     assert pointer["json"] == str(results_dir / f"{stamp}_results.json")
     assert pointer["csv"] == str(results_dir / f"{stamp}_results.csv")
     assert pointer["total_results"] == 1
-    # ...and the file it points at is really there, with the rows in it.
+    assert pointer["complete"] is True
+    # ...and the files it points at are really there, with the rows in them.
     assert json.loads(Path(pointer["json"]).read_text(encoding="utf-8"))[0]["company"] == "Acme"
+    with Path(pointer["csv"]).open(encoding="utf-8-sig") as f:
+        assert next(csv.DictReader(f))["llm_score"] == "91"
 
 
-def test_the_all_jobs_csv_carries_the_runs_scoring_cost(tmp_path, monkeypatch):
-    """The cost lives on the match phase's `runs` row, not on any match record, so
-    `_finalise_pipeline` reads it out and hands it to the writer. Safe to read there
-    because the matcher finalises before sending the queue sentinel this waits on."""
-    import csv as _csv
-    from hireshire.storage.db import PHASE_MATCH
-
+def test_the_pointer_names_only_the_two_pages_that_exist(tmp_path, monkeypatch):
+    """The dashboard and the matching report are gone, and a pointer still naming
+    them would send a skill at a path nothing writes."""
     stamp = "2026-08-12_143005"
-    _, results_dir = _finalise(
-        tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch,
-        all_rows=[{"job_id": "j1", "board_token": "acme", "title": "Engineer",
-                   "relevance_score": 91, "shortlisted": True}],
-        phase_stats={PHASE_MATCH: {"usage": {"calls": 142, "cost_usd": 1.8734}}},
+    _write_outputs(tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch)
+
+    pointer = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
+    assert pointer["overview_html"].endswith("overview.html")
+    assert pointer["run_overview_html"].endswith(f"{stamp}_overview.html")
+    for gone in ("matching_html", "latest_matching_html", "dashboard_html",
+                 "all_jobs_csv"):
+        assert gone not in pointer
+
+
+def test_the_csv_says_which_jobs_have_been_applied_to(tmp_path, monkeypatch):
+    """`applied` is read once for the whole file and passed in, because the table is
+    keyed on the job alone — an application is a fact about a job, not a sweep."""
+    stamp = "2026-08-12_143005"
+    _, results_dir, _ = _write_outputs(
+        tmp_path, stamp, [], monkeypatch,
+        all_rows=[_match_row("j1", 91), _match_row("j2", 80)],
+        applied={"j1"},
     )
 
-    with (results_dir / f"{stamp}_results_all_jobs.csv").open(encoding="utf-8-sig") as f:
-        assert next(_csv.DictReader(f))["run_cost_usd"] == "1.8734"
+    with (results_dir / f"{stamp}_results.csv").open(encoding="utf-8-sig") as f:
+        assert [r["applied"] for r in csv.DictReader(f)] == ["yes", "no"]
 
 
 def test_an_unwritable_json_does_not_report_a_successful_run_as_failed(tmp_path, monkeypatch):
-    """By this point the CSV and every database row are already written. Letting an
-    OSError escape would log the whole sweep as a failure and return None."""
+    """By this point every database row is already written. Letting an OSError
+    escape would log the whole sweep as a failure and return None."""
     stamp = "2026-08-12_143005"
 
     def _boom(*a, **kw):
@@ -203,11 +196,77 @@ def test_an_unwritable_json_does_not_report_a_successful_run_as_failed(tmp_path,
 
     monkeypatch.setattr(Path, "write_text", _boom)
 
-    db, _ = _finalise(tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch)
+    # Must not raise; the row count still comes back.
+    _, _, total = _write_outputs(
+        tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch
+    )
+    assert total == 1
 
-    # The run is still finalised in the DB, which is what makes it a success.
-    assert db.finalised is not None
-    assert db.finalised[2] == {"total_results": 1}
+
+# --- a sweep that does not finish ---------------------------------------------
+
+
+def test_a_partial_run_still_writes_its_files_and_says_so(tmp_path, monkeypatch):
+    """The whole reason the outputs moved into a `finally`. Before it, a sweep that
+    died half-scored left no CSV, no JSON, and a pointer at the previous run."""
+    stamp = "2026-08-12_143005"
+    _, results_dir, _ = _write_outputs(
+        tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch,
+        all_rows=[_match_row("j1", 91)], complete=False,
+    )
+
+    pointer = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
+    assert pointer["complete"] is False
+    # The files are real, just partial — and /apply reads `json` either way.
+    assert (results_dir / f"{stamp}_results.csv").exists()
+    assert (results_dir / f"{stamp}_results.json").exists()
+
+
+def test_the_runs_row_is_written_whether_or_not_the_sweep_finished(tmp_path, monkeypatch):
+    """That row is the pages' only signal for "is this sweep still going". A crashed
+    run without one leaves both of them reloading themselves forever with their
+    elapsed figure climbing on a process that is dead."""
+    from hireshire.storage.db import PHASE_PIPELINE
+
+    db = _OutputsDB([])
+    monkeypatch.setattr(orchestrate, "get_db", lambda: db)
+    monkeypatch.setattr(orchestrate.reporting, "refresh", lambda *a, **kw: None)
+
+    asyncio.run(
+        orchestrate._finalise_pipeline(
+            "2026-08-12T14-30-05Z", tmp_path, "started", "2026-08-12_143005",
+            total_results=3, complete=False,
+        )
+    )
+
+    run_id, phase, summary = db.finalised
+    assert phase == PHASE_PIPELINE
+    assert summary == {"total_results": 3, "completed": False}
+
+
+def test_the_final_refresh_runs_after_the_runs_row_lands(tmp_path, monkeypatch):
+    """Ordering, not sequencing for its own sake: the pages read that row to decide
+    whether to keep reloading, so refreshing first leaves a finished run
+    meta-refreshing forever."""
+    order: list[str] = []
+
+    class _OrderDB(_OutputsDB):
+        def finalise_run(self, *a, **kw):
+            order.append("runs-row")
+            super().finalise_run(*a, **kw)
+
+    monkeypatch.setattr(orchestrate, "get_db", lambda: _OrderDB([]))
+    monkeypatch.setattr(
+        orchestrate.reporting, "refresh",
+        lambda *a, **kw: order.append("refresh"),
+    )
+
+    asyncio.run(
+        orchestrate._finalise_pipeline(
+            "2026-08-12T14-30-05Z", tmp_path, "started", "2026-08-12_143005"
+        )
+    )
+    assert order == ["runs-row", "refresh"]
 
 
 def test_stamp_is_local_time_and_shared_by_folder_and_file():
@@ -215,9 +274,11 @@ def test_stamp_is_local_time_and_shared_by_folder_and_file():
     human reads it off a directory listing."""
     from datetime import datetime, timezone
 
+    from hireshire.results_export import results_name
+
     now = datetime(2026, 8, 12, 9, 0, 5, tzinfo=timezone.utc)
     stamp = orchestrate._run_stamp(now)
 
     assert stamp == now.astimezone().strftime("%Y-%m-%d_%H%M%S")
-    assert orchestrate._csv_name(stamp).startswith(stamp)
+    assert results_name(stamp).startswith(stamp)
     assert orchestrate._json_name(stamp).startswith(stamp)

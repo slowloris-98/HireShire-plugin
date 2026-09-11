@@ -126,7 +126,7 @@ Consequences already worked out, which should not be re-derived:
   - **There is no `--status`, and the skill must not invent one.** `hireshire/sweep_pid.py`
     records one integer; `hireshire/orchestration_status.py` — heartbeat, `STALE_AFTER_S`,
     the liveness veto, `describe()` — is gone with the teardown it served. The user
-    watches a sweep through the dashboard or their shell task.
+    watches a sweep through the overview page or their shell task.
   - **`/hireshire:start-orchestration` must not claim the sweep stops with the session.**
     It no longer does. It ends on `--stop`, on the shell task being killed, or on the
     bound. Saying otherwise is the same class of failure as announcing a sweep that was
@@ -282,7 +282,7 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
     Nothing is dropped for being over-qualified.
   - **It runs after the `min_score` cutoff, not before it.** Both are LLM-free, so
     the ordering buys two other things: `stages["above_cutoff"]` keeps meaning what
-    the matching report says it means, and a wrong `candidate_years` can only touch
+    the overview page says it means, and a wrong `candidate_years` can only touch
     jobs that were about to cost a call. YoE drops are counted into `above_cutoff`
     for the same reason cap drops are.
 
@@ -311,7 +311,7 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
 - **Duplicate requisitions are grouped, never dropped.** `cluster.py` keys on
   `(board_token, description)` — **titles are deliberately never compared.** One
   representative is scored and the verdict is copied to every sibling, so all 31
-  copies keep their own location and link in the all-jobs export. Siblings carry
+  copies keep their own location and link in the results CSV. Siblings carry
   `duplicate_of_cluster`, which must stay **out** of `_RETRYABLE_SKIP_REASONS`: they
   have been judged, just by proxy. Members of a cluster that misses the cut inherit
   the representative's drop reason, so their retryability follows the rule above.
@@ -338,30 +338,55 @@ the `matches` table via `append_result`. Budget drops and cluster siblings are
 appended explicitly so the user can see what the budget cost; title-gate rejections
 deliberately are not, since there can be tens of thousands per run.
 
-Two result files come out of a run, and they are not interchangeable.
-`<stamp>_results.csv`/`.json` is the shortlist the apply skill consumes via
+**Two files come out of a run, and they are not interchangeable.**
+`<stamp>_results.json` is the shortlist the apply skill consumes via
 `last_run.json`'s `json` pointer — **one row per cluster**, because 31 siblings
-would otherwise become 31 applications. `<stamp>_results_all_jobs.csv`
-(`results_export.py`) is the diagnostic: every row in `matches`, with the four
-scores in four separate columns. A budget drop renders a **blank** `llm_score`, not
-the `0` that `filtered_result` puts in the model — printing that zero reads as a
-verdict and is what hid the broken reranker for an entire run.
+would otherwise become 31 applications. `<stamp>_results.csv`
+(`results_export.py`) is the user's own file: every row in `matches`, best first,
+eight columns — `posted_at, company, job_title, link, llm_score, cross_score,
+applied, shortlisted`. A budget drop renders a **blank** `llm_score`, not the `0`
+that `filtered_result` puts in the model — printing that zero reads as a verdict
+and is what hid the broken reranker for an entire run.
 
-### The reports are written by the engine and published by the skills
+Three consequences worth not re-deriving:
 
-`hireshire/reporting/` renders two HTML pages per sweep: `<stamp>_matching.html`
-in the run folder (the LLM's four rationales per scored job, then every job that
-was never scored) and `dashboard.html` at the results root (every run the install
-has done). Both exist because the reasoning had nowhere to go — it was written to
+- **It sorts in Python, not SQL.** `load_all_matches` orders by `relevance_score
+  DESC`, which files that placeholder `0` among the genuine low scores instead of
+  at the bottom. `_never_scored` is the only thing that can tell them apart, and it
+  is Python. `results_export._never_scored` and `reporting.data._never_scored` are
+  two copies of one rule and `tests/test_reporting.py` holds them together.
+- **The CSV is written once at the end, and therefore in a `finally`.** Sorting
+  needs every row, so it cannot stream — but writing only on success meant a sweep
+  that died half-scored left no CSV, no JSON, and a `last_run.json` still naming the
+  previous run. `_write_run_outputs` and `_finalise_pipeline` both run in
+  `run_pipeline`'s `finally`, in that order, and `complete: false` is how the
+  pointer and the `runs` row record a partial sweep. The `runs` row is written
+  either way, because it is the pages' only signal for *is this sweep still going* —
+  a crashed run without one leaves both of them meta-refreshing forever.
+- **It no longer streams, so nothing needs the Excel-lock dance.** `_track_results`
+  writes only to the database; `_open_csv_append` and its retry/backoff are gone with
+  the append-mode handle they protected.
+
+### The reports are written by the engine
+
+`hireshire/reporting/` renders the overview page, at two scopes, and nothing else.
+It exists because the reasoning had nowhere to go — it was written to
 `matches.raw_json` and rendered nowhere, so an empty shortlist was indistinguishable
 from a broken threshold.
 
-**The engine writes them; a skill only publishes them.** That is what makes them
-appear on unattended monitor sweeps where no agent turn exists, costs no tokens,
-and keeps the skills reporting numbers they were handed — the same rule as
+**Nothing is published.** There used to be a `dashboard.html` and a per-run
+`<stamp>_matching.html`, the latter published as an Artifact from a fixed
+`latest_matching.html`; three pages answered overlapping questions and the overview
+is the one that answers *what have I got* at both scopes. With publishing gone,
+`render.artifact_page` went too: `document()` is the only envelope, which is what
+licenses the meta refresh.
+
+**The engine writes them; a skill only hands over the path.** That is what makes
+them appear on unattended monitor sweeps where no agent turn exists, costs no
+tokens, and keeps the skills reporting numbers they were handed — the same rule as
 `--paths`.
 
-Five consequences that should not be re-derived:
+Three consequences that should not be re-derived:
 
 - **Refreshes run on a clock, never on funnel events.** `orchestrate._tick_reports`
   offers a rebuild every `_REPORT_TICK_S` (half `reporting.MIN_INTERVAL_S`, derived
@@ -376,39 +401,57 @@ Five consequences that should not be re-derived:
   row commits, and with no later callback the page showed 9 of 10 scored jobs forever.
   A clock cannot run out, and the next tick self-corrects. Note this was invisible
   under global top-K, where `matches` genuinely stayed empty until the sentinel.
-  `_stop_report_ticker` must run **before** `_finalise_pipeline` and must drain the
+  `_stop_report_ticker` must run **before** the outputs are written and must drain the
   executor as well as cancel the task, or a late rebuild lands after the `final=True`
   write and re-arms the meta refresh — the bug the last bullet below describes.
 
-- **Two envelopes, and mixing them breaks the page.** The Artifact tool wraps what
-  it publishes in its own `<!doctype html>…<head></head><body>`, so `matching.py`
-  emits **body content only**. `dashboard.py` is local-only and emits a complete
-  document. The matching report therefore renders in quirks mode when opened from
-  disk, which is why the shared CSS sets `box-sizing` explicitly and avoids
-  percentage heights.
-- **`matching.TITLE` is stable across runs and must stay that way.** The skills
-  find the existing artifact by that title (`Artifact action:"list"`) and
-  republish to its URL, which is the entire mechanism behind one rolling link. Put
-  the run date in the title and every sweep creates a new artifact.
 - **Nothing may raise.** `reporting.refresh` swallows everything and the writers
   return `None` on failure, because it is called from the pipeline's own progress
-  callbacks — the same trade `write_all_jobs_csv` documents.
-- **The dashboard's meta refresh is armed only while the pipeline's `runs` row is
-  absent**, so the final refresh must run *after* `finalise_run`. Refreshing before
-  it leaves a finished run reloading itself forever.
+  callbacks — the same trade `write_results_csv` documents.
+- **The meta refresh is armed only while the pipeline's `runs` row is absent**, so
+  the final refresh must run *after* `finalise_run`. Refreshing before it leaves a
+  finished run reloading itself forever, and skipping `finalise_run` on a crash
+  leaves a dead one doing the same.
 
-**A third page, `overview.py`, is the minimal one, and it ships at two scopes.**
-`overview.html` at the results root covers every sweep the install has done;
-`<stamp>_overview.html` in a run folder covers that sweep and adds how long it took
-and what it cost. Both are complete local documents. Four numbers — `Jobs in scope`,
-`Relevant jobs`, `Jobs shortlisted`, `Jobs applied` — over the four `<details>`
-sections that match them, under the dashboard's own `HireShire` / `Control room`
-header. It explains nothing: past one line naming the scope and telling the reader the
-sections open, the judge's rationales inside an opened job are the only sentences on
-it. **Both scopes are the same markup fed different data**, and the two extra tiles
-are the single deliberate exception — how long it took and what it cost are facts
-about a sweep, not about an install. It does not replace the other two pages, which
-stay for comparison.
+**`overview.py` ships at two scopes.** `overview.html` at the results root covers
+every sweep the install has done; `<stamp>_overview.html` in a run folder covers that
+sweep and adds how long it took and what it cost. Both are complete local documents.
+Four numbers — `Jobs in scope`, `Relevant jobs`, `Jobs shortlisted`, `Jobs applied` —
+over the four `<details>` sections that match them, under a `HireShire` /
+`Control room` header. It explains nothing: past one line naming the scope and telling
+the reader the sections open and filter, the judge's rationales inside an opened job
+are the only sentences on it. **Both scopes are the same markup fed different data**,
+and the two extra tiles are the single deliberate exception — how long it took and
+what it cost are facts about a sweep, not about an install.
+
+**All four sections read the same way, and the rows stay `<details>` for one
+load-bearing reason.** Each section is a filter box over a sticky six-column header
+(`# | Title | Company | Location | LLM | Cross`) over a `.scroll-y` box. Three of them
+used to be unbounded flat lists beside one that was not, which made a sweep with 300
+filtered jobs a wall. A real `<table>` with a JS-toggled detail row was the obvious
+way to get columns and was rejected: such a row fires no `toggle` event, so
+`_STATE_SCRIPT` could not restore the reader's open rows and the 15-second refresh
+would shut the rationale they were halfway through. `<summary>` also gets Enter/Space
+for free, and BASE_CSS's `th, td { white-space: nowrap }` would flatten every
+rationale inside a `colspan` cell. Four more things about it:
+
+- **The three rendered lists are server markup, never a payload.** `_STATE_SCRIPT`
+  reopens by `getElementById` at parse time, so a row a paginating script has not
+  built yet cannot be restored — which is the bug that script exists to prevent. They
+  are capped at `MAX_JOB_ROWS` and bounded in height, not paginated.
+- **`reason_label` and the applied stamp are `.job-sub` lines, not columns.** The
+  labels are whole sentences and the columns are nowrap. Jobs Filtered is the section
+  whose entire question is *why*, so dropping its reason would be the worst available
+  regression.
+- **`data-hay` is lowercased server-side**, so filtering is one `indexOf` per row per
+  keystroke. Filtering sets `hidden`, which takes a row out of layout *and* the a11y
+  tree and leaves an open row open when the filter clears.
+- **The scroll box has to restore its own `scrollTop`.** A browser restores the
+  document's scroll across a meta refresh but never an `overflow: auto` div's, so the
+  box introduced a loss the flat list did not have. `data-keep-scroll` opts in, the
+  reopen must happen first (a box inside a closed `<details>` has no layout box, and
+  `scrollHeight` is the all-closed one until the bodies expand), and the last section
+  deliberately opts out.
 
 **The tiles and the sections count differently on purpose.** The tiles are a
 cumulative funnel — every shortlisted job is also a relevant one. The sections are a
@@ -428,7 +471,10 @@ script-built from a JSON payload with a filter box. Its `NOT EXISTS` is delibera
 **not** correlated on `run_id`: a job the `SeenStore` skipped because an earlier sweep
 judged it would otherwise be listed here with a blank score, as though nothing had
 ever read it. The price, accepted, is that on later sweeps the four sections no longer
-sum to the `Jobs in scope` tile.
+sum to the `Jobs in scope` tile. Its payload carries **no LLM key** — a key holding 0
+invites a renderer to print it as a verdict — while the renderer still prints an em
+dash in that column, so the six columns match the sections above. A printed dash and
+an absent key are not the same thing; only the key is dangerous.
 
 Five things about it that are easy to get wrong:
 
@@ -457,12 +503,12 @@ Five things about it that are easy to get wrong:
   sibling.
 - **"Judged by proxy" is not the same as "has a verdict".** A sibling of a *failed*
   representative inherits a placeholder `relevance_score` of 0, and the page renders
-  an em dash for it rather than that 0 — same rule as the all-jobs CSV's blank
+  an em dash for it rather than that 0 — same rule as the results CSV's blank
   `llm_score`, and the reason `_job_entry` looks at `skip_reason` rather than trusting
   the score.
 - **Nothing here may re-read what the caller already has.** `overview_snapshot` takes
-  both `run` and `records` from `refresh`, which loaded them a few lines earlier for
-  the matching report. It used to re-run `load_all_matches` itself, which mattered
+  both `run` and `records` from `refresh`, which loaded them a few lines earlier. It
+  used to re-run `load_all_matches` itself, which mattered
   little when refreshes came off funnel events and stopped early — and matters a great
   deal now that they run on a clock for the whole sweep, where it is the same query
   ~300 times a run for nothing. The `snapshot["candidates"]` guard reaches the overview

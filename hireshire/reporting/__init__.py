@@ -1,4 +1,4 @@
-"""HTML reports for a run: a live local dashboard and a publishable match report.
+"""HTML reports for a run: the overview page, at two scopes.
 
 The engine writes these, not the agent. That is the whole design decision, and
 three things follow from it:
@@ -7,14 +7,21 @@ three things follow from it:
   drives, where no agent turn exists to generate anything.
 * It costs no tokens and cannot vary between runs.
 * It keeps the skills honest. A skill must not state runtime facts it has not
-  asked for; here it publishes a file the engine handed it rather than numbers it
-  assembled itself.
+  asked for; here it hands the user a path to a file the engine wrote rather than
+  numbers it assembled itself.
+
+Nothing here is published. Both pages are complete local documents opened over
+``file://`` from the user's own results folder, which is what licenses their meta
+refresh — a published artifact could not reload itself. The dashboard and the
+per-run matching report used to sit alongside them and are gone: three pages
+answered overlapping questions, and the overview is the one that answers *what have
+I got* at both scopes.
 
 `refresh()` is the only entry point, and it is safe to call from the pipeline's
 progress callbacks: it throttles, and it swallows everything. A report is a
 diagnostic, and losing one must never take down a twenty-minute sweep whose CSV,
 JSON and database rows are already on disk — the same trade
-`hireshire.results_export.write_all_jobs_csv` makes, for the same reason.
+`hireshire.results_export.write_results_csv` makes, for the same reason.
 """
 
 from __future__ import annotations
@@ -24,7 +31,7 @@ import time
 from pathlib import Path
 
 from hireshire import paths
-from hireshire.reporting import dashboard, data, matching, overview
+from hireshire.reporting import data, overview
 from hireshire.storage.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -48,22 +55,19 @@ _last_lifetime = 0.0
 def report_paths(results_dir: Path, stamp: str) -> dict[str, Path]:
     """Where this run's report files go.
 
-    The stamped ones live with the run they describe; `latest_matching.html`, the
-    dashboard and the lifetime overview sit at the results root, which is what gives
-    the skills a fixed path to publish from run after run.
+    The lifetime page sits at the results root, which is what gives the skills a
+    fixed path to hand the user run after run; the stamped one lives with the run
+    it describes, beside that run's CSV.
     """
     root = paths.results_root()
     return {
-        "matching": results_dir / matching.matching_name(stamp),
-        "latest_matching": root / matching.LATEST_NAME,
-        "dashboard": root / dashboard.DASHBOARD_NAME,
         "overview": root / overview.OVERVIEW_NAME,
         "run_overview": results_dir / overview.run_overview_name(stamp),
     }
 
 
 def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> None:
-    """Rebuild both reports from the database.
+    """Rebuild both overview pages from the database.
 
     `final=True` bypasses the throttle and is used once, from
     `_finalise_pipeline`, after every other output file is written — that call is
@@ -77,9 +81,10 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
     an empty table. Do not restore the old claim — a reader who believed it would
     conclude these calls are free and remove the throttle.
 
-    `snapshot` and `records` are handed to both reports rather than re-derived by
-    each. The overview used to load the identical rows a second time, which on a
-    clock-driven refresh is the same query ~300 times a sweep for nothing.
+    `snapshot` and `records` are loaded here and handed to the page rather than
+    re-derived inside it. The overview used to load the identical rows a second
+    time, which on a clock-driven refresh is the same query ~300 times a sweep for
+    nothing.
     """
     global _last_refresh, _last_lifetime
 
@@ -96,9 +101,6 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
         records = db.load_all_matches(run_id) if snapshot["candidates"] else []
 
         targets = report_paths(results_dir, stamp)
-        matching.write(snapshot, records, stamp, results_dir, targets["latest_matching"])
-        dashboard.write(data.dashboard_snapshot(db), targets["dashboard"])
-
         overview.write(
             data.overview_snapshot(db, run_id, run=snapshot, records=records),
             targets["run_overview"], stamp,

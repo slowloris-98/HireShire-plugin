@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import sys
 
 import pytest
@@ -245,6 +246,53 @@ def test_the_setup_skill_asks_for_selectable_options():
     assert "AskUserQuestion" in text
 
 
+def _setup_step(n: int) -> str:
+    """The body of one numbered question in the setup skill, lowercased."""
+    text = (ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+    start = re.search(rf"^{n}\. \*\*", text, re.M)
+    end = re.search(rf"^{n + 1}\. \*\*", text, re.M)
+    assert start and end, f"setup question {n} is gone — was the skill renumbered?"
+    return text[start.start():end.start()].lower()
+
+
+def test_setup_drafts_seniority_exclusions_and_makes_the_user_confirm_them():
+    """`exclude_keywords` is the only value setup writes that cannot be taken back.
+
+    A title-gate drop is a verdict, not a skip: `title_excluded` is not in
+    `_RETRYABLE_SKIP_REASONS`, so the job lands in `seen_jobs` and is never
+    reconsidered on a later sweep — removing the keyword afterwards does not bring it
+    back. It is invisible too, because title rejections are kept out of the `matches`
+    table on purpose and surface only as a merged "dropped by the free gates" count. So
+    one over-broad term — `staff`, which is the *junior* rung in accounting and nursing,
+    or `lead`, which is Lead Generation Specialist — silently deletes a slice of the
+    user's own market for the life of the install.
+
+    Left to judgment the skill wrote an empty list in most runs, which is the opposite
+    failure: a mid-level candidate spending a capped per-run scoring budget on VP and
+    director postings the encoder cannot tell apart from their own title. The skill has
+    to do both — draft the list from the band it reads off the resume, and get one
+    explicit tap before writing it.
+    """
+    step = _setup_step(6)
+
+    assert "exclude_keywords" in step
+    # Drafted from a ladder, not guessed...
+    assert re.search(r"seniority ladder|seniority band|rungs? above", step), (
+        "the seniority ladder is gone — setup is back to guessing the exclusions"
+    )
+    # ...and only ever looking upward.
+    assert re.search(r"never auto-add|never add[^.]{0,80}junior", step), (
+        "the exclude-upward-only rule is gone; junior terms must never be auto-added"
+    )
+    # Substring matching is the whole reason a term can be over-broad.
+    assert "substring" in step, "the substring-safety pass is gone"
+    # And the confirmation turn, which is what makes a permanent write survivable.
+    assert "askuserquestion" in step, "the exclusions must be confirmed, not assumed"
+    assert re.search(r"permanent|does not come back|never comes back", step), (
+        "the user has to be told the drop is permanent before they approve it"
+    )
+
+
 @pytest.mark.parametrize("skill", SKILLS)
 def test_no_skill_substitutes_the_data_placeholder(skill):
     """Claude Code expands this placeholder in skill content, and it does NOT expand
@@ -263,6 +311,21 @@ def test_no_skill_substitutes_the_data_placeholder(skill):
     assert "${CLAUDE_PLUGIN_DATA}" not in text, (
         f"{skill}: ask `hireshire.sh --paths` instead of substituting the placeholder"
     )
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+def test_no_skill_names_a_file_the_engine_stopped_writing(skill):
+    """The dashboard, the matching report and the all-jobs CSV are gone. A skill
+    still naming one would send the user at a path nothing writes — the same class
+    of failure as a skill stating a runtime fact it never asked for, and just as
+    quiet, because a missing local file produces no error until someone opens it.
+    """
+    text = (ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    for gone in ("dashboard.html", "latest_matching.html", "_matching.html",
+                 "latest_matching_html", "matching_html", "dashboard_html",
+                 "_results_all_jobs.csv", "all_jobs_csv",
+                 "HireShire Match Report"):
+        assert gone not in text, f"{skill}: nothing writes {gone} any more"
 
 
 def test_every_launch_path_goes_through_the_one_launcher():

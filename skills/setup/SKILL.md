@@ -147,15 +147,19 @@ as a ten-item form. Confirm what you understood before writing.
 
 **Use `AskUserQuestion` for every question below that has a small set of sensible
 answers**: locations, posting age, match threshold, jobs per run, job boards, scoring
-backend, scoring effort, poll interval, and auto-apply. This skill already names a
-default or a recommendation for almost all of them — put that option first and mark it
-recommended. The user gets one tap instead of typing, and "Other" is always there for
-anyone who wants something else, so offering options never narrows what they can say.
+backend, scoring effort, poll interval, auto-apply, and the title-exclusion list you
+draft in question 6. This skill already names a default or a recommendation for almost
+all of them — put that option first and mark it recommended. The user gets one tap
+instead of typing, and "Other" is always there for anyone who wants something else, so
+offering options never narrows what they can say.
 
-Three questions stay free text, because their answers are open-ended and a menu would
-constrain them: the path to their resume, correcting the target roles you drafted in
-question 6, and confirming the years of experience you read off the resume in question
-7 — that one is a number to accept or correct, not a choice between options.
+Three answers stay free text, because they are open-ended and a menu would constrain
+them: the path to their resume, the correction to the target roles you drafted in
+question 6, and the years of experience you read off the resume in question 7 — that
+one is a number to accept or correct, not a choice between options. Question 6 is the
+one step that uses both: the roles come back in the user's own words, and the title
+exclusions — which cannot be undone — get their own tappable confirmation before
+anything is written.
 
 ### How to write a value
 
@@ -261,12 +265,18 @@ Three things that trip people up:
        resume-text "<the installed path>"
    ```
 
-   Read it and propose concrete target roles and hard exclusions, then let them
-   correct you:
+   Read it and settle **two** things before you draft anything: what they do, and
+   **which rung of their field's ladder they are actually on**. The rung is what makes
+   the exclusion list below correct, and nothing else in setup gives it to you — the
+   number in question 7 is about the *posting's* stated minimum and never looks at a
+   title at all.
+
+   Then propose concrete target roles and let them correct you:
 
    > From your resume this looks like mid-level Account Management / Customer
-   > Success in SaaS. Is that the target, and is there anything you'd rule out —
-   > seniority, industries, a specialisation you're done with?
+   > Success in SaaS — individual contributor, no direct reports. Is that the target,
+   > and is there anything you'd rule out — industries, a specialisation you're done
+   > with?
 
    That is a far better question than asking cold, and it is faster for them. Ask this
    one as free text — the useful answer is a correction in their own words, which no
@@ -276,8 +286,10 @@ Three things that trip people up:
 
    Then generate three things from their answer *and* the resume text:
 
-   - `exclude_keywords` (phase `matcher`) — hard no's: wrong seniority, wrong
-     specialisation, anything they said they don't want.
+   - `exclude_keywords` (phase `matcher`) — title words never worth an LLM call. Draft
+     these from the seniority ladder below, plus anything the user ruled out. **Never
+     leave this empty by default, and never fill it by guessing**: it is the one value
+     in this step that cannot be taken back.
    - `targets` (phase `funnel`) — an **exhaustive** list of adjacent and synonymous
      **job titles** they are qualified for. Aim for dozens. This is a recall net;
      over-inclusion is cheap and under-inclusion loses jobs permanently.
@@ -296,9 +308,151 @@ Three things that trip people up:
 
    `include_keywords` is optional: leave it empty unless the user wants a hard
    keyword requirement. An empty include list means the semantic gate decides, which
-   is usually what they want.
+   is usually what they want. If they do want one, **check it against the exclusions
+   first — exclude wins.** The title is tested against the exclusions *before* the
+   include fast-pass is considered, so `include: ["senior engineer"]` alongside
+   `exclude: ["senior"]` does not fast-pass anything; it drops everything.
 
-   **Show all three back and let them edit before you write anything.** Then:
+   **The seniority ladder.** The recall net cannot do this part for you: "Senior
+   Software Engineer" and "Software Engineer" are nearly the same string, so the
+   encoder scores them alike, and the cross-encoder reads a description written for
+   much the same work. Seniority is the one distinction the free gates cannot make,
+   which is why it has to be a keyword rule — not a way to save money, a way to stop a
+   capped per-run budget being spent two rungs above the user's head.
+
+   Every field has the same ladder; only the words change. Place the user on it from
+   the most responsible title they have actually **held**, not one they are aiming at,
+   and read scope — reports, budget, who signs off — rather than the noun alone.
+
+   | rung | what it is |
+   |---|---|
+   | 0 | trainee, student, apprentice, new grad |
+   | 1 | individual contributor, no qualifier on the title |
+   | 2 | experienced IC — the first "promotion word" in that field |
+   | 3 | expert IC or first-line manager of a single team |
+   | 4 | department head, several teams or a function |
+   | 5 | executive — the function's name sits in the title with a chief or vice |
+
+   **Exclude upward only.** Draft one term for each rung *above* theirs, spelled the
+   way their field spells it. **Never auto-add junior, intern, entry-level, trainee,
+   apprentice or co-op terms** — those rungs are below them, they are cheap to skim
+   past, and a career changer who took a pay cut wants exactly those postings.
+   Below-band terms go in only when the user names them.
+
+   *Worked example — software, ~4 years, titles "Software Engineer" then "Software
+   Engineer II":* rung 1. Above them: `"senior"`, `"staff engineer"`, `"principal
+   engineer"`, `"engineering manager"`, `"director of engineering"`, `"head of
+   engineering"`, `"vice president"`.
+
+   *Worked example — registered nurse, 5 years, med-surg floor:* also rung 1, and the
+   words are completely different. Above them: `"nurse manager"`, `"director of
+   nursing"`, `"chief nursing"`, `"assistant director of nursing"`. Note what is
+   **not** there: `"staff"` is this user's own rung (Staff Nurse), `"charge nurse"` is
+   a shift role rather than a rung, and Nurse Practitioner is a different licence
+   rather than a promotion — a credential the user does not hold is not a seniority
+   exclusion, and it only goes in if they ask.
+
+   **When the band is ambiguous, resolve it upward.** A career change, a long contract
+   stretch, or a two-person startup where they were "Head of Growth" at three years
+   all read as two rungs at once. Take the higher one, say which two you were choosing
+   between, and let them settle it — the same posture as the number in question 7. The
+   errors are not symmetric: a band read one rung too high leaves a few over-ambitious
+   postings in the pool, which costs some scoring budget and nothing else, while a
+   band read one rung too low permanently deletes the promotion they were applying
+   for.
+
+   **That asymmetry governs every choice below.** A term that is too narrow costs one
+   extra scoring call. A term that is too broad silently deletes a slice of their
+   market for the life of the install: a title-excluded posting is dropped before it
+   is scored, is kept out of the results table on purpose, and is never reconsidered
+   on a later sweep even if the keyword is removed. When in doubt, spell it longer.
+
+   **So check every term for substring damage.** The filter is a plain
+   case-insensitive substring test over the job **title** and nothing else — no word
+   boundaries, no stemming, no description. `"lead"` is not the rule "no lead roles";
+   it is the rule "drop any title containing l-e-a-d", which is Lead Generation
+   Specialist, Team Leader and Leadership Development Partner.
+
+   The test to run on each drafted term before it goes in the list: **say it inside
+   three other titles from the user's own field.** If any of the three is a job they
+   would want, the term is too short. Two rules fall out of that and cover most cases:
+
+   - **Qualify the rung word with the field noun.** `"staff engineer"`, not `"staff"`.
+     `"nurse manager"`, not `"manager"`. `"director of engineering"`, not
+     `"director"`. A two-word term is nearly always right; a bare rung word is nearly
+     always wrong.
+   - **An abbreviation must carry its punctuation or the word after it.** `"sr. "`,
+     not `"sr"` — which matches SRE. `"vice president"` or `"vp of"`, not `"vp"` —
+     which matches AVP, a *mid-level* title in banking.
+
+   The traps worth naming, because in some field each of these words means the
+   opposite of a promotion:
+
+   - `staff` is the junior IC rung in accounting, nursing, law and journalism — Staff
+     Accountant, Staff Nurse, Staff Attorney, Staff Writer. Excluding it bare deletes
+     the user's own job.
+   - `senior` is a *client group* in care work: Senior Care Coordinator, Senior Living
+     Advisor, Senior Services Manager.
+   - `director` is a craft title in film, TV and design — Art Director, Creative
+     Director, Director of Photography — and in a small nonprofit an Executive
+     Director runs four people.
+   - `principal` runs a school in education and means partner in law, consulting and
+     architecture.
+   - `manager` is the IC title in sales, product, projects and social work: Account
+     Manager, Product Manager, Case Manager.
+   - `partner` is an IC in HR and marketing: HR Business Partner, Partner Marketing
+     Manager.
+   - `head` matches Headhunter and Head of Household. `"head of"` is the spelling that
+     means the rung.
+   - `intern` matches Internal Auditor, International Sales and Internal Comms; there
+     is no safe short spelling, so use `"internship"` and accept that a bare "Intern"
+     posting gets through. The ladder never adds this on its own — it only comes up if
+     the user asks for it.
+   - `lead` matches Lead Generation, Leader and Leadership. If what they mean is "no
+     people management", exclude the management nouns instead.
+
+   **Last check before the list reaches the user: run the exclusions against your own
+   `targets`.** Lowercase both. If any exclusion is a substring of any target title,
+   one of the two is wrong, and you have written a filter that deletes the recall net
+   you built in the same breath. Fix it first.
+
+   **Then confirm the list with `AskUserQuestion`** — not a rhetorical "sound good?".
+   Show the drafted terms in full, on one line, say which model drafted them — you
+   are whatever model this session is running, and a user on a small one should know
+   to read the list twice — and state the consequence in one sentence:
+
+   > Drafted by <the model you are running as> from your resume. These are permanent:
+   > a posting whose title contains one of these words is dropped before it is scored,
+   > never appears in your results or in any "why was this skipped" list, and does not
+   > come back if you remove the word later.
+
+   Offer four outcomes, with the drafted terms named in the first:
+
+   - **Use these** (recommended) — name the actual terms: "Skip senior, staff
+     engineer, principal engineer, engineering manager, director of engineering, vice
+     president."
+   - **Keep the next rung up** — "Drop `senior` from the list so Senior <role>
+     postings still get scored." Offer this whenever they are not already on the top
+     rung: the rung immediately above them is the one they may be promoted into, and
+     it is the term most likely to be regretted.
+   - **Exclude more** — "Name any titles, seniorities or specialisations to add."
+   - **No title exclusions** — "Score whatever the recall net returns. Rules nothing
+     out, spends more of the per-run budget."
+
+   Those are four genuinely different outcomes, which is what makes them options
+   rather than padding; "Other" is for the user who wants to hand you an edited list
+   in their own words.
+
+   If they edit, their answer is a request and not a keyword list. Re-run the
+   substring test and the `targets` check over whatever they say — "no lead roles"
+   becomes `"tech lead"` and `"team lead"`, never `"lead"` — then state the final list
+   back in one line and write it. **Do not ask a second time**; one confirmation is
+   the deal and a second is an interrogation. If the answer leaves the list empty,
+   write the empty list and say so plainly: nothing is filtered on title, and every
+   posting the recall net returns is eligible for scoring.
+
+   **Show all three back before you write anything** — the targets and the profile to
+   edit freely in conversation, the exclusions through the confirmation above. Then:
 
    ```bash
    sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
@@ -321,6 +475,13 @@ Three things that trip people up:
    years' worth of legitimate jobs with no error anywhere. If the resume is ambiguous
    — a career change, a long gap, freelance work — say what you are unsure about and
    let them settle it. Count professional experience, not education.
+
+   This is not the seniority band from question 6, and the two never touch. The band
+   is about words in the *title* and drops the posting for good; this number is
+   compared against the minimum the *posting* states in plain text ("5+ years", "3-7
+   years"), and that gate deliberately refuses to infer years from a seniority word —
+   a "Senior" posting naming no number is kept. Getting one right does not cover for
+   the other being wrong.
 
    Write it only once they have confirmed:
 
@@ -359,6 +520,11 @@ Three things that trip people up:
    - **Their Claude subscription** (`claude_code`) — the default, and the reason
      this plugin exists. No API key, no per-job cost. Then ask for `model` and
      `effort` (low / medium / high / xhigh / max; medium is a good default).
+
+     This model judges jobs during a sweep and nothing else. It has no bearing on the
+     exclusions, targets or profile drafted in question 6 — those are written by
+     whichever model is running this setup conversation, which is why that list gets
+     confirmed before it is written.
    - **An API key** (`openai` etc.) — tell them to put the key in their
      environment and install `requirements-byo-key.txt` into the plugin venv.
 

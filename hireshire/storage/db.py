@@ -414,7 +414,7 @@ class Database:
         """The overview page's four figures, at run scope or across the install.
 
         Counted by DISTINCT job_id rather than by row, so a job that resurfaced in
-        several sweeps is one job on the lifetime page — unlike the old dashboard's
+        several sweeps is one job on the lifetime page — unlike a per-run total's
         totals, which sum per-run counts and say so.
         """
         run_filter = " AND run_id = ?" if run_id else ""
@@ -637,7 +637,7 @@ class Database:
         return out
 
     def recent_runs(self, limit: int = 30) -> list[dict]:
-        """Newest-first run index for the dashboard: run_id and its time span."""
+        """Newest-first run index: run_id and its time span."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT run_id, MIN(started_at) AS started_at, MAX(finished_at) AS finished_at "
@@ -811,7 +811,7 @@ class Database:
     def load_all_matches(self, run_id: str) -> list[dict]:
         """Every match row for a run, enriched with the job's location and post date.
 
-        Backs the all-jobs export. LEFT JOIN because a match row must survive even if
+        Backs the results CSV. LEFT JOIN because a match row must survive even if
         its jobs row is missing — a partial export beats an export that silently
         drops rows.
 
