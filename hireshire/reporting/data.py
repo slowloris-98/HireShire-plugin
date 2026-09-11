@@ -1,7 +1,7 @@
-"""Every database read the two reports need, in one place.
+"""Every database read the overview page needs, in one place.
 
-Kept separate from the renderers so that the expensive question — "how much does
-it cost to refresh this page?" — has a single answer. Both reports are rebuilt
+Kept separate from the renderer so that the expensive question — "how much does
+it cost to refresh this page?" — has a single answer. The page is rebuilt
 repeatedly *during* a sweep, so the shape here matters:
 
 * `run_snapshot` is all counts. It stays cheap for the whole run.
@@ -110,8 +110,8 @@ def run_snapshot(db: Database, run_id: str) -> dict[str, Any]:
         "gated_out": gated_out,
         "candidates": candidates,
         # Everything that cleared the title gates and still got no LLM call. Both
-        # current reasons plus the pre-cutoff one, so a dashboard spanning old and
-        # new runs counts the same thing in every row.
+        # current reasons plus the pre-cutoff one, so a page spanning old and new
+        # runs counts the same thing in every row.
         "over_budget": sum(
             match["by_reason"].get(r, 0)
             for r in ("rerank_below_cutoff", "llm_call_cap_reached", "rerank_below_top_k")
@@ -152,23 +152,6 @@ def _never_scored(record: dict) -> bool:
     if record.get("cluster_representative"):
         return False
     return bool(record.get("skipped")) or record.get("relevance_score") is None
-
-
-def split_matches(records: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Partition a run's match rows into (scored, not scored).
-
-    `records` arrives from `Database.load_all_matches`, already ordered best-first
-    by LLM score, then the cross-encoder logit, then the old wide-pass column —
-    three keys applied in sequence rather than merged, because on rows old enough
-    to carry both rerank columns they came from different models.
-
-    This is the *matching report's* split and stays two-way. The overview page needs
-    four buckets and uses `partition_jobs` below; both are built on `_never_scored`
-    so there is still only one definition of "judged".
-    """
-    scored = [r for r in records if not _never_scored(r)]
-    unscored = [r for r in records if _never_scored(r)]
-    return scored, unscored
 
 
 # The two LLM-free verdicts. A row carrying either was killed by a gate that costs
@@ -316,52 +299,3 @@ def overview_snapshot(
         # it passes the answer in, and the default is the safe one.
         snapshot["live"] = bool(live)
     return snapshot
-
-
-def applied_summary(db: Database) -> dict[str, Any]:
-    """Applications, cumulative.
-
-    The `applied` table has no `run_id` — an application is a fact about a job, not
-    about the sweep that surfaced it — so this is a lifetime total for the install
-    and cannot be attributed to a run. The dashboard says so rather than implying
-    the number belongs to the newest sweep.
-    """
-    rows = db.load_applied()
-    submitted = [r for r in rows if r.get("status") == "submitted"]
-    errors = [r for r in rows if r.get("status") == "error"]
-    skipped = [r for r in rows if r.get("status") == "skipped"]
-    return {
-        "total": len(rows),
-        "submitted": len(submitted),
-        "errors": len(errors),
-        "skipped": len(skipped),
-        "recent": list(reversed(rows))[:15],
-    }
-
-
-def dashboard_snapshot(db: Database, limit: int = 30) -> dict[str, Any]:
-    """The whole install at a glance: per-run counts plus lifetime totals."""
-    runs = []
-    for row in db.recent_runs(limit=limit):
-        snap = run_snapshot(db, row["run_id"])
-        snap["finished_at"] = snap["finished_at"] or row.get("finished_at")
-        snap["started_at"] = snap["started_at"] or row.get("started_at")
-        runs.append(snap)
-
-    totals = {
-        "runs": len(runs),
-        "jobs": sum(r["jobs"] for r in runs),
-        "candidates": sum(r["candidates"] for r in runs),
-        "scored": sum(r["scored"] for r in runs),
-        "shortlisted": sum(r["shortlisted"] for r in runs),
-        # Runs that were never measured contribute nothing rather than breaking the
-        # sum, so this is "what the measured sweeps cost", which is the most that can
-        # honestly be said across an install that predates the tally.
-        "cost_usd": sum((r.get("usage") or {}).get("cost_usd") or 0 for r in runs),
-    }
-    return {
-        "runs": runs,
-        "totals": totals,
-        "applied": applied_summary(db),
-        "live": next((r for r in runs if r["in_progress"]), None),
-    }

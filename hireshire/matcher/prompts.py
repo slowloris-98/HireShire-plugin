@@ -20,7 +20,7 @@ Two rules for editing it:
   invisible in the output, since the number still looks like a score.
 
 The ScoringSchema field names are unchanged and deliberately so: the DB columns, the
-four rationales in the matching report and the all-jobs export all key off them.
+four rationales on the overview page and the results CSV all key off them.
 """
 
 SCORER_SYSTEM_PROMPT = """You are an expert recruiter and an advanced Applicant Tracking System (ATS). Your task is to evaluate a candidate's resume against a specific job description and calculate a highly accurate, objective Relevance Score from 0 to 100.

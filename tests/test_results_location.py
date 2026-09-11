@@ -112,10 +112,12 @@ def test_run_dir_and_csv_share_one_stamp():
     """The folder name and the file name inside it are the same string — that is
     what makes a directory listing readable without opening anything."""
     import orchestrate
+    from hireshire.results_export import results_name
 
     stamp = orchestrate._run_stamp()
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{6}", stamp), stamp
-    assert orchestrate._csv_name(stamp) == f"{stamp}_results.csv"
+    # The exporter owns the CSV's name, since it is the only thing that writes it.
+    assert results_name(stamp) == f"{stamp}_results.csv"
     assert orchestrate._json_name(stamp) == f"{stamp}_results.json"
 
 

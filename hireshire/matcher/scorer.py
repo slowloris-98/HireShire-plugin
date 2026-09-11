@@ -98,7 +98,7 @@ class UsageTally:
         """The tally as plain JSON, for `runs.stats_json`.
 
         Written once per run by `MatchStore.finalise` so the reports and the
-        all-jobs CSV can answer "what did that sweep cost" without reading a log
+        overview page can answer "what did that sweep cost" without reading a log
         file — which, under the monitor's `quiet=True`, was the only copy.
         """
         return {
@@ -167,7 +167,7 @@ class MatchResult(BaseModel):
     #
     # Deliberately NOT `years_experience_required` below, which is the LLM judge's
     # own reading of the same question. Two sources, two columns: merging them would
-    # make the all-jobs export unable to say which produced any given value, and the
+    # make the results CSV unable to say which produced any given value, and the
     # regex covers rows the judge never saw.
     yoe_required: Optional[float] = None
 

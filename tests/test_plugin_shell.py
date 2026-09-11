@@ -313,6 +313,21 @@ def test_no_skill_substitutes_the_data_placeholder(skill):
     )
 
 
+@pytest.mark.parametrize("skill", SKILLS)
+def test_no_skill_names_a_file_the_engine_stopped_writing(skill):
+    """The dashboard, the matching report and the all-jobs CSV are gone. A skill
+    still naming one would send the user at a path nothing writes — the same class
+    of failure as a skill stating a runtime fact it never asked for, and just as
+    quiet, because a missing local file produces no error until someone opens it.
+    """
+    text = (ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    for gone in ("dashboard.html", "latest_matching.html", "_matching.html",
+                 "latest_matching_html", "matching_html", "dashboard_html",
+                 "_results_all_jobs.csv", "all_jobs_csv",
+                 "HireShire Match Report"):
+        assert gone not in text, f"{skill}: nothing writes {gone} any more"
+
+
 def test_every_launch_path_goes_through_the_one_launcher():
     """Interpreter discovery is solved in exactly one place. Two platform traps
     make that worth enforcing: macOS has no bare `python` (Apple removed

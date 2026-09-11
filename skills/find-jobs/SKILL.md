@@ -31,8 +31,8 @@ on; only mention it when reporting where the results landed.
 
 ## Run it
 
-Start the sweep as a **background** task, so the reports below can be published
-while it is still going:
+Start the sweep as a **background** task, so you can relay its progress while it
+is still going:
 
 ```bash
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --sweep
@@ -54,17 +54,20 @@ This takes roughly 20 minutes on the default board set, most of it rate-limited
 waiting on the boards themselves. Tell the user that up front. If they enabled
 Workday and BambooHR at setup, expect considerably longer.
 
-**Give them the dashboard path in the same breath**, because it is what makes the
+**Give them the overview page in the same breath**, because it is what makes the
 wait legible:
 
 ```
-<results root>/dashboard.html
+<results root>/overview.html
 ```
 
 The engine rewrites it every few seconds and it reloads itself while a sweep is
-running, so opening it in a browser shows employers and postings climbing in real
-time. The results root is `<workspace_dir>/hireshire_run_results/`, or
-`<DATA>/results/` when `workspace_dir` is empty.
+running, so opening it in a browser shows the counts climbing and jobs arriving
+with the reasoning behind their scores. The results root is
+`<workspace_dir>/hireshire_run_results/`, or `<DATA>/results/` when
+`workspace_dir` is empty. That page covers every sweep the install has done; this
+sweep gets its own copy in its run folder, which `last_run.json` names as
+`run_overview_html` once the run has written one.
 
 If the plugin venv is not ready — a fresh install, or one whose setup never
 finished — the launcher installs it first, which adds a one-time ~2 GB download
@@ -85,21 +88,11 @@ that spends anything. That is also why results arrive throughout the run rather
 than all at once at the end: each employer's jobs go through every stage as soon
 as they are scraped.
 
-## While it runs — publish the match report
+## While it runs — relay the progress
 
-The engine writes an HTML report of the run to
-`<results root>/latest_matching.html` and keeps it current. Publish that file with
-the **Artifact** tool, and keep republishing it as the sweep advances.
-
-**Always publish to the same URL.** Before the first publish, call the Artifact
-tool with `action: "list"` and look for an artifact titled **HireShire Match
-Report**. If it is there, pass its `url` on every publish so this run replaces the
-last one. If it is not, publish without a `url` — that first call creates it, and
-every later call in this session can just republish the same file path.
-
-Never invent the path. Take it from `latest_matching_html` in `<DATA>/last_run.json`
-once the run has written one, or build it from the results root you already
-resolved above.
+There is nothing to publish. Both overview pages are local files the engine
+rewrites on a clock, and they reload themselves while a sweep is running — so the
+user watches them directly and you do not stand between them and their own data.
 
 To catch the sweep advancing, watch the engine log with the **Monitor** tool:
 
@@ -107,19 +100,18 @@ To catch the sweep advancing, watch the engine log with the **Monitor** tool:
 tail -f "<DATA>/logs/orchestrate.log" | grep -E --line-buffered "Sweep progress:|Budget:|Matcher done|Pipeline complete|Pipeline failed|Traceback"
 ```
 
-Republish the artifact on each line that arrives, and relay the line to the user in
-a few words. The filter deliberately covers the failure signatures as well as the
-progress ones: a filter that matched only good news would stay silent through a
-crash, and silence looks exactly like a sweep still running.
+Relay each line to the user in a few words. The filter deliberately covers the
+failure signatures as well as the progress ones: a filter that matched only good
+news would stay silent through a crash, and silence looks exactly like a sweep
+still running.
 
 Expect four or five lines in total. Do not add a poll loop of your own on top of
-this, and do not republish more often than the lines arrive — the page cannot
-change faster than the engine rewrites it.
+this.
 
-One thing to say plainly if the user asks why the report shows no scores for most
-of the run: **scoring happens at the end**. Top-K is a decision across the whole
-sweep, so no job can be scored until every job has been seen. The scrape counts are
-live; the reasoning arrives in the last couple of minutes.
+If the user asks when results start appearing: **throughout the run**. Each
+employer's jobs go through every stage as soon as they are scraped, so scored jobs
+and their reasoning land on the overview page from the first few minutes on. What
+arrives at the end is the CSV.
 
 ## Report back
 
@@ -135,18 +127,22 @@ you need it later. If `workspace_dir` is empty, the run wrote to `<DATA>/results
 instead; say so and mention that re-running `/hireshire:setup` moves results into a
 folder of their own.
 
-Read the CSV and show the shortlisted jobs as a table sorted by score — title,
-company, location, score, and the URL. Give them the path too.
+That one file holds **every job that reached the funnel**, best first, with eight
+columns: `posted_at`, `company`, `job_title`, `link`, `llm_score`, `cross_score`,
+`applied`, `shortlisted`. A blank `llm_score` means no judge ever read that job —
+it was dropped by a free gate or ran out of the run's call budget — and is not a
+score of zero. Read the file and show the shortlisted rows as a table sorted by
+score; give them the path too.
 
-Republish the match report one last time now that the run is finished, and give
-them the artifact link alongside the CSV path. That page is where the *reasoning*
-lives — the four rationales behind every score, and the full list of jobs that
-were considered but never scored. It answers "why didn't I see that job?", which
-the CSV cannot. Point them at it especially when the shortlist is empty.
+Then point them at the run's own overview page (`run_overview_html` in
+`<DATA>/last_run.json`). That is where the *reasoning* lives — the rationales
+behind every score, and the jobs that were never scored with the reason why. It
+answers "why didn't I see that job?", which the CSV cannot. Say so especially when
+the shortlist is empty.
 
-If the run reports it could not write the CSV, the file was locked — almost always
-open in Excel. The results are safe in the database; tell them to close it and
-re-run to get the CSV.
+If the sweep failed part-way, the CSV is still written, holding everything the run
+judged before it stopped — say that rather than implying the work was lost, and
+note that `last_run.json` records `"complete": false` for that run.
 
 Two things worth surfacing if the numbers warrant it:
 

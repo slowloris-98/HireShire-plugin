@@ -1,18 +1,22 @@
-"""The all-jobs CSV: every scored, dropped and duplicated posting in one file.
+"""The results CSV: every posting that reached the funnel, best first.
 
-Separate from the shortlist CSV because they answer different questions. The
-shortlist is a worklist — what to apply to, one row per requisition, consumed by
-the apply skill. This file is a record of the run's reasoning: why did a job the
-user would have liked not reach them?
+One file, because two were worse than one. There used to be a shortlist CSV — a
+worklist of what to apply to — and a separate all-jobs CSV recording the run's
+reasoning. Their columns overlapped heavily and neither answered the question a
+user actually asks: *show me everything, best first, and tell me what I have
+already applied to.*
 
-That question was unanswerable before. A sweep that shortlisted nothing left the
-user with an empty CSV and no way to tell a bad resume from a bad threshold from a
-broken reranker — the last of which turned out to be the actual fault.
+What it holds is every row in `matches`: scored, below-cutoff, capped,
+years-of-experience-dropped, and cluster siblings. Not the title-gate rejections —
+those never get a `matches` row, there can be tens of thousands of them in a sweep,
+and every score column would be blank. They are on the overview page's
+`Total Jobs Seen` section instead, which reads the `jobs` table for exactly that
+reason.
 
-Four score columns, never merged into one. They are a bi-encoder cosine, two logits
-from two *different* cross-encoders, and an LLM percentage. Averaging them or
-sorting on a blend would be meaningless, and presenting them in one column would
-invite exactly that.
+Two score columns, never merged into one. `llm_score` is a 0-100 percentage from an
+LLM judge and `cross_score` is a cross-encoder logit on an unbounded scale that is
+personal to the user's own profile. Averaging them or sorting on a blend would be
+meaningless, and presenting them in one column would invite exactly that.
 """
 
 from __future__ import annotations
@@ -23,77 +27,24 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-ALL_JOBS_SUFFIX = "_results_all_jobs.csv"
+RESULTS_SUFFIX = "_results.csv"
 
 FIELDS = [
-    "processed_at",
+    # When the employer posted it, from `jobs.updated_at` — not when we processed
+    # it. They are different questions and this is the one a reader asks of a job.
+    "posted_at",
     "company",
     "job_title",
-    "location",
-    "llm_score",
-    "cross_score_refined",
-    "cross_score_wide",
-    "bi_score",
-    "yoe_required",
-    "rerank_stage",
-    "status",
-    "recommend",
-    "cluster_size",
-    "cluster_representative",
-    "posted_at",
     "link",
-    "job_id",
-    # A per-RUN scalar repeated on every row, unlike everything above it. The tally
-    # is one figure for the whole sweep — the funnel does not attribute spend to
-    # individual jobs — and repeating it keeps the column removable in one line and
-    # makes a spreadsheet pivot work. Blank on runs that recorded no cost.
-    "run_cost_usd",
+    "llm_score",
+    "cross_score",
+    "applied",
+    "shortlisted",
 ]
 
 
-def all_jobs_name(stamp: str) -> str:
-    return f"{stamp}{ALL_JOBS_SUFFIX}"
-
-
-def _status(record: dict) -> str:
-    """One word for what happened to this job, from the row's own fields."""
-    if record.get("skip_reason"):
-        return str(record["skip_reason"])
-    if record.get("skipped"):
-        return "skipped"
-    if record.get("shortlisted"):
-        return "shortlisted"
-    return "scored_below_threshold"
-
-
-def _row(record: dict, run_cost_usd: float | None = None) -> dict:
-    return {
-        "processed_at": record.get("scored_at") or "",
-        "company": record.get("board_token") or "",
-        "job_title": record.get("title") or "",
-        "location": record.get("location") or "",
-        # Blank rather than 0 for jobs the LLM never saw. A budget drop carries
-        # relevance_score=0 from the shared `filtered_result` builder, and printing
-        # that as a score reads as "the model judged this worthless" — the exact
-        # misreading that hid the reranker fault for a whole run.
-        "llm_score": "" if _never_scored(record) else record.get("relevance_score"),
-        "cross_score_refined": _num(record.get("rerank_score")),
-        "cross_score_wide": _num(record.get("rerank_score_wide")),
-        "bi_score": _num(record.get("encoder_score")),
-        # What the posting asks for in years, read by funnel/experience.py. Blank
-        # when it states nothing, which is the majority-of-a-quarter case and means
-        # the experience gate never had an opinion about this row.
-        "yoe_required": _num(record.get("yoe_required")),
-        "rerank_stage": record.get("rerank_stage") or "",
-        "status": _status(record),
-        "recommend": "yes" if record.get("recommend") else "no",
-        "cluster_size": record.get("cluster_size") or 1,
-        "cluster_representative": record.get("cluster_representative") or "",
-        "posted_at": record.get("posted_at") or "",
-        "link": record.get("absolute_url") or "",
-        "job_id": record.get("job_id") or "",
-        "run_cost_usd": _num(run_cost_usd),
-    }
+def results_name(stamp: str) -> str:
+    return f"{stamp}{RESULTS_SUFFIX}"
 
 
 def _never_scored(record: dict) -> bool:
@@ -101,37 +52,95 @@ def _never_scored(record: dict) -> bool:
 
     Rows that inherited a verdict from a cluster representative ARE scored — the
     call was made, just once for the whole cluster — so they keep their number.
+
+    Same rule as `hireshire.reporting.data._never_scored`, and the two must stay
+    the same: there is one definition of "judged" and both a CSV cell and a page
+    cell are rendered from it.
     """
     if record.get("cluster_representative"):
         return False
     return bool(record.get("skipped")) or record.get("relevance_score") is None
 
 
+def _llm_score(record: dict):
+    """The judge's score, or None when no judge ever read this posting.
+
+    Blank rather than 0 in the file. A budget drop carries `relevance_score=0` from
+    the shared `filtered_result` builder, and printing that as a score reads as
+    "the model judged this worthless" — the exact misreading that hid a broken
+    reranker for a whole run.
+    """
+    return None if _never_scored(record) else record.get("relevance_score")
+
+
 def _num(value) -> str | float:
     return "" if value is None else round(float(value), 4)
 
 
-def write_all_jobs_csv(records: list[dict], path: Path,
-                       run_cost_usd: float | None = None) -> Path | None:
-    """Write the all-jobs CSV. Returns the path, or None if it could not be written.
+def _yes(value) -> str:
+    return "yes" if value else "no"
 
-    `run_cost_usd` is the sweep's estimated scoring cost, which no match record
-    carries — it is recorded once against the run — so the caller passes it in. It
-    defaults to None, which writes a blank column rather than a zero.
 
-    Never raises: this file is a diagnostic, and losing it must not take down a run
-    whose real output — the database rows and the shortlist — is already safe.
+def _sort_key(record: dict) -> tuple:
+    """Best first: LLM score, then the cross-encoder logit, blanks last in both.
+
+    Sorted here rather than in SQL, and that is not duplication.
+    `Database.load_all_matches` orders by `relevance_score DESC`, which reads a
+    never-scored row's placeholder 0 as a real score and files it among the genuine
+    zeroes instead of at the bottom. `_never_scored` is the only thing that knows
+    the difference, and it is Python.
     """
+    llm = _llm_score(record)
+    cross = record.get("rerank_score")
+    return (
+        llm is None, -(llm or 0),
+        cross is None, -(float(cross) if cross is not None else 0.0),
+    )
+
+
+def _row(record: dict, applied_ids: set[str]) -> dict:
+    llm = _llm_score(record)
+    return {
+        "posted_at": record.get("posted_at") or "",
+        # `board_token` is the employer's board slug and is the closest thing to a
+        # company name the funnel ever has — nothing upstream resolves a display
+        # name, so this is the honest value rather than a prettified guess.
+        "company": record.get("board_token") or "",
+        "job_title": record.get("title") or "",
+        "link": record.get("absolute_url") or "",
+        "llm_score": "" if llm is None else llm,
+        "cross_score": _num(record.get("rerank_score")),
+        # `applied` has no `run_id` — an application is a fact about a job, not
+        # about the sweep that surfaced it — so this is "have I ever applied to
+        # this", which is the only question the table can answer.
+        "applied": _yes(record.get("job_id") in applied_ids),
+        "shortlisted": _yes(record.get("shortlisted")),
+    }
+
+
+def write_results_csv(records: list[dict], path: Path,
+                      applied_ids: set[str] | None = None) -> Path | None:
+    """Write the results CSV. Returns the path, or None if it could not be written.
+
+    `applied_ids` comes from `Database.applied_ids()`. The caller passes it because
+    no match record carries it: the `applied` table is keyed on the job alone and is
+    read once for the whole file rather than per row.
+
+    Never raises: losing this file must not take down a run whose database rows are
+    already safe — the same trade `hireshire.reporting.refresh` makes. It is also
+    called from a `finally`, so a sweep that died half-scored still writes what it
+    judged, and an exception here would replace the real traceback with its own.
+    """
+    ids = applied_ids or set()
+    rows = sorted(records, key=_sort_key)
     try:
-        # utf-8-sig so Excel reads the em-dashes in job titles correctly. The
-        # shortlist CSV predates this and is left alone to avoid changing a file
-        # the apply skill already parses.
+        # utf-8-sig so Excel reads the em-dashes in job titles correctly.
         with path.open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
             writer.writeheader()
-            writer.writerows(_row(r, run_cost_usd) for r in records)
+            writer.writerows(_row(r, ids) for r in rows)
     except OSError as exc:
         logger.warning("Could not write %s: %s", path, exc)
         return None
-    logger.info("Wrote %d rows to %s", len(records), path)
+    logger.info("Wrote %d rows to %s", len(rows), path)
     return path

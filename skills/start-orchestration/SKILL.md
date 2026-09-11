@@ -62,9 +62,10 @@ Tell the user, plainly:
   ```bash
   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --stop
   ```
-- **Where to watch it** without waiting on you: the dashboard at
-  `<results root>/dashboard.html`. It is local, rewrites itself continuously while a
-  sweep runs, and costs them nothing. The results root is
+- **Where to watch it** without waiting on you: the overview page at
+  `<results root>/overview.html`. It is local, covers every sweep the install has
+  done, rewrites itself continuously while a sweep runs, and costs them nothing. Each
+  sweep also leaves its own copy in its run folder. The results root is
   `<workspace_dir>/hireshire_run_results/`, or `<DATA>/results/` when `workspace_dir`
   is empty.
 
@@ -80,19 +81,14 @@ Each cycle emits one summary line: how many matches were found, the best score, 
 the next sweep is due. Relay those as they arrive; do not go looking for more detail
 unless the user asks.
 
-**Republish the match report on each of those summary lines, and only then.** The
-engine writes it to `<results root>/latest_matching.html` on every sweep, and
-`<DATA>/last_run.json` carries the exact path as `latest_matching_html` once a sweep has
-finished.
-
-Publish it with the **Artifact** tool, always to the same URL: call the tool with
-`action: "list"` first, find the artifact titled **HireShire Match Report**, and
-pass its `url`. If there is no such artifact yet, the first publish creates it.
-One link, updated every cycle — not one per sweep.
+There is nothing to publish. The engine rewrites both overview pages on a clock and
+they reload themselves while a sweep is running, so the user watches them directly
+rather than waiting on a message from you. `<DATA>/last_run.json` carries the exact
+paths as `overview_html` and `run_overview_html` once a sweep has written them.
 
 Do not tail the engine log for progress here. A recurring sweep runs unattended for
-hours, and a report republished on every internal milestone would put several messages
-into the session every few hours. One per completed cycle is the right rate.
+hours, and relaying every internal milestone would put several messages into the
+session every few hours. One per completed cycle is the right rate.
 
 **When the task ends you will be notified** with its exit code. Say what happened rather
 than assuming: a clean end means the 24-hour bound or a `--stop`; a failure means

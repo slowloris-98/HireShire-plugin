@@ -4,6 +4,62 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.4.0] — 2026-09-11
+
+### Changed
+
+- **One CSV instead of two.** `<stamp>_results.csv` now holds **every job that
+  reached the funnel**, best first, with eight columns: `posted_at`, `company`,
+  `job_title`, `link`, `llm_score`, `cross_score`, `applied`, `shortlisted`. A blank
+  `llm_score` means no judge read that job and is never a zero. It replaces both the
+  old shortlist CSV and `<stamp>_results_all_jobs.csv`, which overlapped heavily and
+  between them still could not answer "show me everything, best first, and tell me
+  what I've already applied to".
+
+  It is written once at the end of the run, because the sort needs every row — so it
+  no longer fills live mid-sweep. The overview page is what moves during a sweep.
+  `<stamp>_results.json`, which `/hireshire:apply` reads, is unchanged.
+
+- **All four sections of the overview page now read the same way**: a filter box over
+  a sticky six-column header (`# | Title | Company | Location | LLM | Cross`) over a
+  bounded scroll box. Three of them used to be unbounded flat lists beside one that
+  was not, which made a sweep with 300 filtered jobs a page you scrolled past rather
+  than read. Clicking a job still expands its full reasoning in place, and a job's
+  drop reason moved to a line under its title — the columns are single-line and the
+  reasons are sentences.
+
+### Fixed
+
+- **A sweep that fails part-way now leaves its results.** Before this, a run that died
+  fifteen minutes in wrote no JSON, no diagnostic CSV, and left `last_run.json` still
+  pointing at the *previous* run — everything it had actually scored was reachable
+  only by opening the database by hand. The run's output files are now written in a
+  `finally`, so they hold whatever the sweep judged before it stopped, and both
+  `last_run.json` and the run's database row record `complete: false` so a partial run
+  is not mistaken for a whole one.
+
+- **A crashed sweep no longer leaves its pages reloading forever.** The pages decide
+  whether a sweep is still going by looking for the run's own database row, and a
+  failed run never wrote one — so both overview pages went on refreshing every fifteen
+  seconds with their elapsed figure climbing on a process that had been dead for
+  hours. That row is now written whether or not the run finished.
+
+### Removed
+
+- **`dashboard.html` and the per-run matching report** (`<stamp>_matching.html` and
+  `latest_matching.html`). Three pages answered overlapping questions; the overview
+  page answers "what have I got" at both scopes — one sweep, and every sweep the
+  install has done — and keeps the judge's reasoning inside each job.
+
+- **Artifact publishing.** `/hireshire:find-jobs` and `/hireshire:start-orchestration`
+  used to publish the matching report to a rolling artifact URL. Both overview pages
+  are local files that rewrite themselves while a sweep runs, so the user watches them
+  directly rather than waiting on a republish. Nothing leaves the machine.
+
+- `last_run.json` no longer carries `matching_html`, `latest_matching_html`,
+  `dashboard_html` or `all_jobs_csv`; it names `csv`, `json`, `overview_html` and
+  `run_overview_html`, and gains `complete`.
+
 ## [0.3.1] — 2026-09-10
 
 ### Fixed

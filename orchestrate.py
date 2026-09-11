@@ -12,7 +12,6 @@ then repeats on a schedule.
 
 import argparse
 import asyncio
-import csv
 import json
 import logging
 import logging.handlers
@@ -34,8 +33,8 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 import matcher
 import scraper
 from hireshire import paths, reporting
-from hireshire.results_export import all_jobs_name, write_all_jobs_csv
-from hireshire.storage.db import PHASE_MATCH, PHASE_PIPELINE, get_db
+from hireshire.results_export import results_name, write_results_csv
+from hireshire.storage.db import PHASE_PIPELINE, get_db
 
 load_dotenv()
 
@@ -71,16 +70,6 @@ def _setup_logging() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-# `found_at` is when we processed the job; `posted_at` is when the employer
-# posted it. They are different questions and the CSV needs both — the old
-# schema carried only the former, under a name that read like the latter.
-_CSV_FIELDS = [
-    "title", "company", "location", "posted_at", "job_url",
-    "relevance_score", "rerank_score", "encoder_score",
-    "cluster_size", "job_id", "found_at",
-]
-
-
 async def _collect_results(in_q: asyncio.Queue, out_q: asyncio.Queue) -> None:
     """Turn shortlisted (MatchResult, Job) pairs into flat result records.
 
@@ -104,7 +93,7 @@ async def _collect_results(in_q: asyncio.Queue, out_q: asyncio.Queue) -> None:
             "rerank_score_wide": match_result.rerank_score_wide,
             "encoder_score": match_result.encoder_score,
             # >1 means this requisition was posted for several locations. Only this
-            # representative is queued for applying; the rest are in the all-jobs
+            # representative is queued for applying; the rest are in the results
             # CSV with their own links.
             "cluster_size": match_result.cluster_size,
             "found_at": datetime.now(timezone.utc).isoformat(),
@@ -227,113 +216,62 @@ def _run_stamp(now: datetime | None = None) -> str:
     return now.astimezone().strftime("%Y-%m-%d_%H%M%S")
 
 
-def _csv_name(stamp: str) -> str:
-    return f"{stamp}_results.csv"
-
-
 def _json_name(stamp: str) -> str:
     return f"{stamp}_results.json"
-
-
-async def _open_csv_append(path: Path, attempts: int = 5, base_delay: float = 0.5):
-    """Open `path` in append mode, retrying on a transient Windows lock
-    (PermissionError) with exponential backoff. Returns the open file handle,
-    or None if it could not be opened after `attempts` tries."""
-    for i in range(attempts):
-        try:
-            return path.open("a", newline="", encoding="utf-8")
-        except PermissionError:
-            if i == attempts - 1:
-                return None
-            delay = base_delay * (2 ** i)  # 0.5, 1, 2, 4 s
-            logger.warning(
-                "CSV %s is locked (attempt %d/%d); retrying in %.1fs",
-                path, i + 1, attempts, delay,
-            )
-            await asyncio.sleep(delay)
 
 
 async def _track_results(
     q: asyncio.Queue, results_dir: Path, run_id: str, stamp: str, quiet: bool = False
 ) -> None:
-    """Persist each pipeline result to the DB (O(1) per row) and append it to the
-    per-run CSV. The CSV handle is opened once for the run's lifetime; a transient
-    file lock retries with backoff and, if it never clears, degrades to DB-only
-    writes rather than crashing the pipeline (the DB is the source of truth).
+    """Persist each pipeline result to the DB, O(1) per row.
 
-    That degrade path matters more than it used to: the CSV now sits in a folder
-    the user actively browses and may well have open in Excel, so the lock is a
-    routine event rather than a theoretical one."""
+    Only the DB. The CSV used to be appended here as rows arrived, which meant a
+    file in processing order that also had to survive being open in Excel — a
+    routine event, since it sits in a folder the user actively browses. It is now
+    written once from the database at the end of the run, because it is sorted
+    across the whole sweep and no row's position is known until every row exists.
+    `_write_run_outputs` does that in a `finally`, so a sweep that dies part-way
+    still leaves the CSV for everything it judged.
+    """
     db = get_db()
-    csv_path = results_dir / _csv_name(stamp)
-
-    write_header = not csv_path.exists()
-    f = await _open_csv_append(csv_path)
-    writer = None
-    if f is None:
-        logger.error(
-            "Could not open %s after retries; continuing with DB-only writes",
-            csv_path,
-        )
-        # The run still "succeeds" with rows only in the DB, so say so where the
-        # user will see it — a logger.error in a file nobody opens is not enough.
-        # Never under quiet: each monitor stdout line becomes a notification.
-        if not quiet:
-            console.print(
-                f"[yellow]Could not write {csv_path} — it looks locked by another "
-                f"program (Excel?). Results are in the database; close the file "
-                f"and re-run to get the CSV.[/yellow]"
-            )
-    else:
-        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS, extrasaction="ignore")
-        if write_header:
-            writer.writeheader()
-            f.flush()
-
-    try:
-        while True:
-            record = await q.get()
-            if record is None:
-                break
-
-            await asyncio.to_thread(db.record_pipeline_result, run_id, record)
-
-            if writer is not None:
-                try:
-                    writer.writerow(record)
-                    f.flush()
-                except OSError as exc:
-                    logger.warning("Failed to append row to %s: %s", csv_path, exc)
-
-            logger.info("Tracked result: %s — %s", record["company"], record["title"])
-    finally:
-        if f is not None:
-            f.close()
+    while True:
+        record = await q.get()
+        if record is None:
+            break
+        await asyncio.to_thread(db.record_pipeline_result, run_id, record)
+        logger.info("Tracked result: %s — %s", record["company"], record["title"])
 
 
-async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, stamp: str) -> None:
-    """Export the run's pipeline results to JSON once from the DB (read by the
-    /apply skill) and record the pipeline run's summary row."""
+async def _write_run_outputs(run_id: str, results_dir: Path, stamp: str,
+                             complete: bool = True) -> int:
+    """Write every file the run produces, and return the shortlist row count.
+
+    Split out of `_finalise_pipeline` so it can run from a `finally`. Everything
+    it exports is already committed to a WAL database, so on a sweep that died
+    half-scored these are honest partial exports — and that matters: before the
+    split, a crash left no CSV, no JSON, and a `last_run.json` still pointing at
+    the previous run, so fifteen minutes of real scoring was reachable only by
+    opening the database by hand.
+
+    `complete` is recorded rather than inferred. A partial shortlist is still a
+    real shortlist — every row in it was genuinely judged and cleared the
+    threshold — so the file is written either way and the flag says which it is.
+    """
     db = get_db()
     rows = await asyncio.to_thread(db.load_pipeline_results, run_id)
 
-    # The all-jobs diagnostic. Written from the DB at the end rather than streamed
-    # like the shortlist CSV, because it is sorted across the whole run — no row's
-    # position is known until every row exists.
+    # Every row that reached the funnel, ordered by the database and re-sorted by
+    # the exporter, which is the only place that can tell a real 0 from the
+    # placeholder a budget drop carries.
     all_rows = await asyncio.to_thread(db.load_all_matches, run_id)
-    # The sweep's scoring cost, recorded once against the match phase rather than on
-    # any row. Safe to read here: the matcher writes its `runs` row in the `finally`
-    # that also sends the queue sentinel, and it finalises *before* sending it, so
-    # the row exists by the time this runs. Absent on a run whose backend has no
-    # meters, which writes a blank column rather than a zero.
-    match_stats = (await asyncio.to_thread(db.run_phase_stats, run_id)).get(PHASE_MATCH) or {}
-    run_cost = (match_stats.get("usage") or {}).get("cost_usd")
-    all_jobs_path = await asyncio.to_thread(
-        write_all_jobs_csv, all_rows, results_dir / all_jobs_name(stamp), run_cost
+    # `applied` is keyed on the job alone and has no `run_id`, so this is read once
+    # for the whole file rather than per row.
+    applied_ids = await asyncio.to_thread(db.applied_ids)
+    csv_path = await asyncio.to_thread(
+        write_results_csv, all_rows, results_dir / results_name(stamp), applied_ids
     )
 
     json_path = results_dir / _json_name(stamp)
-    report_targets = reporting.report_paths(results_dir, stamp)
     try:
         json_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
     except OSError as exc:
@@ -345,6 +283,7 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
     # A fixed pointer to the newest run, so /apply does not have to guess where
     # the results root is or which filename generation a directory holds. Metadata
     # about a run, not a result of it, so it belongs in the data dir.
+    report_targets = reporting.report_paths(results_dir, stamp)
     try:
         paths.LAST_RUN_PATH.write_text(
             json.dumps(
@@ -352,24 +291,20 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
                     "run_id": run_id,
                     "stamp": stamp,
                     "results_dir": str(results_dir),
-                    "csv": str(results_dir / _csv_name(stamp)),
+                    # One CSV, every job that reached the funnel, best first. Blank
+                    # rather than None when it could not be written, so a reader
+                    # never builds a path out of the string "None".
+                    "csv": str(csv_path) if csv_path else "",
                     "json": str(json_path),
-                    # Additive: /apply reads `json` and is unaffected. This is here
-                    # so a human (or a later skill) can find the diagnostic without
-                    # guessing at the results root.
-                    "all_jobs_csv": str(all_jobs_path) if all_jobs_path else None,
-                    # Also additive. `matching_html` is the file the find-jobs and
-                    # start-orchestration skills publish; `latest_matching_html` is
-                    # the fixed path they publish *from*, so every sweep redeploys
-                    # to one artifact URL instead of leaving a trail of stale pages.
-                    "matching_html": str(report_targets["matching"]),
-                    "latest_matching_html": str(report_targets["latest_matching"]),
-                    "dashboard_html": str(report_targets["dashboard"]),
-                    # The minimal overview: `overview_html` spans every sweep and
+                    # The two overview pages. `overview_html` spans every sweep and
                     # sits at the results root, `run_overview_html` covers this one
-                    # and sits beside its CSVs.
+                    # and sits beside its CSV. Local files — nothing is published.
                     "overview_html": str(report_targets["overview"]),
                     "run_overview_html": str(report_targets["run_overview"]),
+                    # False when the sweep did not reach the end. The files above
+                    # are still real, just partial, and /apply reads `json` either
+                    # way — this is how a reader tells the difference.
+                    "complete": complete,
                     "total_results": len(rows),
                     "total_jobs_considered": len(all_rows),
                 },
@@ -380,22 +315,37 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str, st
     except OSError as exc:
         logger.warning("Could not write %s: %s", paths.LAST_RUN_PATH, exc)
 
+    return len(rows)
+
+
+async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str,
+                             stamp: str, total_results: int = 0,
+                             complete: bool = True) -> None:
+    """Record the pipeline run's summary row, then refresh the reports one last time.
+
+    Runs whether or not the sweep finished, and writes the `runs` row either way.
+    That row is the reports' only signal for "is this sweep still going", so a
+    crashed run without one leaves both pages meta-refreshing forever with their
+    elapsed figure climbing on a process that is dead. `completed` is what keeps
+    that honest without pretending the run succeeded.
+    """
+    db = get_db()
     await asyncio.to_thread(
         db.finalise_run, run_id, PHASE_PIPELINE, started_at, None,
-        {"total_results": len(rows)},
+        {"total_results": total_results, "completed": complete},
     )
 
     # Last, and deliberately after `finalise_run`: the reports read the pipeline's
     # own `runs` row to decide whether the sweep is still going, and that is what
-    # arms the dashboard's meta refresh. Refreshing before this line would leave a
-    # finished run reloading itself forever.
+    # arms their meta refresh. Refreshing before this line would leave a finished
+    # run reloading itself forever.
     await asyncio.to_thread(reporting.refresh, run_id, results_dir, stamp, True)
 
 
 # Quarters, not a percentage every company. The find-jobs skill tails the log for
-# these to know when to republish its report artifact, and every line it matches
-# becomes a message in the user's session — so there are four of them for a sweep
-# that visits ~10,000 employers, and they are worded to be readable on their own.
+# these to relay progress, and every line it matches becomes a message in the user's
+# session — so there are four of them for a sweep that visits ~10,000 employers, and
+# they are worded to be readable on their own.
 _SCRAPE_MILESTONES = (25, 50, 75)
 REPORT_MILESTONE_PREFIX = "Sweep progress:"
 
@@ -455,7 +405,7 @@ async def _stop_report_ticker(ticker: asyncio.Task, busy: threading.Lock) -> Non
     """End the ticker and wait for any rebuild it already started.
 
     Both halves are required, and the ordering they protect is documented in
-    CLAUDE.md: the dashboard's meta refresh is armed only while the pipeline's `runs`
+    CLAUDE.md: the pages' meta refresh is armed only while the pipeline's `runs`
     row is absent, so the `final=True` write must be the last one. Cancelling the task
     alone is not enough — `schedule` dispatches to an executor thread, so a rebuild
     fired a moment earlier can still be mid-write and would land *after* the final
@@ -567,10 +517,14 @@ async def run_pipeline(
         nullcontext() if quiet
         else Live(progress, console=console, refresh_per_second=4)
     )
+    # Set at the end of the pipeline body below, and read by the `finally` that
+    # writes the run's files. A sweep that raised still gets every file it earned;
+    # this is how they record that they are partial.
+    finished = False
     try:
         with live:
-            # Covers both branches below, and is stopped before `_finalise_pipeline`
-            # rather than at the end of the run — see `_stop_report_ticker`.
+            # Covers both branches below, and is stopped before the outputs are
+            # written rather than at the end of the run — see `_stop_report_ticker`.
             ticker = asyncio.create_task(_tick_reports(schedule_report_refresh))
             try:
                 if skip_matcher:
@@ -587,24 +541,47 @@ async def run_pipeline(
                         _collect_results(q2, q3),
                         _track_results(q3, results_dir, run_id, stamp, quiet),
                     )
+                finished = True
             finally:
-                # In a `finally` so a failed sweep still leaves the reports settled
-                # and no rebuild running against a database nobody is writing.
+                # All of this is in a `finally`, and that is the whole point: a sweep
+                # that died fifteen minutes in has real scored rows in the database,
+                # and before this they were reachable only by opening it by hand. No
+                # CSV, no JSON, a `last_run.json` still naming the previous run, and
+                # two pages left meta-refreshing forever because the `runs` row that
+                # says "this sweep is over" was never written.
+                #
+                # Order matters. Stop the ticker first, so no rebuild is running
+                # against the database while the files are read; then the files; then
+                # the `runs` row and one final refresh, which must follow it because
+                # the pages read that row to decide whether to keep reloading.
                 await _stop_report_ticker(ticker, report_busy)
-
-            await _finalise_pipeline(run_id, results_dir, started_at, stamp)
+                try:
+                    total_results = await _write_run_outputs(
+                        run_id, results_dir, stamp, complete=finished
+                    )
+                    await _finalise_pipeline(
+                        run_id, results_dir, started_at, stamp,
+                        total_results, complete=finished,
+                    )
+                except Exception:  # noqa: BLE001
+                    # A `finally` that raises replaces the real traceback with its
+                    # own, which would hide the failure this exists to survive.
+                    logger.exception("Could not write the run's outputs — run %s", run_id)
 
             # Apply runs inside the same Live so its bar shares this Progress —
             # never a second Live. Needs shortlisted jobs, so skip it when the
-            # matcher was skipped.
+            # matcher was skipped. Unreachable on a failed sweep: the exception is
+            # already on its way out through the `finally` above.
             if apply and not skip_matcher:
                 apply_task = progress.add_task("[bold]Applying[/bold]", total=None, count_str="running")
                 await _launch_apply()
                 # The `applied` table is only written during the phase above, and
-                # `_finalise_pipeline`'s refresh ran before it — so without this the
-                # Applied section reads empty on a run that did apply. Safe after
-                # `finalise_run`: the `runs` row now exists, so this renders the run
-                # as complete instead of re-arming the dashboard's meta refresh.
+                # both the CSV's `applied` column and the pages' Applied section
+                # were written before it — so without this they report a run that
+                # applied to nothing. Safe after `finalise_run`: the `runs` row now
+                # exists, so this renders the run as finished rather than re-arming
+                # the meta refresh.
+                await _write_run_outputs(run_id, results_dir, stamp, complete=True)
                 await asyncio.to_thread(
                     reporting.refresh, run_id, results_dir, stamp, True
                 )
@@ -615,10 +592,19 @@ async def run_pipeline(
         # Never under quiet: each monitor stdout line becomes a notification, and
         # the monitor emits exactly one summary line per cycle.
         if not quiet:
-            console.print(f"\n[bold]Results:[/bold] {results_dir / _csv_name(stamp)}")
+            console.print(f"\n[bold]Results:[/bold] {results_dir / results_name(stamp)}")
         return run_id
     except Exception:
         logger.exception("Pipeline failed — run %s", run_id)
+        # Say where the partial results are. The `finally` above wrote them, and a
+        # user whose twenty-minute sweep died at minute fifteen should not be told
+        # only that it failed.
+        if not quiet:
+            console.print(
+                f"\n[yellow]Partial results:[/yellow] "
+                f"{results_dir / results_name(stamp)} — everything this sweep "
+                f"judged before it failed."
+            )
         return None
 
 

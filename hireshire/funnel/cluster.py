@@ -8,7 +8,7 @@ good matches that ranked in the low hundreds.
 *Who decides which duplicate to drop?* Nobody — nothing is dropped. Members of a
 cluster are grouped, one representative is scored by the LLM, and the score is
 copied back to every sibling. Every posting keeps its own row, location and link in
-the all-jobs export.
+the results CSV.
 
 **The key is the description, not the title.** This reverses an earlier design and
 the reversal was forced by data. Keying on `(board_token, normalised_title)` meant
