@@ -30,7 +30,17 @@
       "Bash(echo \"=== log mtimes ===\")",
       "Bash(ls -la __TRACKED_VAR__/logs/)",
       "Bash(grep -vE '^\\\\s*#|^\\\\s*$' C:/Users/atrey/.claude/plugins/data/hireshire-hireshire/config/matcher.yaml)",
-      "Bash(D=\"C:/Users/atrey/.claude/plugins/data/hireshire-hireshire\"; echo \"=== rerank / top_k / dedupe block ===\"; sed -n '/rerank:/,/^[a-z]/p' \"$D/config/matcher.yaml\" | grep -vE \"^\\\\s*#\" | head -n 25; echo; echo \"=== any top_k anywhere ===\"; grep -n \"top_k\\\\|min_score\\\\|max_age_hours\" \"$D/config/matcher.yaml\" \"$D/config/scraper.yaml\" 2>/dev/null)"
+      "Bash(D=\"C:/Users/atrey/.claude/plugins/data/hireshire-hireshire\"; echo \"=== rerank / top_k / dedupe block ===\"; sed -n '/rerank:/,/^[a-z]/p' \"$D/config/matcher.yaml\" | grep -vE \"^\\\\s*#\" | head -n 25; echo; echo \"=== any top_k anywhere ===\"; grep -n \"top_k\\\\|min_score\\\\|max_age_hours\" \"$D/config/matcher.yaml\" \"$D/config/scraper.yaml\" 2>/dev/null)",
+      "Bash(rm -f hireshire/orchestration_status.py tests/test_orchestration_status.py)",
+      "Bash(python -c \"import json; json.load\\(open\\('hooks/hooks.json'\\)\\); print\\('hooks.json valid'\\)\")",
+      "Bash(python -m compileall -q scripts/bootstrap.py scripts/run_orchestration.py hireshire/sweep_pid.py)",
+      "Bash(python -m pytest \"tests/test_approve.py::test_every_command_the_skills_run_is_one_the_guard_approves[start-orchestration]\" -q)",
+      "Bash(sh scripts/hireshire.sh --stop)",
+      "Bash(python -m pyflakes scripts/bootstrap.py scripts/run_orchestration.py hireshire/sweep_pid.py hireshire/process_liveness.py)",
+      "Bash(sed -i '/^import json$/d' scripts/bootstrap.py)",
+      "Bash(python -m compileall -q scripts/bootstrap.py)",
+      "Bash(grep -vE \"CHANGELOG|^\\\\s*$\")",
+      "PowerShell(Get-Date -Format \"HH:mm:ss\"; \"--- sweep processes ---\"; $p = Get-CimInstance Win32_Process -Filter \"Name LIKE '%python%'\" | Select-Object ProcessId, CreationDate, @{n='cmd';e={$_.CommandLine.Substring\\(0,[Math]::Min\\(80,$_.CommandLine.Length\\)\\)}}; if \\($p\\) { $p | Format-List } else { \"none running\" }; \"--- DATA dir ---\"; Get-ChildItem \"C:\\\\Users\\\\atrey\\\\.claude\\\\plugins\\\\data\\\\hireshire-hireshire\" | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize)"
     ],
     "additionalDirectories": [
       "\\tmp",

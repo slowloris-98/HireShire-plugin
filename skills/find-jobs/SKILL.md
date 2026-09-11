@@ -42,10 +42,9 @@ Go through the launcher rather than calling `python` — it resolves a working
 interpreter on macOS, Linux and Windows and runs inside the plugin venv.
 
 **Use `--sweep`, never `orchestrate.py --once`.** They run the same pipeline, but
-`--sweep` registers the run in the status file, so `--status` can see it, `--stop`
-can end it, and it stops with the session. The old form went through a second
-launcher that did none of that: a find-jobs sweep was invisible to `--status`,
-unreachable by `--stop`, and outlived the session that started it.
+`--sweep` records its pid, so `--stop` can end it and a second sweep will not start
+alongside it. The old form went through a second launcher that recorded nothing,
+leaving a find-jobs sweep unreachable by `--stop`.
 
 If a recurring sweep is already running, `--sweep` will decline rather than start a
 second writer on the same database. That is correct — say so plainly and tell the

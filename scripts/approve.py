@@ -53,12 +53,18 @@ _SUBSTITUTION = ("`", "$")
 # The launcher's read-only and lifecycle modes. Every one of these is a fixed
 # command that installs nothing surprising: --bootstrap and --monitor do the work
 # the user has just been told about, in the skill that told them.
-_FLAG_MODES = frozenset({"--check", "--paths", "--status", "--bootstrap", "--monitor",
+_FLAG_MODES = frozenset({"--check", "--paths", "--bootstrap", "--monitor",
                          # --sweep is one cycle of --monitor and is what find-jobs runs.
                          # It has to be here or the plugin's most common command starts
                          # prompting on every use — which is the friction `setup_cli.py`
                          # and this guard exist to remove.
-                         "--sweep"})
+                         "--sweep",
+                         # --stop is the only way to end a sweep on purpose now that
+                         # nothing reaps one automatically, so it must not be the one
+                         # command that prompts. It kills a process this plugin started,
+                         # at the user's request, and the cost of being wrong is a sweep
+                         # they restart — against a runaway they cannot stop.
+                         "--stop"})
 
 # Engine entrypoints, each with the arguments it may carry. A value of None means
 # the first argument must be a known subcommand and the rest is data (a JSON

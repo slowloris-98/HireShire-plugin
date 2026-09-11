@@ -165,8 +165,7 @@ building anything:
 
 ```bash
 sh scripts/hireshire.sh --paths       # where ROOT and DATA actually resolve to
-sh scripts/hireshire.sh --status      # is a recurring sweep running?
-sh scripts/hireshire.sh --stop        # stop one, killing the whole process tree
+sh scripts/hireshire.sh --stop        # stop a sweep, killing the whole process tree
 ```
 
 Running the engine directly from a checkout works too — with no plugin

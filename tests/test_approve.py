@@ -31,9 +31,11 @@ def _cmd(tail: str) -> str:
 APPROVED = [
     "--check",
     "--paths",
-    "--status",
     "--bootstrap",
     "--monitor",
+    # The only deliberate way to end a sweep now that nothing reaps one automatically.
+    # It must not be the single command that prompts.
+    "--stop",
     # The command `/hireshire:find-jobs` runs. Without it the plugin's most common
     # action prompts on every use, which is the friction this guard exists to remove.
     "--sweep",

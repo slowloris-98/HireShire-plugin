@@ -28,8 +28,7 @@ pytest                                # 360 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_only_jobs_reaching_the_cutoff_are_judged
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
-sh scripts/hireshire.sh --status      # is a recurring sweep running?
-sh scripts/hireshire.sh --stop        # kill the sweep's process TREE, clear status
+sh scripts/hireshire.sh --stop        # kill the sweep's process TREE, clear the pid file
 sh scripts/hireshire.sh --approve     # PreToolUse guard; hook payload on stdin
 
 # Engine, from a checkout (falls back to ./data when the plugin env vars are unset)
@@ -87,107 +86,67 @@ Consequences already worked out, which should not be re-derived:
   `seed ∪ user_bad − user_recovered`, so a release can add dead slugs without
   erasing local learning, and `verify_bad_slugs.py --prune` writes recoveries as a
   delta rather than editing a file that is about to be replaced.
-- **The recurring sweep is session-scoped, and the skill must verify it.** 0.2.4
-  dropped the plugin monitor that used to start it: monitors are experimental and are
-  skipped on hosts where the Monitor tool is unavailable, so the skill's claim that
-  sweeps had begun was sometimes false with nothing to catch it. `start-orchestration`
-  now launches `hireshire.sh --monitor` as a background task and confirms with
-  `--status` before saying anything. Three rules survive from that design and still
-  bind: `scripts/run_orchestration.py` reads `poll_interval_hours` out of the user's
+- **The recurring sweep is NOT session-scoped, and nothing may make it so again.**
+  `scripts/run_orchestration.py` is an ordinary sleep/sweep loop. `--monitor` runs it
+  recurring, `--sweep` runs one cycle (`--once`) and is what `/hireshire:find-jobs` and
+  the OS scheduler entry use — one program, so a fix to either reaches both. Three
+  rules survive from the old design: it reads `poll_interval_hours` from the user's
   config itself (`orchestrate.py --interval` defaults to 4 and never looks); every
   stdout line reaches the agent, so it emits one summary line per cycle and logs the
-  rest to a file; and nothing may detach the process, because the user is told it
-  stops with the session. `hireshire/orchestration_status.py` is the single source of
-  truth for "is it running", by heartbeat freshness **with a dead PID as a veto**.
+  rest to a file; and nothing may detach the process.
 
-  Freshness alone shipped first and was not enough, for a reason worth keeping. A
-  heartbeat is refreshed only every `HEARTBEAT_INTERVAL_S`, so a sweep killed just after
-  a tick still reads as running for the whole `STALE_AFTER_S` window — five minutes. Two
-  things go wrong inside it, and the second is the expensive one: `--status` reports a
-  pid that does not exist (observed: `running (pid 25860)` against nothing), and the
-  sweeper's own start-up guard **refuses to start a new sweep** because a dead one still
-  looks alive (observed: `already running — not starting a second` against dead pid
-  26616). The first misleads a human; the second silently blocks the user's work.
+  **Two attempts to tie it to a session both destroyed users' work, and the second is
+  why the idea is abandoned rather than refined.** The first passed `$$`/`$PPID` from
+  Git Bash to a watchdog — MSYS keeps its own pid namespace (`ps` reports 1684 for a
+  shell Windows calls WINPID 14072) while `is_alive` asks Win32 `OpenProcess`, so two
+  meaningless numbers read as dead and killed a healthy sweep 60 seconds in. The second
+  read `CLAUDE_PID` instead, paired with a `SessionEnd` hook that stopped whatever the
+  status file named.
 
-  The original objections still hold and are both answered rather than ignored.
-  `os.kill(pid, 0)` is not portable to Windows, so the probe goes through
-  `process_liveness.is_alive`, which asks Win32 `OpenProcess` there. A recycled PID
-  reads as alive, so the probe is a **veto and never the primary signal** — recycling
-  can only make a dead sweep look alive, and the stale heartbeat still catches that.
+  That hook fired for **every** Claude Code session ending anywhere on the machine —
+  including the short-lived `claude -p` sessions the scorer spawns per scoring call. An
+  ownership check was added and did not save it: on a fresh Windows install `CLAUDE_PID`
+  was simply **absent**, so the sweeper recorded no owner, the check's null-owner
+  fallback answered "stop it" for every ending session, and the sweep manufactured its
+  own killers. Observed: `session_pid: null`, `heartbeat - started_at` of **60.34 s**
+  (one beat, then nothing), exit code 1, no traceback, no `ERROR` line — because
+  `taskkill /T /F` unwinds nothing. It hit `--once` too, so find-jobs and the scheduled
+  route died the same way.
 
-  **"Session-scoped" is now enforced, not assumed.** Being a child of the session is
-  not enough on Windows: an orphan there is re-parented in silence — no process group,
-  no SIGHUP — and a monitor outlived its session more than once, the last time with a
-  shortlist in hand and auto-apply on. Two mechanisms end it and **neither is
-  sufficient alone**. The `SessionEnd` hook runs `--stop` on an orderly exit, filtered
-  on the payload's `reason` so a `/clear` does not kill a live sweep; it cannot fire
-  when Claude Code is force-killed or crashes. So `run_orchestration.py`'s heartbeat
-  also watches **`CLAUDE_PID`** — Claude Code publishes its own pid there — and exits
-  once it is gone. That watchdog is a **separate task from the heartbeat, on its own
-  `_WATCHDOG_INTERVAL_S` (5 s)**; the two were one loop, which tied how fast a sweep
-  noticed a dead session to how often the status file needs refreshing. They are
-  unrelated: `HEARTBEAT_INTERVAL_S` is chosen against `STALE_AFTER_S`, while this one is
-  the delay the user feels between closing the CLI and everything stopping. It also
-  kills **its own process tree** rather than calling `os._exit` alone — the scorer runs
-  up to `concurrency` `claude -p` children, and on Windows those are re-parented in
-  silence and would linger until `claude_cli_timeout_s` (600 s). Measured end to end:
-  session force-killed, sweep and all three processes gone in **3 s**, status cleared.
-  Absence of that variable means **do not arm**,
-  which is what keeps the watchdog inert for a plain terminal and the scheduled route;
-  unknown must never mean kill.
+  The lesson is not "find a better session signal". It is that a sweep must not act on
+  host-specific identity it cannot verify, because the absence of that identity is
+  indistinguishable from a legitimate reap and the failure direction is destroying work.
+  What replaces both layers is `_MAX_RUNTIME_S` (24 h): the loop cannot run forever, so
+  an unattended sweep with `enable_applier: true` is bounded without anyone watching a
+  pid. `--stop` is the only deliberate stop, and surviving a closed terminal *on purpose*
+  is the OS scheduler entry `/hireshire:setup` offers.
 
-  **The `SessionEnd` hook must check whose sweep it is, and this is not optional.** It
-  fires for *every* Claude Code session that ends anywhere on the machine — including
-  the short-lived `claude -p` sessions the scorer itself spawns, which come and go
-  constantly. It used to call `stop()` unconditionally, killing whatever pid the status
-  file named. The result was that a sweep died 1–2½ minutes after starting, every time,
-  and it was **misdiagnosed for two days** as a crash: `taskkill /T /F` sets exit code
-  **1** and terminates without unwinding, so there was no traceback, no `ERROR` line, no
-  `finally`, and a status file left stale. Measured directly, with `stop()` neutered
-  behind a sentinel file: two `--session-end` calls arrived within three seconds
-  (`CLAUDE_PID` 18024 and 16700, neither the owner nor the operator's session), and the
-  sweep — which had never survived past 148 s — ran on untouched.
+  Consequences that should not be re-derived:
 
-  So `run_orchestration.py` records `session_pid` at start-up and
-  `bootstrap._ending_session_owns_sweep` compares it against the `CLAUDE_PID` the hook
-  inherits from the session that is ending. The two fallbacks are deliberately
-  **opposite**, and both directions matter: *no recorded owner* stops the sweep, so
-  pre-existing and scheduled sweeps do not become unstoppable by the hook meant to reap
-  them; *an owner recorded but the ending session unidentifiable* leaves it alone,
-  because there the sweep is known to belong to somebody and guessing is precisely what
-  caused the bug.
-
-  Note what this rules out for the next person debugging a vanished sweep: it is not the
-  watchdog (a run with `CLAUDE_PID` cleared, which logs `watchdog is NOT armed`, died
-  identically), not `is_alive` (9,000 calls in isolation, no crash, no handle leak), not
-  memory (peak RSS 1.16 GB against 2.7 GB free), not a native fault (`PYTHONFAULTHANDLER=1`
-  printed nothing), and not the host's background-task lifecycle (a fully detached run
-  died too). Exit code 1 with empty stderr means `TerminateProcess`, which means
-  something called `stop()`.
-
-  **Never source that pid from the shell.** `--monitor` used to export `$$` and
-  `$PPID`, and it killed a healthy sweep 60 seconds in. Git Bash is MSYS and MSYS keeps
-  its **own pid namespace** — `ps` reports PID 1684 for a shell Windows calls WINPID
-  14072 — while `process_liveness.is_alive` asks Win32 `OpenProcess`, which knows only
-  Windows pids. Two meaningless numbers read as dead on the first tick. Walking the
-  tree instead is no better: the measured ancestry under the VS Code extension is
-  `python → bash → bash → bash → claude.exe → Code.exe`, so no fixed-depth `getppid()`
-  rule can be right. Coverage is therefore deliberately partial — a closed CLI and a
-  crash, not a killed background Bash task, which waits for `SessionEnd` or `--stop`.
-  `tests/test_process_liveness.py` pins a live pid reading as live, which is the
-  assertion whose absence let the MSYS pid through.
-
-  **Killing the leaf is enough, because the chain unwinds itself.** Every parent in the
-  re-exec chain is blocked in `subprocess.run`, so each exits as soon as its child
-  does — verified against a live four-process orphan, where a `taskkill /T` on the
-  recorded leaf cleared all four. That is what makes a watchdog in the leaf sufficient,
-  with no Job Objects and no `execv` rewrite.
-
-  `--stop` remains the manual backstop and clears the status file either way: a stale
-  document claiming "running" is the more harmful of the two failures. On POSIX it must
-  signal the recorded pid **itself** — `pkill -P` only ever reaches children, and
-  gating the SIGTERM on pkill having *failed* meant the sweeper survived precisely when
-  it had a child, which is to say during the apply phase.
+  - **There is no `--status`, and the skill must not invent one.** `hireshire/sweep_pid.py`
+    records one integer; `hireshire/orchestration_status.py` — heartbeat, `STALE_AFTER_S`,
+    the liveness veto, `describe()` — is gone with the teardown it served. The user
+    watches a sweep through the dashboard or their shell task.
+  - **`/hireshire:start-orchestration` must not claim the sweep stops with the session.**
+    It no longer does. It ends on `--stop`, on the shell task being killed, or on the
+    bound. Saying otherwise is the same class of failure as announcing a sweep that was
+    never running, and `tests/test_plugin_shell.py` pins the skill's wording.
+  - **`process_liveness.is_alive` survives, for one caller only:** the guard that refuses
+    to start a second writer onto the same SQLite database. It was never the bug — it
+    answers correctly about a pid the plugin recorded **about itself**. Every failure
+    here came from feeding it an identity that had been guessed at. A recorded pid that
+    is definitively gone must not block a new sweep, which is why the guard probes rather
+    than trusting the file.
+  - **Killing the leaf is enough, because the chain unwinds itself.** Every parent in the
+    re-exec chain is blocked in `subprocess.run`, so each exits as soon as its child does
+    — verified against a live four-process orphan, where a `taskkill /T` on the recorded
+    leaf cleared all four. `--stop` on POSIX must signal the recorded pid **itself**:
+    `pkill -P` only ever reaches children, and gating the SIGTERM on pkill having *failed*
+    meant the sweeper survived precisely when it had a child, which is during the apply
+    phase.
+  - `tests/test_sweep_lifetime.py` fails the build if `run_orchestration.py` so much as
+    names `CLAUDE_PID` in code, and `tests/test_plugin_shell.py` fails it if a
+    `SessionEnd` hook reappears.
 - **Setup never shows YAML.** `hireshire/config_writer.py` is a whitelisted,
   ruamel-based writer that preserves comments and CRLF and validates the patched
   document against the phase's pydantic model *before* writing.
@@ -400,7 +359,7 @@ from a broken threshold.
 **The engine writes them; a skill only publishes them.** That is what makes them
 appear on unattended monitor sweeps where no agent turn exists, costs no tokens,
 and keeps the skills reporting numbers they were handed — the same rule as
-`--status` and `--paths`.
+`--paths`.
 
 Five consequences that should not be re-derived:
 
@@ -574,11 +533,14 @@ suppresses Rich in favour of `logging` — required under the monitor.
   `.cmd`/`.bat` shims Windows installs.
 - **Plugin-bundled MCP tools are namespaced** `mcp__plugin_hireshire_playwright__*`,
   not `mcp__playwright__*`. A rule written against the bare server key never fires.
-- **A skill must not state runtime facts it has not asked for.** Both live failures of
+- **A skill must not state runtime facts it has not asked for.** Three live failures of
   this kind cost a user real trust: one skill announced a running sweep that did not
-  exist, another wrote the search profile to a directory it had guessed. The launcher
-  answers both questions — `--status` and `--paths` — and the skills are required to
-  ask. `tests/test_plugin_shell.py` greps for the regressions.
+  exist, another wrote the search profile to a directory it had guessed, and
+  `start-orchestration` promised sweeps stopped with the session long after that had
+  stopped being true. `--paths` answers the directory question and the skills are
+  required to ask; the liveness question has no launcher answer any more, so a skill
+  reports what the background task and its startup line told it and nothing further.
+  `tests/test_plugin_shell.py` greps for all three regressions.
 - **A skill may write `${CLAUDE_PLUGIN_ROOT}`; it must never write
   `${CLAUDE_PLUGIN_DATA}`.** Claude Code expands both inside skill content, but the
   data one resolves differently per interface (see the ROOT/DATA split above), so a
