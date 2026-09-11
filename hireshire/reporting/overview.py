@@ -1,13 +1,19 @@
-"""The overview page: four numbers and three collapsible lists, and nothing else.
+"""The overview page: four numbers and the four collapsible lists that match them.
 
 The other two reports explain themselves at length, and that is the right call for
 a diagnostic someone opens when a sweep did something surprising. This one is for
 the other 95% of the time, when the question is just *what have I got*. So it
-explains nothing: past one line telling the reader the sections open, the only
-sentences on the page are the judge's own rationales, and those appear only inside a
-job the reader opened. That one line earns its place because everything is collapsed
-by default — without it the accordions read as headings rather than as things to
-click.
+explains nothing: past one line naming the scope and telling the reader the sections
+open, the only sentences on the page are the judge's own rationales, and those appear
+only inside a job the reader opened. That line earns its place because everything is
+collapsed by default — without it the accordions read as headings rather than as
+things to click.
+
+Tiles and sections run in the same order and use the same words, but they count
+differently and are *meant* to: the tiles are a cumulative funnel (every shortlisted
+job is also a relevant one), the sections are a **partition** — a job renders in
+exactly one of them. The page is the user's only list of what is left to do, so a job
+appearing twice would double it. `data.partition_jobs` owns that split.
 
 Both scopes render from the same code and differ only in the data they are handed,
 with one exception: how long it took and what it cost belong to a sweep, so those
@@ -192,13 +198,19 @@ def _accordion(key: str, label: str, jobs: list[dict], total: int,
 
 
 def _tail_payload(rows: list[dict]) -> str:
-    """The never-scored jobs as compact JSON, rendered client-side.
+    """The last section's jobs as compact JSON, rendered client-side.
 
     Data rather than markup for the same reason the matching report does it: JSON is
     several times denser than the equivalent table rows, which keeps a page holding
-    thousands of them light enough to filter instantly. No score key of any kind —
-    nothing read these descriptions, and a key holding 0 invites a renderer to print
-    it as a verdict.
+    thousands of them light enough to filter instantly. This section is the one that
+    needs it — since it began reading `jobs` rather than `matches` it holds the
+    title-gate rejections too, which is thousands of rows on a real sweep where the
+    other three are dozens.
+
+    No LLM score key of any kind: everything here was dropped by a gate that costs
+    nothing to run, so nothing read these descriptions, and a key holding 0 invites a
+    renderer to print it as a verdict. The cross-encoder logit is the one score some
+    of them have, and the rows that never reached it render an em dash.
     """
     payload = [
         {
@@ -316,9 +328,16 @@ _STATE_SCRIPT = """
 """
 
 
-def _stat(value: str, label: str, css: str = "") -> str:
+def _stat(value: str, label: str, css: str = "", hint: str = "") -> str:
+    """One tile. `hint` becomes a `title=` tooltip, for a label too long to print.
+
+    The labels have to stay short: `.stats` is a `minmax(9rem, 1fr)` grid, `.stat-l`
+    is `.68rem` uppercase with `.1em` tracking, and grid rows equalise — so one
+    three-line label makes every tile in the row three lines tall.
+    """
+    tip = f' title="{e(hint)}"' if hint else ""
     return (
-        f'<div class="stat{css}"><span class="stat-n">{value}</span>'
+        f'<div class="stat{css}"{tip}><span class="stat-n">{value}</span>'
         f'<span class="stat-l">{e(label)}</span></div>'
     )
 
@@ -329,11 +348,14 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     per_run = snapshot.get("run_id") is not None
 
     tiles = [
-        _stat(num(counts["seen"]), "Seen"),
-        _stat(num(counts["filtered"]), "Filtered"),
-        _stat(num(counts["shortlisted"]), "Shortlisted",
+        _stat(num(counts["seen"]), "Jobs in scope",
+              hint="Total jobs in the given location and time window"),
+        _stat(num(counts["relevant"]), "Relevant jobs",
+              hint="Cleared every free gate: keywords, title relevance, the "
+                   "cross-encoder cutoff and the years-of-experience check"),
+        _stat(num(counts["shortlisted"]), "Jobs shortlisted",
               " good" if counts["shortlisted"] else ""),
-        _stat(num(counts["applied"]), "Applied"),
+        _stat(num(counts["applied"]), "Jobs applied"),
     ]
     if per_run:
         # Elapsed while the sweep is live — `finished_at` is only written once the
@@ -357,11 +379,11 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     # fills a `<tbody>` that happens to be inside a closed `<details>`, so the list is
     # ready the moment it opens. The scroll listener cannot misfire while it is shut
     # either — a hidden box is never scrolled.
-    tail, tail_total = snapshot["tail"], snapshot["tail_total"]
-    tail_html = ""
-    if tail:
-        tail_html = f"""
-  <details class="acc" id="acc:tail"><summary><span>Not scored<span class="n">{num(tail_total)}</span></span></summary>
+    seen, seen_total = snapshot["seen"], snapshot["seen_total"]
+    seen_html = ""
+    if seen:
+        seen_html = f"""
+  <details class="acc" id="acc:seen"><summary><span>Total Jobs Seen<span class="n">{num(seen_total)}</span></span></summary>
   <div class="acc-body">
   <div class="toolbar">
     <input id="ov-filter" type="search" placeholder="Filter" aria-label="Filter jobs">
@@ -373,7 +395,7 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
       <tbody id="ov-rows"></tbody>
     </table>
   </div>
-  <script type="application/json" id="ov-tail-data">{_tail_payload(tail)}</script>
+  <script type="application/json" id="ov-tail-data">{_tail_payload(seen)}</script>
   </div></details>"""
 
     body = f"""<div class="wrap">
@@ -381,16 +403,17 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
   <h1>Control room</h1>
 
   <div class="stats">{''.join(tiles)}</div>
-  <p class="hint">Click a section to open it, then any job for the full reasoning behind its score.</p>
+  <p class="hint">In scope means matching your location and posted inside your time window. Click a section to open it, then any job for the full reasoning behind its score.</p>
 
-  {_accordion("applied", "Applied", snapshot["applied"], snapshot["applied_total"], applied=True)}
-  {_accordion("scored", "Scored, not applied", snapshot["scored"], snapshot["scored_total"])}
-{tail_html}
+  {_accordion("applied", "Jobs Applied", snapshot["applied"], snapshot["applied_total"], applied=True)}
+  {_accordion("shortlisted", "Jobs Shortlisted (to be applied)", snapshot["shortlisted"], snapshot["shortlisted_total"])}
+  {_accordion("filtered", "Jobs Filtered (yet to be scored or not picked)", snapshot["filtered"], snapshot["filtered_total"])}
+{seen_html}
 </div>"""
 
     return document(
         f"{TITLE} — {stamp}" if per_run and stamp else TITLE,
-        body + (_SCRIPT if tail else "") + _STATE_SCRIPT,
+        body + (_SCRIPT if seen else "") + _STATE_SCRIPT,
         refresh_s=REFRESH_S if snapshot["live"] else None,
         extra_css=OVERVIEW_CSS,
     )

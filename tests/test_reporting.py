@@ -18,7 +18,7 @@ import pytest
 
 import orchestrate
 from hireshire import reporting
-from hireshire.reporting import dashboard, data, matching
+from hireshire.reporting import dashboard, data, matching, overview
 
 
 def snapshot(**over) -> dict:
@@ -459,6 +459,29 @@ class _ReportDB:
     def load_applied(self):
         return []
 
+    # --- the overview page's reads --------------------------------------------
+    # These were missing, and their absence was invisible: `overview_snapshot` raised
+    # `AttributeError`, `refresh` swallowed it by design, and the overview was simply
+    # never written while the assertions below said "both reports" and checked the
+    # other two. A fake that is missing a method the real path calls is a hole in the
+    # test, not a simplification.
+
+    def overview_counts(self, run_id=None):
+        return {"seen": 8504, "relevant": 2, "shortlisted": 0, "applied": 0}
+
+    def load_applied_matches(self, run_id=None):
+        return []
+
+    def load_lifetime_matches(self, judged, limit):
+        return [r for r in self._all_rows
+                if bool(r.get("relevance_score") is not None
+                        and not r.get("skipped")) is judged]
+
+    def load_unmatched_jobs(self, run_id, limit):
+        return [{"job_id": "direct:google:99", "board_token": "google",
+                 "title": "Barista", "location": "Mountain View, CA",
+                 "absolute_url": "https://example.com/j99"}]
+
 
 def _finalise_with_reports(tmp_path, monkeypatch, stamp="2026-08-25_153432"):
     import asyncio
@@ -480,12 +503,31 @@ def _finalise_with_reports(tmp_path, monkeypatch, stamp="2026-08-25_153432"):
     return db, results_dir
 
 
-def test_finalising_a_run_writes_both_reports(tmp_path, monkeypatch):
+def test_finalising_a_run_writes_every_report(tmp_path, monkeypatch):
     db, results_dir = _finalise_with_reports(tmp_path, monkeypatch)
 
     assert (results_dir / matching.matching_name("2026-08-25_153432")).exists()
     assert (tmp_path / matching.LATEST_NAME).exists()
     assert (tmp_path / dashboard.DASHBOARD_NAME).exists()
+    # Both overview scopes. `refresh` swallows every exception, so a page that stops
+    # being written fails nothing unless something asserts it exists.
+    assert (results_dir / overview.run_overview_name("2026-08-25_153432")).exists()
+    assert (tmp_path / overview.OVERVIEW_NAME).exists()
+
+
+def test_the_overview_survives_the_finalise_path(tmp_path, monkeypatch):
+    """Not just written — written with its sections populated. `refresh` catching
+    everything means a broken snapshot is indistinguishable from a quiet one, so this
+    reads the page back."""
+    _, results_dir = _finalise_with_reports(tmp_path, monkeypatch)
+    html = (results_dir / overview.run_overview_name("2026-08-25_153432")).read_text(
+        encoding="utf-8"
+    )
+
+    assert "Total Jobs Seen" in html
+    assert "Jobs Filtered (yet to be scored or not picked)" in html
+    # The title-gate job reached the page, which it can only do via the jobs table.
+    assert "Barista" in html
 
 
 def test_the_pointer_file_names_the_reports_for_the_skills(tmp_path, monkeypatch):

@@ -370,18 +370,30 @@ class Database:
             return f"json_extract({col}, '$.cluster_representative') IS NOT NULL"
         return f"{col} LIKE '%\"cluster_representative\":\"%'"
 
-    def _above_cutoff_sql(self, alias: str = "") -> str:
-        """Rows that cleared the cross-encoder cutoff and could have cost an LLM call.
+    def _relevant_sql(self, alias: str = "") -> str:
+        """Rows that survived every free gate — the overview page's "relevant" figure.
 
-        The overview page's "filtered" figure. Reproduces the matcher's own
-        `stages["above_cutoff"]` from rows rather than reading the phase blob,
-        because that blob is only written when the matcher finalises and the page has
-        to be right mid-sweep. Cluster siblings are out for the same reason the
-        matcher leaves them out: they were grouped after the rerank and never
-        competed for a slot.
+        Both LLM-free verdicts are excluded: `rerank_below_cutoff` (the cross-encoder
+        read the description and said no) and `yoe_below_requirement` (the posting
+        asks for more years than the resume shows). Cluster siblings are out too, for
+        the reason the matcher leaves them out: they were grouped after the rerank and
+        never competed for a slot.
+
+        What stays in is deliberate. A row that cleared both gates and then failed for
+        a reason that is not about relevance — `llm_call_cap_reached` (a deferral; the
+        job returns next sweep), `api_error`, `no_content_text` — *is* relevant. The
+        run merely ran out of calls or broke.
+
+        This is computed from rows rather than read out of the phase blob because that
+        blob is only written when the matcher finalises and the page has to be right
+        mid-sweep. Note it therefore **no longer reproduces the matcher's own
+        `stages["above_cutoff"]`**, which counts YoE drops in on purpose — see the YoE
+        section of CLAUDE.md. The tile and `matcher.py`'s `above cutoff → judged`
+        console line are answering different questions and will disagree.
         """
         return (
-            "COALESCE(skip_reason,'') <> 'rerank_below_cutoff' "
+            "COALESCE(skip_reason,'') "
+            "NOT IN ('rerank_below_cutoff','yoe_below_requirement') "
             f"AND NOT ({self._sibling_sql(alias)})"
         )
 
@@ -412,9 +424,9 @@ class Database:
                 "SELECT COUNT(DISTINCT job_id) AS n FROM jobs WHERE 1=1" + run_filter,
                 params,
             ).fetchone()
-            filtered = self._conn.execute(
+            relevant = self._conn.execute(
                 "SELECT COUNT(DISTINCT job_id) AS n FROM matches "
-                f"WHERE {self._above_cutoff_sql()}" + run_filter,
+                f"WHERE {self._relevant_sql()}" + run_filter,
                 params,
             ).fetchone()
             shortlisted = self._conn.execute(
@@ -435,7 +447,7 @@ class Database:
             ).fetchone()
         return {
             "seen": seen["n"] or 0,
-            "filtered": filtered["n"] or 0,
+            "relevant": relevant["n"] or 0,
             "shortlisted": shortlisted["n"] or 0,
             "applied": applied["n"] or 0,
         }
@@ -482,6 +494,49 @@ class Database:
             ).fetchall()
         return [self._match_record(r) for r in rows]
 
+    def load_unmatched_jobs(self, run_id: str | None, limit: int) -> list[dict]:
+        """Jobs the funnel never wrote a `matches` row for, at either scope.
+
+        These are the title-gate rejections — `title_excluded` and
+        `title_low_relevance` — which `matcher.py` deliberately keeps out of `matches`
+        because there can be tens of thousands of them per run. They exist only in
+        `jobs`, so this is the only way onto the overview page, and they carry no
+        score of any kind: nothing read their descriptions.
+
+        The `NOT EXISTS` is **not** correlated on `run_id`, and that is the whole
+        subtlety. A job the `SeenStore` skipped this sweep because an earlier one
+        already judged it has no `matches` row for *this* run, and correlating would
+        list it here with a blank score as though nothing had ever read it. The price
+        is that on second and later sweeps the page's four sections no longer sum to
+        the `Jobs in scope` tile. That is the lesser of the two lies.
+
+        Index-backed both ways: `idx_matches_job` serves the subquery and
+        `idx_jobs_run` the run-scope filter — which matters because the reports now
+        rebuild on a clock for the length of a sweep, not on funnel events.
+        """
+        scope = " AND j.run_id = ?" if run_id else ""
+        params: tuple = (run_id, int(limit)) if run_id else (int(limit),)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT j.job_id, j.board_token, j.title, j.location, j.url "
+                "FROM jobs j "
+                "WHERE NOT EXISTS ("
+                "    SELECT 1 FROM matches m WHERE m.job_id = j.job_id)"
+                + scope +
+                " GROUP BY j.job_id LIMIT ?",
+                params,
+            ).fetchall()
+        return [
+            {
+                "job_id": r["job_id"],
+                "board_token": r["board_token"] or "",
+                "title": r["title"] or "",
+                "location": r["location"] or "",
+                "absolute_url": r["url"] or "",
+            }
+            for r in rows
+        ]
+
     def load_applied_matches(self, run_id: str | None = None) -> list[dict]:
         """Every application, carrying the job's best match row where one exists.
 
@@ -489,6 +544,12 @@ class Database:
         `matches` rows for a run are per-run, `applied` is forever, and a user who
         prunes old runs should still see what they applied to. Rows with no match
         keep their title and company from `applied` and simply have no rationales.
+
+        Ordered by the LLM's verdict, best first, so the applied accordion ranks the
+        same way every other list on the overview page does. An application with no
+        match row left to point at sorts last rather than first, and the timestamp
+        breaks ties — nothing is lost by demoting it from the primary key, because
+        `_job_entry` prints it in the meta line either way.
         """
         scope = (
             " WHERE EXISTS (SELECT 1 FROM matches mm WHERE mm.job_id = a.job_id"
@@ -506,7 +567,8 @@ class Database:
                 "    ORDER BY relevance_score IS NULL, relevance_score DESC LIMIT 1) "
                 "LEFT JOIN jobs j ON j.run_id = m.run_id AND j.job_id = m.job_id "
                 + scope +
-                " ORDER BY a.applied_at DESC",
+                " ORDER BY m.relevance_score IS NULL, m.relevance_score DESC,"
+                " a.applied_at DESC",
                 params,
             ).fetchall()
 

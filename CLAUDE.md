@@ -327,6 +327,15 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
     jobs that were about to cost a call. YoE drops are counted into `above_cutoff`
     for the same reason cap drops are.
 
+    **The overview page deliberately disagrees, and both are right.** Its `Relevant
+    jobs` tile (`Database._relevant_sql`) excludes `yoe_below_requirement`, because
+    that tile answers "what survived every free gate" — a user reading it wants the
+    jobs still in the running, and a posting the resume cannot qualify for is not one.
+    `stages["above_cutoff"]` answers "what reached the point of costing money", which
+    is a question about the funnel, not about the user. So the tile and `matcher.py`'s
+    `above cutoff → judged` console line will differ by exactly the YoE count. Do not
+    "fix" either to match the other.
+
   `yoe_below_requirement` is a **verdict** and stays out of `_RETRYABLE_SKIP_REASONS`
   — same description, same `candidate_years`, same answer. This reverses
   `analysis/results/extraction_prefilter.md`, which required extraction drops to be
@@ -432,16 +441,37 @@ Five consequences that should not be re-derived:
 **A third page, `overview.py`, is the minimal one, and it ships at two scopes.**
 `overview.html` at the results root covers every sweep the install has done;
 `<stamp>_overview.html` in a run folder covers that sweep and adds how long it took
-and what it cost. Both are complete local documents. Four numbers, two `<details>`
-accordions (applied, scored-but-not-applied, and the never-scored tail) under the
-dashboard's own `HireShire` / `Control room` header. It explains nothing: past one
-line telling the reader the sections open, the judge's rationales inside an opened job
-are the only sentences on it. **Both scopes are the same markup fed different data**,
-and the two extra tiles are the single deliberate exception — how long it took and
-what it cost are facts about a sweep, not about an install. It does not replace the
-other two pages, which stay for comparison.
+and what it cost. Both are complete local documents. Four numbers — `Jobs in scope`,
+`Relevant jobs`, `Jobs shortlisted`, `Jobs applied` — over the four `<details>`
+sections that match them, under the dashboard's own `HireShire` / `Control room`
+header. It explains nothing: past one line naming the scope and telling the reader the
+sections open, the judge's rationales inside an opened job are the only sentences on
+it. **Both scopes are the same markup fed different data**, and the two extra tiles
+are the single deliberate exception — how long it took and what it cost are facts
+about a sweep, not about an install. It does not replace the other two pages, which
+stay for comparison.
 
-Four things about it that are easy to get wrong:
+**The tiles and the sections count differently on purpose.** The tiles are a
+cumulative funnel — every shortlisted job is also a relevant one. The sections are a
+**partition**: `data.partition_jobs` puts each job in exactly one, because the page is
+the user's only list of what is left to do and a job appearing twice would double it.
+So `Relevant jobs` will read higher than the `Jobs Filtered` section below it, and
+that is not a bug to reconcile. A second, smaller asymmetry: the tile excludes cluster
+siblings (grouped after the rerank, never competed for a slot) while the sections let
+a sibling follow its verdict, since it carries a real score copied from its
+representative.
+
+The last section, `Total Jobs Seen`, is the only one that reads the **`jobs` table**
+rather than `matches` (`Database.load_unmatched_jobs`). That is what finally puts the
+title-gate rejections on a page — `matcher.py` keeps them out of `matches` on purpose,
+since there can be tens of thousands a run — and it is why that section alone is
+script-built from a JSON payload with a filter box. Its `NOT EXISTS` is deliberately
+**not** correlated on `run_id`: a job the `SeenStore` skipped because an earlier sweep
+judged it would otherwise be listed here with a blank score, as though nothing had
+ever read it. The price, accepted, is that on later sweeps the four sections no longer
+sum to the `Jobs in scope` tile.
+
+Five things about it that are easy to get wrong:
 
 - **Collapsing by default is what makes the meta refresh expensive.** A live page
   reloads every `REFRESH_S`, and a reload resets every `<details>` — so it used to
@@ -471,10 +501,20 @@ Four things about it that are easy to get wrong:
   an em dash for it rather than that 0 — same rule as the all-jobs CSV's blank
   `llm_score`, and the reason `_job_entry` looks at `skip_reason` rather than trusting
   the score.
+- **Nothing here may re-read what the caller already has.** `overview_snapshot` takes
+  both `run` and `records` from `refresh`, which loaded them a few lines earlier for
+  the matching report. It used to re-run `load_all_matches` itself, which mattered
+  little when refreshes came off funnel events and stopped early — and matters a great
+  deal now that they run on a clock for the whole sweep, where it is the same query
+  ~300 times a run for nothing. The `snapshot["candidates"]` guard reaches the overview
+  through that same parameter: when the matcher has written no rows yet, `refresh`
+  passes `[]` and no loader runs.
 
 The lifetime page carries its own throttle (`LIFETIME_INTERVAL_S`, 60 s) because its
 queries group a table that has no `run_id` filter to narrow them; everything else in
-`refresh` is indexed on `run_id` and stays cheap however long the user has been at it.
+`refresh` is indexed on `run_id` and stays cheap however long the user has been at it —
+including the `jobs` read behind `Total Jobs Seen`, which `idx_jobs_run` covers and
+whose `NOT EXISTS` rides `idx_matches_job`.
 
 All three tables now fill continuously — `run_companies`, `jobs` and `matches` — because
 selection is a per-job cutoff and each employer's batch is judged as it arrives. Both

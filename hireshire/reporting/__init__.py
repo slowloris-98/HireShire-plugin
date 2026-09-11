@@ -76,6 +76,10 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
     and what keeps an early refresh cheap is the `snapshot["candidates"]` guard, not
     an empty table. Do not restore the old claim — a reader who believed it would
     conclude these calls are free and remove the throttle.
+
+    `snapshot` and `records` are handed to both reports rather than re-derived by
+    each. The overview used to load the identical rows a second time, which on a
+    clock-driven refresh is the same query ~300 times a sweep for nothing.
     """
     global _last_refresh, _last_lifetime
 
@@ -96,7 +100,7 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
         dashboard.write(data.dashboard_snapshot(db), targets["dashboard"])
 
         overview.write(
-            data.overview_snapshot(db, run_id, run=snapshot),
+            data.overview_snapshot(db, run_id, run=snapshot, records=records),
             targets["run_overview"], stamp,
         )
         # The lifetime page rides its own, slower throttle — but never skips the
