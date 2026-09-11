@@ -4,6 +4,53 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.3.1] — 2026-09-10
+
+### Fixed
+
+- **A sweep no longer stops itself, and this is the fix for sweeps dying ~60 seconds
+  in with exit code 1 and no traceback.** Reported on a fresh Windows install running
+  the latest code, and reproducible on any host that does not publish `CLAUDE_PID`.
+
+  The sweep used to be tied to the Claude Code session that started it, by two
+  mechanisms that both read `CLAUDE_PID`: a watchdog inside the sweep, and a
+  `SessionEnd` hook outside it. Where that variable is absent they did not degrade —
+  they failed *together*, in the worst direction. The watchdog never armed, and the
+  hook's "no recorded owner" fallback answered **yes, stop it** for every Claude Code
+  session ending anywhere on the machine.
+
+  The sweep spawns one `claude -p` per scoring call, so it manufactured its own
+  killers. The first scoring call to finish ended the run: `taskkill /T /F`, which
+  exits 1 and unwinds nothing, leaving no traceback, no `ERROR` line and a stale
+  status file. It affected **every** sweep path, `/hireshire:find-jobs` and the OS
+  scheduler entry included, because all three run the same program.
+
+  Removed rather than patched. Each fix here added another conditional on an
+  environment the plugin does not control, and the failure direction is destroying the
+  user's work. A recurring sweep now bounds its own runtime (24 hours) instead, which
+  gives the same protection against an unattended auto-applying sweep without asking
+  the host a question it may not be able to answer.
+
+### Removed
+
+- **The `SessionEnd` hook**, `hireshire.sh --session-end`, and the `CLAUDE_PID`
+  watchdog in `run_orchestration.py`.
+- **`hireshire.sh --status`** and `hireshire/orchestration_status.py` — the heartbeat,
+  the five-minute staleness window and the liveness veto existed to answer "is it
+  running" for `--status` and the teardown above. `hireshire/sweep_pid.py` records a
+  single pid so `--stop` can reach a sweep and a second sweep will not start alongside
+  the first.
+
+### Changed
+
+- **A recurring sweep is no longer session-scoped, and `/hireshire:start-orchestration`
+  now says so.** It ends on `--stop`, on its shell task being killed, or on the
+  24-hour bound. The skill previously promised it stopped when the session ended;
+  that is no longer true, and saying it would be the same class of failure as
+  announcing a sweep that was not running. Watch a sweep through the dashboard or the
+  shell task rather than through the skill.
+- `--stop` is approved by the permission guard, so ending a sweep does not prompt.
+
 ## [0.3.0] — unreleased
 
 ### Removed

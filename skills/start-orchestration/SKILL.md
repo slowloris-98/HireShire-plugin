@@ -1,17 +1,17 @@
 ---
 name: start-orchestration
-description: Keep sweeping the job boards on a schedule for as long as this session stays open, reporting one summary per cycle.
+description: Keep sweeping the job boards on a schedule, in a background shell task, until it is stopped or hits its 24-hour limit.
 ---
 
 # Start orchestration
 
-Start the recurring sweep, **confirm it is actually running**, and report only what
-you confirmed.
+Start the recurring sweep as a background task and tell the user what is true about it.
 
-An earlier version of this skill announced that sweeps had begun simply because it had
-been invoked. The mechanism behind that claim did not fire on every interface, so users
-were told a sweep was live while nothing was running. Never describe the state of this
-without asking for it.
+Do not describe the sweep's state beyond what you were handed. Two live failures came
+from this skill asserting things it had not checked: once announcing that sweeps had
+begun when nothing was running, once naming a directory it had guessed. The launcher
+answers the directory question (`--paths`); the background task answers the liveness
+question by existing in the user's task list and by notifying you when it ends.
 
 ## Step 1 — find the data directory
 
@@ -25,16 +25,7 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --paths
 
 It prints `ROOT=<path>` and `DATA=<path>`.
 
-## Step 2 — check whether one is already running
-
-```bash
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --status
-```
-
-If it reports running, **stop here** and relay that line — a second sweeper would
-scrape the same boards and write the same database. Say when the next sweep is due.
-
-## Step 3 — start it
+## Step 2 — start it
 
 Run exactly this, as a **background** task:
 
@@ -44,68 +35,68 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --monitor
 
 Two rules, both learned from a session that improvised its own command:
 
-- **Never detach it** — no `nohup`, no `disown`, no OS-level backgrounding. You are
-  about to tell the user this stops when the session ends, so it has to be a child of
-  the session. A detached sweeper keeps running after they close Claude Code, keeps
-  scoring against their subscription, and cannot be stopped from here.
+- **Never detach it** — no `nohup`, no `disown`, no OS-level backgrounding. Keep it a
+  background task of this session so the user can see it in their task list and stop it
+  there, and so you are told when it ends.
 - **Never call `orchestrate.py` for a recurring run.** `--monitor` is the only
   entrypoint that reads `poll_interval_hours` from the user's config.
   `orchestrate.py --now` takes `--interval` with a **4-hour default** and never looks
   at their setting, so a user who chose 12 hours would silently get 4.
 
-`--monitor` refuses to start if one is already running, so this is safe to run even if
-Step 2 was ambiguous.
+`--monitor` prints one line on startup naming the interval, and refuses to start if a
+sweep is already running. **Relay that line rather than composing your own** — it is the
+only thing here that knows the user's actual interval.
 
-## Step 4 — verify, then report
+## Step 3 — report
 
-Wait a few seconds and run `--status` again. Report **only what it returns**.
+Tell the user, plainly:
 
-If it says running, tell the user, plainly:
-
-- **How often** it sweeps — take the interval from the status output, not from memory.
-- **That it stops when this session ends.** The single most important thing to say,
-  because the natural assumption is that it keeps running. It is a session watcher, not
-  a background service. Two things enforce it — the session's own exit stops the sweep,
-  and the sweep watches the session for the case where Claude Code is killed outright —
-  so this is a claim you can make plainly. If the machine loses power mid-sweep, say
-  that `--status` still tells the truth afterwards and `--stop` ends whatever it finds.
-- **How to make it survive** closing Claude Code: the OS scheduler entry
-  `/hireshire:setup` offers. If they did not take it, they can re-run setup.
-- **That invoking this twice does nothing** — the second start exits rather than
-  duplicating the sweep.
+- **How often** it sweeps — from the startup line, not from memory.
+- **How it ends.** It runs until one of three things: they run `--stop`, they kill the
+  shell task, or it reaches its **24-hour limit** and stops by itself. Say this
+  accurately. It is *not* tied to this session any more — closing Claude Code does not
+  reliably stop it, and earlier versions of this skill promised that it did. If they
+  want it to keep going beyond a day, the OS scheduler entry `/hireshire:setup` offers
+  is the supported way.
+- **How to stop it:**
+  ```bash
+  sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --stop
+  ```
+- **Where to watch it** without waiting on you: the dashboard at
+  `<results root>/dashboard.html`. It is local, rewrites itself continuously while a
+  sweep runs, and costs them nothing. The results root is
+  `<workspace_dir>/hireshire_run_results/`, or `<DATA>/results/` when `workspace_dir`
+  is empty.
 
 If auto-apply is enabled in their config, say plainly that each sweep will also open a
 browser and **submit real applications**, unattended and with no confirmation step.
-There is no rehearsal mode; `enable_applier` is the only thing holding it back.
-
-If `--status` still says not running, **say so**. Do not report a sweep that is not
-there. Read `<DATA>/logs/orchestration.log` for the reason, tell them what it says, and
-offer the scheduled task from `/hireshire:setup` as the alternative that does not depend
-on this session.
+There is no rehearsal mode; `enable_applier` is the only thing holding it back. This
+matters more than it used to: nothing stops the sweep automatically when they walk away,
+so the 24-hour bound and `--stop` are the only limits.
 
 ## While it runs
 
 Each cycle emits one summary line: how many matches were found, the best score, and when
 the next sweep is due. Relay those as they arrive; do not go looking for more detail
-unless the user asks. `--status` answers "is it still going?" at any point.
+unless the user asks.
 
 **Republish the match report on each of those summary lines, and only then.** The
-engine writes it to `<results root>/latest_matching.html` on every sweep — the
-results root is `<workspace_dir>/hireshire_run_results/`, or `<DATA>/results/`
-when `workspace_dir` is empty, and `<DATA>/last_run.json` carries the exact path
-as `latest_matching_html` once a sweep has finished.
+engine writes it to `<results root>/latest_matching.html` on every sweep, and
+`<DATA>/last_run.json` carries the exact path as `latest_matching_html` once a sweep has
+finished.
 
 Publish it with the **Artifact** tool, always to the same URL: call the tool with
 `action: "list"` first, find the artifact titled **HireShire Match Report**, and
 pass its `url`. If there is no such artifact yet, the first publish creates it.
 One link, updated every cycle — not one per sweep.
 
-Do not tail the engine log for progress here. A recurring sweep runs unattended
-for hours, and a report republished on every internal milestone would put several
-messages into the session every few hours, indefinitely. One per completed cycle
-is the right rate. Mention the dashboard at `<results root>/dashboard.html`
-instead: it is local, it rewrites itself continuously, and the user can leave it
-open without any of this costing them a notification.
+Do not tail the engine log for progress here. A recurring sweep runs unattended for
+hours, and a report republished on every internal milestone would put several messages
+into the session every few hours. One per completed cycle is the right rate.
+
+**When the task ends you will be notified** with its exit code. Say what happened rather
+than assuming: a clean end means the 24-hour bound or a `--stop`; a failure means
+something broke, and `<DATA>/logs/orchestration.log` says what. Offer to restart it.
 
 Two log files, which are easy to confuse:
 

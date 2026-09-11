@@ -16,7 +16,6 @@ venv exists, so it may only import the standard library.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import signal
@@ -26,7 +25,7 @@ import venv
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from hireshire import orchestration_status  # noqa: E402
+from hireshire import sweep_pid  # noqa: E402
 from hireshire.plugin_dirs import MIGRATABLE, legacy_data_dirs, resolve_dirs  # noqa: E402
 
 ROOT, DATA = resolve_dirs()
@@ -107,173 +106,71 @@ def paths() -> int:
     return 0
 
 
-def status() -> int:
-    """Print whether a recurring sweep is running.
-
-    This exists so `/hireshire:start-orchestration` can *verify* instead of assert.
-    The skill used to announce that sweeps had begun on the strength of having been
-    invoked; when the mechanism behind that did not fire, the user was told a live
-    sweep was running and nothing contradicted it.
-
-    Installs nothing and imports nothing outside the stdlib, so it answers on a fresh
-    machine as readily as a warm one.
-    """
-    print(orchestration_status.describe(DATA))
-    return 0
-
-
 def stop() -> int:
-    """Stop a recurring sweep, then clear the status file.
+    """Stop a running sweep, then clear the pid file.
 
-    The monitor is deliberately not detached — it is meant to stop with the session
-    that started it — but on Windows it has repeatedly outlived one, leaving a sweeper
-    writing to the database with no way to reach it short of Task Manager. Without
-    this the user's only recourse is finding a PID by hand.
+    This is now the **only** thing that stops a sweep on purpose. The `SessionEnd` hook
+    and the `CLAUDE_PID` watchdog that used to do it automatically are gone: both needed
+    a session identity the host does not always publish, and when it was missing they
+    did not degrade — they killed every sweep on the machine. See the note in
+    `run_orchestration.py`.
 
     The kill must be **tree-wide**. `run_orchestration.py` re-execs twice (system
-    interpreter -> venv -> engine), so the `pid` in the status file is a leaf two
-    levels below the process that owns the terminal, and killing it alone leaves the
-    parents alive to be misread as a live sweep.
+    interpreter -> venv -> engine), so the recorded pid is a leaf two levels below the
+    process that owns the terminal, and killing it alone leaves the parents alive.
 
-    Failure to kill is reported, never raised: the status file is cleared regardless,
-    because a stale document that says "running" is the more harmful of the two states
-    and `describe` already treats a quiet heartbeat as stopped.
+    Failure to kill is reported, never raised, and the pid file is cleared regardless:
+    a file naming a process that no longer exists would make the duplicate guard refuse
+    the user's next sweep.
     """
-    doc = orchestration_status.read(DATA)
-    if not doc or not orchestration_status.is_running(DATA):
-        orchestration_status.clear(DATA)
-        print("HireShire orchestration: not running; nothing to stop.")
+    pid = sweep_pid.read(DATA)
+    if pid is None:
+        sweep_pid.clear(DATA)
+        print("HireShire: no sweep on record; nothing to stop.")
         return 0
 
-    pid = doc.get("pid")
     killed = False
-    if isinstance(pid, int):
-        if sys.platform == "win32":
-            # /T reaches the recorded process and everything under it, which is what
-            # takes down an apply subprocess and the browser it is driving.
-            try:
-                killed = subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    capture_output=True,
-                    text=True,
-                ).returncode == 0
-            except (OSError, subprocess.SubprocessError):
-                killed = False
-        else:
-            # `pkill -P` signals the CHILDREN of pid and never pid itself, so it is a
-            # first step, never the whole job. This used to gate the SIGTERM below on
-            # pkill having *failed*, which meant that whenever pkill succeeded — that
-            # is, whenever the sweep had a child — the sweeper was left running and
-            # reported as stopped. The sweep has a child in exactly one situation:
-            # while `claude -p` drives a browser through the apply phase. So the stop
-            # path failed at the one moment that mattered most.
-            try:
-                subprocess.run(
-                    ["pkill", "-TERM", "-P", str(pid)], capture_output=True, text=True
-                )
-            except (OSError, subprocess.SubprocessError):
-                pass
-            try:
-                os.kill(pid, signal.SIGTERM)
-                killed = True
-            except OSError:
-                killed = False
+    if sys.platform == "win32":
+        # /T reaches the recorded process and everything under it, which is what
+        # takes down an apply subprocess and the browser it is driving.
+        try:
+            killed = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+            ).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            killed = False
+    else:
+        # `pkill -P` signals the CHILDREN of pid and never pid itself, so it is a
+        # first step, never the whole job. This used to gate the SIGTERM below on
+        # pkill having *failed*, which meant that whenever pkill succeeded — that
+        # is, whenever the sweep had a child — the sweeper was left running and
+        # reported as stopped. The sweep has a child in exactly one situation:
+        # while `claude -p` drives a browser through the apply phase. So the stop
+        # path failed at the one moment that mattered most.
+        try:
+            subprocess.run(
+                ["pkill", "-TERM", "-P", str(pid)], capture_output=True, text=True
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed = True
+        except OSError:
+            killed = False
 
-    orchestration_status.clear(DATA)
+    sweep_pid.clear(DATA)
     if killed:
-        print(f"HireShire orchestration: stopped (pid {pid}).")
+        print(f"HireShire: sweep stopped (pid {pid}).")
         return 0
     print(
-        f"HireShire orchestration: could not stop pid {pid}; status cleared anyway.\n"
+        f"HireShire: could not stop pid {pid}; the record was cleared anyway.\n"
         "  If a sweep is still writing, end it from Task Manager (Windows) or "
         "`kill` it directly."
     )
     return 1
-
-
-#: SessionEnd reasons that do NOT mean the session is over. `/clear` and a resume both
-#: leave the user sitting in a live session, and stopping their sweep there would be a
-#: new bug of exactly the kind this hook exists to prevent.
-#:
-#: Held as a deny-list rather than an allow-list of endings on purpose: an unfamiliar
-#: or missing reason then still stops the sweep. The whole point of this hook is that
-#: a sweep must not outlive its session, so an unknown reason should fail toward
-#: stopping — the cost is a sweep the user restarts, against an orphan they can only
-#: reach through Task Manager.
-_SESSION_CONTINUES_REASONS = frozenset({"clear", "resume"})
-
-
-def _ending_session_owns_sweep() -> bool:
-    """Whether the sweep on record belongs to the session that is ending.
-
-    This hook fires for *every* Claude Code session that ends, and it used to stop
-    whatever the status file named. With several sessions open — seven were measured on
-    one machine — any of them ending killed another session's sweep, which reads exactly
-    like the sweep crashing: tree-killed, no traceback, no unwind.
-
-    The ending session identifies itself the same way the sweep's own watchdog does. The
-    hook is spawned *by* the session that is ending, so it inherits that session's
-    `CLAUDE_PID`; comparing it against the `session_pid` the sweeper recorded at start-up
-    is enough, and needs nothing from the payload.
-
-    Two fallbacks, deliberately opposite:
-
-    * **No recorded owner** -> stop it. Sweeps started before this field existed, and the
-      scheduled route, must not become unstoppable by the hook that is supposed to reap
-      them. This is the old behaviour, kept for exactly those.
-    * **Owner recorded but the ending session cannot be identified** -> leave it alone.
-      Here we know the sweep belongs to *somebody*, and guessing is what caused the bug.
-      `--stop` and the sweep's own watchdog both remain as backstops.
-    """
-    doc = orchestration_status.read(DATA)
-    if not doc:
-        # Nothing on record, so there is no sweep to protect. `stop()` is a no-op on an
-        # absent document and still clears a corrupt one, so refusing here would only
-        # skip that tidy-up. Refuse when a sweep is known to belong to someone else —
-        # never merely because nothing is known.
-        return True
-
-    owner = doc.get("session_pid")
-    if not isinstance(owner, int) or isinstance(owner, bool) or owner <= 0:
-        return True
-
-    raw = os.environ.get("CLAUDE_PID", "").strip()
-    try:
-        return int(raw) == owner
-    except ValueError:
-        return False
-
-
-def session_end() -> int:
-    """Stop the sweep when the session that started it ends.
-
-    The recurring sweep is documented as session-scoped and on Windows it was not:
-    nothing signals an orphan there — no process group, no SIGHUP — so a monitor
-    outlived its session repeatedly, once with a shortlist in hand and auto-apply
-    enabled. This is the clean half of the fix: the host tells us the session is over
-    and we stop.
-
-    The other half is in `run_orchestration.py`, which watches the session's pids
-    itself, because this hook cannot fire when Claude Code is force-killed or crashes.
-    Neither layer is sufficient alone.
-
-    Silence is the default, as in `approve.py`: an unreadable payload leaves the sweep
-    running rather than guessing at it.
-    """
-    try:
-        # No payload at all is treated as an empty one: the hook fired, so the session
-        # ended — only the reason is missing, and that is the deny-list's case. A
-        # payload that is unreadable or not an object is different, and left alone.
-        payload = json.loads(sys.stdin.read() or "{}")
-    except (OSError, ValueError):
-        return 0
-    if not isinstance(payload, dict):
-        return 0
-    if payload.get("reason") in _SESSION_CONTINUES_REASONS:
-        return 0
-    if not _ending_session_owns_sweep():
-        return 0
-    return stop()
 
 
 def check() -> int:
@@ -348,10 +245,6 @@ if __name__ == "__main__":
     argv = sys.argv[1:]
     if "--paths" in argv:
         sys.exit(paths())
-    if "--status" in argv:
-        sys.exit(status())
     if "--stop" in argv:
         sys.exit(stop())
-    if "--session-end" in argv:
-        sys.exit(session_end())
     sys.exit(check() if "--check" in argv else main())

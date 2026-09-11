@@ -37,7 +37,7 @@ def test_the_plugin_declares_no_monitors():
     """Dropped in 0.2.4. Plugin monitors are experimental and are skipped on hosts
     where the Monitor tool is unavailable, so the orchestration skill's promise that
     sweeps had started was sometimes false and it had no way to notice. The skill now
-    starts the sweeper itself and confirms with `--status`."""
+    starts the sweeper itself, as a background task it can see."""
     m = _json(".claude-plugin/plugin.json")
     assert "monitors" not in m
     assert "monitors" not in m.get("experimental", {})
@@ -67,19 +67,22 @@ def test_session_start_hook_probes_but_never_installs():
     assert cmd.get("timeout", 0) >= 900
 
 
-def test_session_end_hook_stops_the_sweep_through_the_one_launcher():
-    """The sweep is documented as ending with its session and on Windows it did not:
-    an orphan there is re-parented in silence, so a monitor outlived its session twice,
-    the second time with a shortlist in hand and auto-apply on. This hook is the
-    orderly half of the fix; `run_orchestration`'s pid watchdog is the other half."""
-    hooks = _json("hooks/hooks.json")["hooks"]["SessionEnd"]
-    cmd = hooks[0]["hooks"][0]
-    assert cmd["type"] == "command"
-    assert "hireshire.sh" in cmd["command"], "must go through the one launcher"
-    assert "--session-end" in cmd["command"]
-    # It runs while the session is tearing down, so it must not be able to install.
-    assert "--bootstrap" not in cmd["command"]
-    assert 0 < cmd.get("timeout", 0) <= 60
+def test_the_plugin_declares_no_session_end_hook():
+    """This hook is not merely unused — it must never come back.
+
+    It fired for *every* Claude Code session ending on the machine, including the
+    short-lived `claude -p` sessions the scorer spawns to score a batch, and it stopped
+    whatever the status file named. An ownership check was added and did not save it:
+    on a host that does not publish `CLAUDE_PID` the sweeper recorded no owner, the
+    check's null-owner fallback returned "yes, stop it" for every ending session, and a
+    fresh user's sweep died on its first scoring call — 60 s in, exit code 1, no
+    traceback, on every sweep path including `--once`.
+
+    The sweep is uncoupled from sessions now and bounds its own runtime instead. Anyone
+    reintroducing "stop the sweep when the session ends" has to delete this test first,
+    which is the point of it.
+    """
+    assert "SessionEnd" not in _json("hooks/hooks.json")["hooks"]
 
 
 def test_the_launcher_never_passes_a_shell_pid_to_the_watchdog():
@@ -129,13 +132,13 @@ def test_the_launcher_exposes_its_read_only_modes_separately():
     # The two questions a skill must ask rather than assume: where DATA is, and whether
     # a sweep is already running. See the tests below for both.
     assert "--paths)" in sh
-    assert "--status)" in sh
-    # --stop is the counterpart to --monitor: the sweep is supposed to end with its
-    # session and on Windows has repeatedly not.
+    # --stop is the counterpart to --monitor, and the only deliberate way to end a
+    # sweep now that nothing reaps one automatically.
     assert "--stop)" in sh
-    # --session-end is what makes that automatic rather than something the user has to
-    # remember; it reuses --stop's kill.
-    assert "--session-end)" in sh
+    # There is no --status and no --session-end: both served a session-scoped teardown
+    # that killed sweeps on hosts which do not publish CLAUDE_PID.
+    assert "--status)" not in sh
+    assert "--session-end)" not in sh
     # The permission guard runs before the venv exists, so it is a launcher mode
     # rather than an engine entrypoint. See tests/test_approve.py.
     assert "--approve)" in sh
@@ -146,10 +149,11 @@ def test_the_launcher_exposes_its_read_only_modes_separately():
 def test_find_jobs_runs_the_registered_sweep_not_the_bare_engine():
     """`/hireshire:find-jobs` must go through `--sweep`, not `orchestrate.py --once`.
 
-    Both run the same pipeline, but only `--sweep` registers the run in the status
-    file. Through `orchestrate.py` a find-jobs sweep was invisible to `--status`,
-    unreachable by `--stop`, and outlived the session that started it — every teardown
-    mechanism the plugin has was built on the monitor's path and did not cover it.
+    Both run the same pipeline, but only `--sweep` records its pid, so through
+    `orchestrate.py` a find-jobs sweep was unreachable by `--stop` and invisible to the
+    guard that stops a second writer starting alongside it. One program for both paths
+    also means a fix to the recurring sweep reaches the one-shot one — which mattered
+    when the session teardown was killing every sweep, `--once` included.
     """
     skill = (ROOT / "skills" / "find-jobs" / "SKILL.md").read_text(encoding="utf-8")
     run_lines = [
@@ -162,10 +166,10 @@ def test_find_jobs_runs_the_registered_sweep_not_the_bare_engine():
     assert not any("orchestrate.py" in ln for ln in run_lines), run_lines
 
 
-@pytest.mark.parametrize("mode", ["paths", "status", "stop"])
+@pytest.mark.parametrize("mode", ["paths", "stop"])
 def test_the_read_only_modes_answer_without_building_anything(mode):
-    """Both are questions a skill asks before it can do or say anything, so both must
-    return on a machine where the venv does not exist yet."""
+    """Both run before the venv can be assumed — `--paths` is the first thing every
+    skill asks, and `--stop` has to work on a machine whose install is half-finished."""
     import bootstrap
 
     called: list[str] = []
@@ -180,11 +184,19 @@ def test_the_read_only_modes_answer_without_building_anything(mode):
     assert called == [], f"--{mode} must answer a question, not build anything"
 
 
-def test_the_orchestration_skill_verifies_before_it_reports():
-    """It used to announce that sweeps had started purely because it had been invoked,
-    so users were told a sweep was live when nothing was running."""
+def test_the_orchestration_skill_does_not_promise_a_session_scoped_sweep():
+    """The claim it used to make is now false, and stating it would be the same class
+    of failure as announcing a sweep that was not running.
+
+    A sweep no longer ends with the session: there is no `SessionEnd` hook and no
+    watchdog. It ends on `--stop`, on the shell task being killed, or on its own
+    runtime bound — and the skill has to say so, because the natural assumption runs
+    the other way and auto-apply submits real applications unattended.
+    """
     text = (ROOT / "skills" / "start-orchestration" / "SKILL.md").read_text(encoding="utf-8")
-    assert "--status" in text, "the skill must check the state it reports"
+    assert "--status" not in text, "there is no --status to ask"
+    assert "--stop" in text, "the user must be told how to end it"
+    assert "24-hour" in text or "24h" in text, "the runtime bound must be stated"
 
 
 def _shell_blocks(text: str) -> str:

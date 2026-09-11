@@ -1,21 +1,24 @@
-"""Is *another* process still alive?
+"""Is the process in the pid file still alive?
 
-Asked by the recurring sweep about the session that started it. `run_orchestration.py`
-watches the Claude Code process and the shell it was launched from, and exits when
-either disappears. The sweep is documented as ending with its session, and on Windows
-that was simply untrue: nothing signals an orphan there — no process groups, no SIGHUP
-— so a monitor outlived its session repeatedly, once with a live shortlist and
-auto-apply enabled. It has to notice for itself.
+**One caller**: the guard in `run_orchestration.py` that refuses to become a second
+sweeper. Two sweepers are two writers on one SQLite database doing identical work, and
+`hireshire.sweep_pid` alone cannot tell a live sweep from a file a killed one left
+behind — so a stale pid would block every future sweep, which is worse than the
+duplicate it was preventing.
 
-**This is not the mechanism `orchestration_status` rejected.** That module answers "is
-*my own* sweeper running" and deliberately uses heartbeat freshness instead of a PID
-probe. It can: the sweeper writes a heartbeat. Here the subject is someone else's
-process, which writes nothing this code can read, so a probe is the only thing left.
+**This module is not what broke, and it must not be deleted along with what did.** It
+used to have a second caller: a watchdog that polled the Claude Code session and killed
+the sweep when that process vanished. That failed twice, and both times the fault was
+the *identity* being handed in, never the probe. First `$$` and `$PPID` from Git Bash —
+MSYS keeps its own pid namespace, so those are not the pids Win32 `OpenProcess` knows.
+Then `CLAUDE_PID`, which some hosts do not publish at all, and whose absence was read
+as "stop every sweep on this machine". The pid asked about here is one the sweeper
+recorded about **itself**, which is the only identity in this plugin that needs no
+guessing.
 
-The residual risk is the one that module named — a recycled PID reads as alive — and
-the direction is deliberate. Being wrong here means failing to stop a sweep, never
-stopping a live session, and the exposure is one heartbeat interval rather than the
-lifetime of a status file.
+The residual risk is a recycled PID reading as alive, which would refuse a sweep the
+user asked for. That is the safe direction: the cost is one message telling them a
+sweep is already running, against two writers corrupting a run.
 
 Deliberately **stdlib only**, like everything else on the launcher's path.
 """

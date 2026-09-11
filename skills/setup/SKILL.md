@@ -405,11 +405,10 @@ entry use the venv interpreter's **absolute path** plus `scripts/run_orchestrati
 and may not have `sh` or the same PATH.
 
 Point it at `scripts/run_orchestration.py --once`, **not** `orchestrate.py --once`.
-The former registers the run in the status file, so `--status` reports it and a
-manual sweep will not start a second writer alongside it; the latter registers
-nothing. The session watchdog stays inert either way, which is what a scheduled run
-needs: it reads `CLAUDE_PID`, a scheduled task has none, and absence means do not
-arm.
+The former records its pid, so `--stop` can reach it and a manual sweep will not start
+a second writer alongside it; the latter records nothing. Nothing about a Claude Code
+session is involved either way, which is what a scheduled run needs — it has no session
+behind it, and the plugin no longer asks for one.
 
 This is a real change to their system. **Print the exact command and get explicit
 confirmation before running it**, and tell them how to remove it afterwards.
