@@ -2,13 +2,14 @@
 
 How a job gets from a company's careers page to your shortlist.
 
-See the [README](../README.md) for install and settings, and `CLAUDE.md` for the
+See the [specs](SPECS.md) for install and settings, and `CLAUDE.md` for the
 file-level internals.
 
 ## The whole flow
 
-Everything runs on your machine except scoring. Your resume never leaves your disk;
-only the jobs that survive the funnel are sent to Claude, on your own subscription.
+Everything runs on your machine except scoring. The sweep and the funnel never send
+anything out; only the jobs that survive the funnel are sent to Claude, each with
+your resume so it can be judged against it, on your own subscription.
 
 ```mermaid
 flowchart TD
@@ -20,7 +21,7 @@ flowchart TD
         B1["Greenhouse, Lever, Ashby, direct<br/>15,868 employers"]
         B2["Workday, BambooHR<br/>24,200 more, off by default"]
         FUN["Relevance funnel<br/>free, see below"]
-        OUT["Shortlist CSV, reasoning report,<br/>dashboard, local database"]
+        OUT["Results CSV, shortlist JSON,<br/>overview page, local database"]
         APP{"enable_applier?"}
         YOU["You apply yourself"]
 
@@ -65,9 +66,10 @@ flowchart TD
     F5["Read the whole description<br/>against your profile"]
     F6["Group duplicate postings<br/>one score per requisition"]
     CUT{"Reaches min_score 3.0?"}
+    YOE{"Enough years of experience?<br/>off until setup sets candidate_years"}
     BUD{"Calls left in the budget?<br/>top_k 150"}
     LLM["Claude scores it 0-100"]
-    TH{"Reaches threshold 65?"}
+    TH{"Reaches threshold 75?"}
     SHORT["Shortlisted"]
     REJ["Scored, not a match"]
     DROP["Dropped for good"]
@@ -75,7 +77,9 @@ flowchart TD
 
     IN --> F1 --> F2 --> F3 --> F4 --> F5 --> F6 --> CUT
     CUT -->|no| DROP
-    CUT -->|yes| BUD
+    CUT -->|yes| YOE
+    YOE -->|no| DROP
+    YOE -->|yes| BUD
     BUD -->|no| DEFER
     BUD -->|yes| LLM --> TH
     TH -->|yes| SHORT
@@ -91,9 +95,10 @@ flowchart TD
     class DEFER back
 ```
 
-**The two drops are not the same.** Below `min_score` is a verdict — the same job,
-profile and model give the same answer every time, so it is retired and will not come
-back. Out of budget is a deferral — nothing was decided, so it returns next sweep.
+**The drops are not all the same.** Below `min_score`, or asking for more experience
+than you have, is a verdict — the same job, profile and settings give the same answer
+every time, so it is retired and will not come back. Out of budget is a deferral —
+nothing was decided, so it returns next sweep.
 
 ## Tuning
 
@@ -102,7 +107,9 @@ back. Out of budget is a deferral — nothing was decided, so it returns next sw
 | `encoder_threshold` | 0.30 | skip more titles before any description is fetched |
 | `min_score` | 3.0 | send fewer, better-matched jobs for scoring |
 | `top_k` | 150 | allow more scoring calls per sweep |
-| `threshold` | 65 | shortlist only stronger matches |
+| `candidate_years` | 0 (gate off) | keep postings that ask for more experience |
+| `threshold` | 75 | shortlist only stronger matches |
 
-An empty shortlist with a large "reached the reranker" count in the run summary means
-`min_score` is too high for your resume, not that there were no good jobs.
+An empty shortlist with a large "reranked" count but almost nothing "above cutoff" in
+the run summary means `min_score` is too high for your resume, not that there were no
+good jobs.
