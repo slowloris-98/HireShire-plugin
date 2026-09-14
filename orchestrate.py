@@ -7,7 +7,7 @@ then repeats on a schedule.
     python orchestrate.py --once       # run exactly once, no scheduling
     python orchestrate.py --interval 2 # every 2 hours instead of 4
     python orchestrate.py --no-matcher # scraper only (no scoring)
-    python orchestrate.py --apply      # run the /hireshire:apply skill afterwards
+    python orchestrate.py --apply      # apply to each job as it is shortlisted
 """
 
 import argparse
@@ -15,14 +15,11 @@ import asyncio
 import json
 import logging
 import logging.handlers
-import os
-import subprocess
-import sys
 import threading
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from dotenv import load_dotenv
 from rich.console import Console
@@ -35,6 +32,9 @@ import scraper
 from hireshire import paths, reporting
 from hireshire.results_export import results_name, write_results_csv
 from hireshire.storage.db import PHASE_PIPELINE, get_db
+
+if TYPE_CHECKING:
+    from hireshire.applier.config import ApplierSettings
 
 load_dotenv()
 
@@ -101,107 +101,24 @@ async def _collect_results(in_q: asyncio.Queue, out_q: asyncio.Queue) -> None:
     await out_q.put(None)
 
 
-#: The `claude -p` subprocess driving a browser through the apply phase, while one is
-#: running; None otherwise.
-#:
-#: Held here so the session watchdog in `scripts/run_orchestration.py` can take it down
-#: before the sweep exits. It is a *child* of the sweep, so nothing else will: an
-#: orphaned apply phase goes on submitting real applications, unattended, after the
-#: session that authorised it has gone. That is the exact failure this whole mechanism
-#: exists to prevent, so leaving it running would make the fix cosmetic.
-_apply_proc: "asyncio.subprocess.Process | None" = None
+def _load_apply_inputs() -> "tuple[ApplierSettings, str] | None":
+    """The applier's settings and the resume text, or None if either cannot be loaded.
 
-
-def terminate_apply_subprocess() -> None:
-    """Kill the apply subprocess and the browser under it, if one is running.
-
-    Tree-wide, because `claude -p` spawns the browser itself — killing only the CLI
-    would leave a Playwright process sitting on a half-filled application form.
-
-    Never raises: the only caller is already on its way out, and a failure here must
-    not stop it from clearing the status file and exiting.
+    Loaded once per sweep, before the queues start. A failure turns applying off for
+    this sweep rather than failing it: the scrape and the scoring are worth having
+    whether or not anything gets applied to.
     """
-    proc = _apply_proc
-    if proc is None or proc.returncode is not None:
-        return
+    from hireshire.applier.config import load_applier_config
+    from hireshire.matcher.resume import extract_resume_text
+
     try:
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-            )
-        else:
-            # Children first, then the process itself — the same order and the same
-            # reasoning as `bootstrap.stop()`. `pkill -P` never signals the parent.
-            subprocess.run(
-                ["pkill", "-KILL", "-P", str(proc.pid)], capture_output=True, text=True
-            )
-            proc.kill()
+        settings = load_applier_config().settings
+        resume_text = extract_resume_text(paths.resolve_data(settings.resume_path))
     except Exception:  # noqa: BLE001 - see the docstring
-        logger.exception("Could not terminate the apply subprocess (pid %s)", proc.pid)
-
-
-async def _launch_skill(skill_name: str, extra: str = "") -> bool:
-    """Run a Claude Code skill as a `claude -p` subprocess. Returns success."""
-    # Plugin layout: skills live at ROOT/skills/<name>/SKILL.md. The whole body is
-    # passed as the literal prompt — this is not a slash-command invocation.
-    skill_path = paths.ROOT / "skills" / skill_name / "SKILL.md"
-    if not skill_path.exists():
-        logger.error("%s skill not found at %s", skill_name, skill_path)
-        return False
-
-    skill_prompt = skill_path.read_text(encoding="utf-8") + extra
-    logger.info("Launching /%s skill...", skill_name)
-
-    # load_dotenv() puts ANTHROPIC_API_KEY (needed by the matcher LLM
-    # backends) into our environment, and the Claude CLI prefers that key over
-    # the claude.ai subscription login — billing pay-as-you-go credits and
-    # failing with "Credit balance is too low" when they run out. Strip the API
-    # auth vars so the subprocess uses the subscription instead.
-    skill_env = {
-        k: v for k, v in os.environ.items()
-        if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-    }
-
-    # The prompt goes on STDIN, never in argv. A SKILL.md opens with `---` YAML
-    # frontmatter, and the CLI parses a leading-dash argument as an option:
-    #     error: unknown option '---\nname: apply...'
-    # That failed every apply phase with exit code 1, visible only as one line in a
-    # 1.4 MB log. stdin is used rather than a `--` separator because it also keeps
-    # the prompt off the process table and has no length limit to trip over.
-    proc = await asyncio.create_subprocess_exec(
-        "claude", "-p",
-        "--permission-mode", "auto",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=skill_env,
-    )
-    # Published for `terminate_apply_subprocess`, and cleared the moment it exits so a
-    # later shutdown cannot go hunting for a pid the OS has already recycled.
-    global _apply_proc
-    _apply_proc = proc
-    try:
-        stdout, stderr = await proc.communicate(skill_prompt.encode("utf-8"))
-    finally:
-        _apply_proc = None
-    if stdout:
-        logger.info("%s output:\n%s", skill_name, stdout.decode(errors="replace"))
-    if proc.returncode != 0:
-        logger.error(
-            "%s skill exited with code %d\n%s",
-            skill_name,
-            proc.returncode,
-            stderr.decode(errors="replace"),
-        )
-        return False
-    logger.info("%s skill completed successfully", skill_name)
-    return True
-
-
-async def _launch_apply() -> None:
-    await _launch_skill("apply")
+        logger.exception("Applier: could not load its settings or the resume — "
+                         "not applying this sweep")
+        return None
+    return settings, resume_text
 
 
 def _run_stamp(now: datetime | None = None) -> str:
@@ -221,9 +138,16 @@ def _json_name(stamp: str) -> str:
 
 
 async def _track_results(
-    q: asyncio.Queue, results_dir: Path, run_id: str, stamp: str, quiet: bool = False
+    q: asyncio.Queue, results_dir: Path, run_id: str, stamp: str, quiet: bool = False,
+    apply_q: asyncio.Queue | None = None,
 ) -> None:
-    """Persist each pipeline result to the DB, O(1) per row.
+    """Persist each pipeline result to the DB, O(1) per row, then hand it to the applier.
+
+    `apply_q` is how applying streams: a shortlisted job reaches the apply worker the
+    moment it is recorded, not after the sweep. It is recorded *first* so the job is
+    in the database before a browser goes anywhere near it. Its `None` sentinel is
+    sent in a `finally`, because a worker left waiting would hold the whole sweep's
+    `gather` open forever.
 
     Only the DB. The CSV used to be appended here as rows arrived, which meant a
     file in processing order that also had to survive being open in Excel — a
@@ -234,12 +158,18 @@ async def _track_results(
     still leaves the CSV for everything it judged.
     """
     db = get_db()
-    while True:
-        record = await q.get()
-        if record is None:
-            break
-        await asyncio.to_thread(db.record_pipeline_result, run_id, record)
-        logger.info("Tracked result: %s — %s", record["company"], record["title"])
+    try:
+        while True:
+            record = await q.get()
+            if record is None:
+                break
+            await asyncio.to_thread(db.record_pipeline_result, run_id, record)
+            logger.info("Tracked result: %s — %s", record["company"], record["title"])
+            if apply_q is not None:
+                await apply_q.put(record)
+    finally:
+        if apply_q is not None:
+            await apply_q.put(None)
 
 
 async def _write_run_outputs(run_id: str, results_dir: Path, stamp: str,
@@ -535,12 +465,57 @@ async def run_pipeline(
                     tasks["match"] = progress.add_task("[bold]Matching[/bold]", total=None, count_str="0 scored")
                     q1: asyncio.Queue = asyncio.Queue()
                     q2: asyncio.Queue = asyncio.Queue()
-                    await asyncio.gather(
+                    stages = [
                         scraper.main(out_queue=q1, quiet=True, run_id=run_id, on_company_start=on_company_start),
                         matcher.main(in_queue=q1, out_queue=q2, quiet=True, run_id=run_id, skip_llm=skip_llm, on_job_score=on_job_score),
                         _collect_results(q2, q3),
-                        _track_results(q3, results_dir, run_id, stamp, quiet),
-                    )
+                    ]
+
+                    # Applying streams too: each shortlisted job reaches the worker the
+                    # moment it is tracked, so an application can go out while the
+                    # scrape is still visiting other employers. It finishes before the
+                    # outputs below are written, which is what keeps the CSV's
+                    # `applied` column right without a second pass.
+                    q4: asyncio.Queue | None = None
+                    apply_inputs = _load_apply_inputs() if apply else None
+                    if apply_inputs is not None:
+                        from hireshire.applier.worker import run_apply_worker
+
+                        applier_settings, resume_text = apply_inputs
+                        q4 = asyncio.Queue()
+                        tasks["apply"] = progress.add_task(
+                            "[bold]Applying[/bold]", total=None, count_str="waiting"
+                        )
+
+                        def on_apply_progress(stats: dict[str, int]) -> None:
+                            progress.update(
+                                tasks["apply"],
+                                count_str=f"{stats['submitted']} submitted, {stats['error']} error",
+                            )
+
+                        if skip_llm:
+                            logger.warning(
+                                "Applier is on with LLM scoring skipped: every job that "
+                                "passes the free gates will be applied to."
+                            )
+                        stages.append(run_apply_worker(
+                            q4, applier_settings, resume_text, on_progress=on_apply_progress
+                        ))
+                    stages.append(_track_results(q3, results_dir, run_id, stamp, quiet, apply_q=q4))
+
+                    # `gather` does not cancel its siblings when one raises. That used to
+                    # leave the scrape running orphaned; with the applier on the queue it
+                    # would leave a browser submitting applications for a sweep that has
+                    # already failed and written its outputs. Cancelling the worker kills
+                    # its session in flight.
+                    running = [asyncio.ensure_future(s) for s in stages]
+                    try:
+                        await asyncio.gather(*running)
+                    except BaseException:
+                        for t in running:
+                            t.cancel()
+                        await asyncio.gather(*running, return_exceptions=True)
+                        raise
                 finished = True
             finally:
                 # All of this is in a `finally`, and that is the whole point: a sweep
@@ -567,25 +542,6 @@ async def run_pipeline(
                     # A `finally` that raises replaces the real traceback with its
                     # own, which would hide the failure this exists to survive.
                     logger.exception("Could not write the run's outputs — run %s", run_id)
-
-            # Apply runs inside the same Live so its bar shares this Progress —
-            # never a second Live. Needs shortlisted jobs, so skip it when the
-            # matcher was skipped. Unreachable on a failed sweep: the exception is
-            # already on its way out through the `finally` above.
-            if apply and not skip_matcher:
-                apply_task = progress.add_task("[bold]Applying[/bold]", total=None, count_str="running")
-                await _launch_apply()
-                # The `applied` table is only written during the phase above, and
-                # both the CSV's `applied` column and the pages' Applied section
-                # were written before it — so without this they report a run that
-                # applied to nothing. Safe after `finalise_run`: the `runs` row now
-                # exists, so this renders the run as finished rather than re-arming
-                # the meta refresh.
-                await _write_run_outputs(run_id, results_dir, stamp, complete=True)
-                await asyncio.to_thread(
-                    reporting.refresh, run_id, results_dir, stamp, True
-                )
-                progress.update(apply_task, count_str="done")
 
         logger.info("Pipeline complete — run %s", run_id)
         # The find-jobs skill reads this line rather than reconstructing the path.

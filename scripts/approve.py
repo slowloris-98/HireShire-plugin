@@ -86,7 +86,7 @@ _SUBCOMMANDS = {
         "install-config", "init-workspace", "find-resumes", "install-resume",
         "resume-text", "get", "field-docs", "set", "write-profile", "warm-models",
     }),
-    "scripts/applied_cli.py": frozenset({"list", "record"}),
+    "scripts/applied_cli.py": frozenset({"list", "pending", "record"}),
 }
 
 # Browser tools that only look. Everything that changes state on an employer's

@@ -163,4 +163,7 @@ Two things worth surfacing if the numbers warrant it:
   there were no jobs. `scripts/calibrate_cutoffs.py` derives the right value from
   their own past runs.
 
-If auto-apply is enabled, remind them `/hireshire:apply` is the next step.
+If auto-apply is enabled, applications already went out during the sweep, each one as
+its job was shortlisted. Point them to the overview page's Applied section for what was
+submitted and what errored. `/hireshire:apply` is only for catching up on jobs still
+pending — for example, when an apply session could not start.

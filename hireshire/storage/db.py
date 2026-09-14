@@ -965,6 +965,44 @@ class Database:
                  screenshot, error),
             )
 
+    def load_pending_applications(self, since_iso: str) -> list[dict]:
+        """Shortlisted jobs scored since `since_iso` with no `applied` row, best first.
+
+        The apply worker's backlog, and what `applied_cli.py pending` prints for the
+        manual skill. It exists because the matcher retires a job once it is judged:
+        a job whose apply session failed to launch is never streamed again, so this
+        is the only road back to it.
+
+        Cluster siblings are excluded — only the representative is ever applied to,
+        the same rule the stream follows. One row per job, from its newest match.
+        Rows come back in the pipeline-record shape the stream uses (`company`,
+        `job_url`), so the worker treats both sources identically.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT m.job_id, m.board_token, m.title, m.relevance_score, m.raw_json, "
+                "MAX(m.scored_at) AS scored_at "
+                "FROM matches m "
+                "WHERE m.shortlisted = 1 AND m.scored_at >= ? "
+                f"AND NOT ({self._sibling_sql('m')}) "
+                "AND NOT EXISTS (SELECT 1 FROM applied a WHERE a.job_id = m.job_id) "
+                "GROUP BY m.job_id "
+                "ORDER BY m.relevance_score DESC",
+                (since_iso,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            raw = json.loads(r["raw_json"])
+            out.append({
+                "job_id": r["job_id"],
+                "company": r["board_token"],
+                "title": r["title"],
+                "job_url": raw.get("absolute_url") or "",
+                "relevance_score": r["relevance_score"],
+                "scored_at": r["scored_at"],
+            })
+        return out
+
     # -- retention (manual, via scripts/prune_runs.py) -----------------------
 
     def all_run_ids(self) -> list[str]:

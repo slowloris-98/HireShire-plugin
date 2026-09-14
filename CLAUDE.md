@@ -538,20 +538,46 @@ Two phases, each independent: own entrypoint, own `hireshire/<phase>/` subpackag
 own `config/<phase>.yaml`. All tabular data lives in one SQLite DB (WAL); every
 phase writes rows keyed by a shared `run_id`.
 
-Applying is **not** a third engine phase, despite having `config/applier.yaml` and a
-`hireshire/applier/` package. That package is only `config.py` and `store.py` — there
-is no `main()` and nothing for `orchestrate.py` to wire a queue to, because the work
-is driving a browser, which the `apply` skill does through Playwright MCP. The engine
-launches that skill as a `claude -p` subprocess (`_launch_skill`) and reads the rows it
-records. Anything needing a browser belongs on the skill side of that line. `orchestrate.py` wires them over
-asyncio queues with exactly one `None` sentinel per queue, always sent in a
-`finally`:
+Applying is **not** a third engine phase with a `main()`, but it is on the queue. The
+work is driving a browser, and that stays on the Claude side of the line: forms differ
+per employer and the questions need a model that has read the resume.
+`hireshire/applier/worker.py` is only the consumer — for each shortlisted job it
+launches one `claude -p` session over `apply_one.md` (the per-job rules, shared with
+the `apply` skill), which uses the plugin's Playwright MCP and returns an
+`ApplyOutcome` via `--json-schema`; the engine records it. `orchestrate.py` wires the
+phases over asyncio queues with exactly one `None` sentinel per queue, always sent in
+a `finally`:
 
 ```
 scraper.main(out_queue=q1) → q1[(board_token, list[Job])] → matcher.main(q1→q2)
-  → q2[(MatchResult, Job)] → _collect_results → q3 → pipeline_results table
+  → q2[(MatchResult, Job)] → _collect_results → q3 → _track_results → pipeline_results table
+                                                          └→ q4 → run_apply_worker → applied table
   → <workspace>/hireshire_run_results/<stamp>/<stamp>_results.{csv,json}
 ```
+
+Four things about the applier that are easy to break:
+
+- **One session per job, one at a time.** The old design ran the whole skill once,
+  after the sweep, over `last_run.json` — a file that only exists at the end, so it
+  could never stream. Do not batch jobs into one session to "save launches".
+- **A failed launch is a deferral; an outcome is a verdict.** `submitted`/`error`
+  write `applied` and retire the job. A session that never started or exited non-zero
+  writes nothing, and `Database.load_pending_applications` (the backlog, bounded by
+  `backlog_hours`) retries it next sweep — the only road back, because the matcher
+  never streams a judged job twice. Three launch failures in a row stop the applier
+  for the sweep.
+- **Ambiguous endings are recorded, deliberately.** A timeout or an unreadable result
+  may come after the submit click, so it is written as an `error` telling the user to
+  check. Retrying it would risk a second application to the same employer, which is
+  worse than a lost one.
+- **`applied_ids` is re-read before every launch**, because `/hireshire:apply` can run
+  alongside a sweep and both work from the same pending list.
+- **The session loads the browser server itself** (`--mcp-config <ROOT>/.mcp.json
+  --strict-mcp-config`). A `claude -p` the engine starts is not guaranteed to load the
+  plugin — measured, it did not, and the namespaced tools were simply absent. So in
+  that session the tools are `mcp__playwright__*`, while inside the skill they are
+  `mcp__plugin_hireshire_playwright__*`; `apply_one.md` names both. Do not "fix" the
+  worker to use the namespaced names.
 
 Each `main()` takes optional `in_queue` / `out_queue` / `quiet`. `quiet=True`
 suppresses Rich in favour of `logging` — required under the monitor.
@@ -622,8 +648,9 @@ suppresses Rich in favour of `logging` — required under the monitor.
   last checkpoint before a real application reaches an employer. That became load-
   bearing when `dry_run` was removed — `enable_applier` and `exclude_companies` are
   now the only other things in the way, so this set must not be widened. Note the
-  monitor's own apply phase runs `claude -p --permission-mode auto` and therefore
-  bypasses it entirely: unattended auto-apply has no human checkpoint by design.
+  sweep's apply worker runs each per-job session as `claude -p --permission-mode auto`
+  and therefore bypasses it entirely: unattended auto-apply has no human checkpoint by
+  design.
 - **`userConfig` is not used** for anything load-bearing — its enable-time prompt
   has open bugs. The `setup` skill is the source of truth.
 - **Set an explicit `version` in `plugin.json`.** Omitting it pushes every commit at

@@ -12,6 +12,7 @@ from typing import Optional, Protocol, runtime_checkable
 from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_never
 
+from hireshire import claude_cli
 from hireshire.matcher.config import MatcherSettings
 from hireshire.models.job import Job
 from hireshire.matcher.prompts import SCORER_SYSTEM_PROMPT
@@ -424,14 +425,8 @@ class ClaudeCodeBackend:
 
     @staticmethod
     def _env() -> dict[str, str]:
-        # The CLI prefers ANTHROPIC_API_KEY over the subscription login, which
-        # silently bills pay-as-you-go credits and then fails with "Credit
-        # balance is too low". load_dotenv() may well have put one in our
-        # environment for the BYO-key path, so strip both auth vars here.
-        return {
-            k: v for k, v in os.environ.items()
-            if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-        }
+        # Subscription, never a pay-as-you-go key — see `claude_cli.subscription_env`.
+        return claude_cli.subscription_env()
 
     async def call(self, prompt: str, system_prompt: str) -> ScoringSchema:
         async with self._sem:
@@ -502,24 +497,8 @@ class ClaudeCodeBackend:
 
     @staticmethod
     def _payload(envelope) -> ScoringSchema:
-        # `--output-format json` wraps the answer; the payload has moved between
-        # CLI versions, so accept the envelope itself or any of the usual keys.
-        # `structured_output` is where the current CLI puts a `--json-schema`
-        # result — the rest are kept because older versions used them and this
-        # backend has no way to know which version is on PATH.
-        if isinstance(envelope, dict):
-            for key in ("structured_output", "result", "response", "content", "output"):
-                if key in envelope:
-                    envelope = envelope[key]
-                    break
-        if isinstance(envelope, str):
-            try:
-                envelope = json.loads(envelope)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"claude CLI payload was not JSON: {envelope[:300]}"
-                ) from exc
-        return ScoringSchema.model_validate(envelope)
+        # Shared with the apply worker, which reads its outcome the same way.
+        return ScoringSchema.model_validate(claude_cli.unwrap_envelope(envelope))
 
 
 # ---------------------------------------------------------------------------
