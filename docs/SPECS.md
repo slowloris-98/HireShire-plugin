@@ -64,7 +64,7 @@ work on a Mac, where there is no bare `python` at all.
 | `/hireshire:setup` | One-time guided setup. Asks about ten questions in plain English and does the first-run downloads. |
 | `/hireshire:find-jobs` | One sweep, scored and ranked, written to a CSV. |
 | `/hireshire:start-orchestration` | Keeps sweeping on a schedule while the session is open. |
-| `/hireshire:apply` | Fills out and **submits** the application forms. Off until you turn it on — see [Safety](#safety). |
+| `/hireshire:apply` | Fills out and **submits** application forms for shortlisted jobs not yet applied to. Sweeps already do this as each job is shortlisted; this is the manual catch-up. Off until you turn it on — see [Safety](#safety). |
 
 ## How it decides what to score
 
@@ -143,7 +143,8 @@ in the safe position:
 - `enable_applier: false` — the phase does not run at all.
 
 Turn it on and every sweep opens a browser on its own and submits applications to
-real employers, with no confirmation step. There is deliberately no rehearsal mode:
+real employers, with no confirmation step — one job at a time, each as soon as it is
+shortlisted rather than after the sweep ends. There is deliberately no rehearsal mode:
 a `dry_run` setting used to fill forms without submitting, but a rehearsal left on
 indefinitely is indistinguishable from a broken applier, which is what it became.
 

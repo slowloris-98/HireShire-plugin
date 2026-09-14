@@ -532,9 +532,10 @@ Three things that trip people up:
     on if they ask for it. If yes, collect first name, last name, email and phone,
     and say plainly, before writing the setting:
 
-    > Each sweep will open a browser on its own and **submit real applications** to
-    > real employers, with no confirmation step. There is no rehearsal mode. The only
-    > way to stop it is to set `enable_applier` back to false.
+    > Each sweep will open a browser on its own the moment a job is shortlisted and
+    > **submit real applications** to real employers, with no confirmation step. There
+    > is no rehearsal mode. The only way to stop it is to set `enable_applier` back to
+    > false.
 
     Do not soften that. It used to be guarded by a second `dry_run` gate that filled
     forms without submitting; that gate is gone, so `enable_applier: true` means

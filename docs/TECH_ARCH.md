@@ -28,7 +28,6 @@ flowchart TD
         R --> SET --> SWEEP
         SWEEP --> B1 --> FUN
         SWEEP -.-> B2 -.-> FUN
-        OUT --> APP
         APP -->|"off by default"| YOU
     end
 
@@ -40,6 +39,7 @@ flowchart TD
 
     FUN -->|"survivors only"| CLAUDE
     CLAUDE --> OUT
+    CLAUDE -->|"each shortlisted job, straight away"| APP
     APP -->|"on: a browser fills and submits"| EMP
 
     classDef off fill:#f5f5f5,stroke:#9e9e9e,color:#424242,stroke-dasharray:4 3

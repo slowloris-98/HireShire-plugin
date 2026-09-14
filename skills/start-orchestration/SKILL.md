@@ -70,7 +70,8 @@ Tell the user, plainly:
   is empty.
 
 If auto-apply is enabled in their config, say plainly that each sweep will also open a
-browser and **submit real applications**, unattended and with no confirmation step.
+browser **as soon as a job is shortlisted** — mid-sweep, not at the end — and **submit
+real applications**, unattended and with no confirmation step.
 There is no rehearsal mode; `enable_applier` is the only thing holding it back. This
 matters more than it used to: nothing stops the sweep automatically when they walk away,
 so the 24-hour bound and `--stop` are the only limits.

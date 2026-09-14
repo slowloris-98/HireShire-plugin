@@ -20,6 +20,13 @@ class ApplierSettings(BaseModel):
     db_path: str = "hireshire.db"
     resume_path: str = ""  # the user's own resume PDF; set by /hireshire:setup
     inter_job_delay_s: float = 10.0
+    # One application's browser session is abandoned after this long. Recorded as an
+    # error rather than retried: by then the form may already have been submitted.
+    apply_timeout_s: float = 900.0
+    # Each sweep also applies to jobs shortlisted this recently that have no
+    # `applied` row — how a session that failed to launch gets retried, since the
+    # matcher never streams a judged job twice.
+    backlog_hours: int = 72
     max_steps: int = 40
 
     # Companies whose application forms sit behind an account login, so the

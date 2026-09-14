@@ -4,6 +4,39 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [Unreleased]
+
+### Changed
+
+- **Applications go out as soon as a job is shortlisted, not after the sweep.** The
+  apply phase used to be one `claude -p` session run once the whole sweep had
+  finished, reading the shortlist back out of `last_run.json` — so a job judged in
+  minute three waited for every other employer before anything applied to it. Each
+  shortlisted job now goes straight from the matcher's queue to an apply worker that
+  runs one short browser session for that job alone, one at a time. The browser is
+  still driven by Claude through the plugin's Playwright MCP, and the form-filling
+  rules are unchanged; they now live in `hireshire/applier/apply_one.md`, shared by
+  the worker and `/hireshire:apply`.
+
+  The engine records each outcome itself. A session that could not start (the CLI
+  missing, a non-zero exit) records nothing, and three in a row stop the applier for
+  the rest of the sweep. Those jobs are picked up by the new **backlog**: every sweep
+  also applies to shortlisted jobs from the last `backlog_hours` (default 72) that
+  have no application record. A session that timed out (`apply_timeout_s`, default
+  900) or ended without a readable result *is* recorded as an error, because the form
+  may already have been submitted and a retry could apply twice.
+
+  Each session loads the plugin's own browser server (`--mcp-config .mcp.json
+  --strict-mcp-config`). A `claude -p` started by the engine was measured *not* to
+  load the plugin, so the Playwright tools the old apply phase depended on were not
+  there at all; the session also no longer sees the user's other MCP servers.
+
+  `/hireshire:apply` is now a manual catch-up over those same pending jobs, read with
+  the new `applied_cli.py pending` rather than from `last_run.json`.
+
+  **With `enable_applier` on, the browser now opens mid-sweep.** Nothing else about
+  the gate changed.
+
 ## [0.4.0] — 2026-09-11
 
 ### Changed

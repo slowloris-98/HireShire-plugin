@@ -45,6 +45,7 @@ APPROVED = [
     'scripts/setup_cli.py set matcher --json \'{"threshold": 75}\'',
     'scripts/setup_cli.py write-profile --text "Senior account manager, SaaS renewals"',
     "scripts/applied_cli.py list",
+    "scripts/applied_cli.py pending",
     "scripts/verify_bad_slugs.py --prune",
 ]
 
