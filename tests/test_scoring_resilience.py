@@ -58,9 +58,10 @@ def test_the_cli_receives_the_schema_itself_not_a_path(monkeypatch):
 
             async def communicate(self, input=None):
                 payload = ScoringSchema(
-                    core_skills_score=40, core_skills_rationale="ok",
-                    experience_score=30, experience_rationale="ok",
-                    education_bonus_score=5, education_rationale="ok",
+                    requirements=[],
+                    core_skills_rationale="ok", core_skills_band=5,
+                    experience_rationale="ok", experience_band=4,
+                    education_rationale="ok", education_band=1,
                     match_reasons=[], disqualifiers=[], recommend=True,
                 ).model_dump_json()
                 return json.dumps({"result": payload}).encode(), b""

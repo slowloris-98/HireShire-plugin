@@ -1,5 +1,10 @@
 settings:
-  threshold: 75              # min relevance_score (0-100) to shortlist a job
+  # min relevance_score (0-100) to shortlist a job. The judge now picks a 0-5 band per
+  # category and the score is built from those, so it moves in steps of 8 (skills,
+  # experience) and 4 (education) rather than any integer. A threshold carried over
+  # from before that change will not shortlist the same share of jobs — re-check it
+  # against a real run.
+  threshold: 75
   concurrency: 4             # parallel LLM calls
   provider: claude_code      # claude_code (your Claude subscription) / openai / anthropic / gemini
   # Sonnet, not Haiku, and the reason is not only accuracy: `effort` below is
@@ -11,8 +16,11 @@ settings:
   # Thinking level: low / medium / high / xhigh / max. Thinking tokens bill as
   # output, and once your resume is cached they are most of what a sweep costs — so
   # this is the main dial on how much of your Claude allowance a run consumes.
-  # Raise it if matches look shallow; measure a small run first (set top_k low).
-  effort: medium
+  # Low is enough because the judge writes its reasoning out instead: a short checklist
+  # of the posting's requirements with a quote from your resume for each, then a
+  # sentence per category, before it picks any score. Raise it to medium only if the
+  # matches look shallow, and measure a small run first (set top_k low).
+  effort: low
   request_interval_s: 0      # seconds between requests; raise if you hit rate limits
   claude_cli_timeout_s: 600  # per-call bound for the claude_code provider
   max_content_chars: 8000    # truncate the job description to this length before sending
@@ -114,11 +122,12 @@ funnel:
   # never dropped for being over-qualified, because whether a senior candidate
   # should apply to a mid-level role is a judgement call, not arithmetic.
   #
-  # Off until /hireshire:setup fills in candidate_years, and it stays off while that
-  # is 0 — otherwise an install that never ran setup would filter every job in the
-  # sweep against a candidate with "no experience".
+  # On by default, but it does nothing until /hireshire:setup fills in
+  # candidate_years, and it stays inert while that is 0 — otherwise an install that
+  # never ran setup would filter every job in the sweep against a candidate with "no
+  # experience".
   experience:
-    enabled: false
+    enabled: true
     # Your own total years of professional experience. PERSONAL, like min_score
     # above: set it two years low and you silently lose two years' worth of
     # legitimate jobs, with no error to tell you. Changing it later does not bring

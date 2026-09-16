@@ -1,16 +1,21 @@
-"""What a sweep costs the user, and the three mechanisms that keep it down.
+"""What a sweep costs the user, and the mechanisms that keep it down.
 
 Scoring runs on the user's Claude subscription, drawing on the same rolling 5-hour
 and weekly windows as their own chat. That makes cost a correctness concern rather
 than an optimisation: a plugin that quietly eats someone's allowance is broken even
 when every score it produces is right.
 
-Three things are pinned here, all of them silent when they break:
+Pinned here, all of them silent when they break:
 
   * the resume rides in the SYSTEM PROMPT, so the unchanging prefix can be cached;
   * `--no-session-persistence`, so 150 scored jobs do not leave 150 transcripts and
     150 background title-generation calls behind;
+  * `--safe-mode --tools ""`, which took one measured call from 54,441 input tokens
+    to 1,765 — and which must never reach the apply worker, which needs both;
+  * the wire schema carries no docstrings, since it is sent on every call;
   * `structured_output` is read, so the current CLI's payload is actually found.
+
+How the judge's bands become stored scores is in `test_scoring_bands.py`.
 """
 from __future__ import annotations
 
@@ -55,9 +60,10 @@ class RecordingBackend:
         self.prompt = prompt
         self.system_prompt = system_prompt
         return ScoringSchema(
-            core_skills_score=30, core_skills_rationale="ok",
-            experience_score=30, experience_rationale="ok",
-            education_bonus_score=10, education_rationale="ok",
+            requirements=[],
+            core_skills_rationale="ok", core_skills_band=4,
+            experience_rationale="ok", experience_band=4,
+            education_rationale="ok", education_band=3,
             match_reasons=[], disqualifiers=[], recommend=True,
         )
 
@@ -134,9 +140,10 @@ def _backend(monkeypatch, captured, payload):
 
 _OK = {
     "structured_output": {
-        "core_skills_score": 40, "core_skills_rationale": "ok",
-        "experience_score": 30, "experience_rationale": "ok",
-        "education_bonus_score": 5, "education_rationale": "ok",
+        "requirements": [],
+        "core_skills_rationale": "ok", "core_skills_band": 5,
+        "experience_rationale": "ok", "experience_band": 4,
+        "education_rationale": "ok", "education_band": 1,
         "match_reasons": [], "disqualifiers": [], "recommend": True,
     },
     "total_cost_usd": 0.031,
@@ -171,6 +178,31 @@ def test_bare_mode_is_never_passed(monkeypatch):
     assert "--bare" not in captured["argv"]
 
 
+def test_the_judge_runs_without_tools_or_ambient_context(monkeypatch):
+    """The largest lever on a judge call. Without these, every call shipped the
+    built-in tool schemas, the user's MCP servers and whatever CLAUDE.md sat in the
+    working directory: 54,441 input tokens on one measured call, against 1,765 with
+    them. Nothing fails if they are dropped — the sweep just costs ~30x the input."""
+    captured: dict = {}
+    backend = _backend(monkeypatch, captured, _OK)
+    asyncio.run(backend.call("prompt", "system"))
+    argv = list(captured["argv"])
+
+    assert "--safe-mode" in argv
+    assert argv[argv.index("--tools") + 1] == "", "an empty tool list, not the default set"
+
+
+def test_the_wire_schema_carries_no_docstrings():
+    """pydantic copies a class docstring into the schema's `description`, and the
+    schema is sent to the model on every judge call. Maintainer notes there cost
+    tokens on all 150 calls and speak to the wrong reader."""
+    from hireshire.matcher.scorer import RequirementCheck
+
+    schema = ScoringSchema.model_json_schema()
+    assert "description" not in schema
+    assert "description" not in schema["$defs"][RequirementCheck.__name__]
+
+
 def test_the_structured_output_key_is_read(monkeypatch):
     """Where the current CLI puts a `--json-schema` result. The older keys stay
     supported because this backend cannot know which version is on PATH."""
@@ -178,7 +210,7 @@ def test_the_structured_output_key_is_read(monkeypatch):
     backend = _backend(monkeypatch, captured, _OK)
     result = asyncio.run(backend.call("prompt", "system"))
 
-    assert result.core_skills_score == 40
+    assert result.core_skills_band == 5
 
 
 @pytest.mark.parametrize("key", ["result", "response", "content", "output"])
@@ -187,7 +219,7 @@ def test_older_payload_keys_still_work(monkeypatch, key):
     payload = {key: json.dumps(_OK["structured_output"])}
     backend = _backend(monkeypatch, captured, payload)
 
-    assert asyncio.run(backend.call("p", "s")).core_skills_score == 40
+    assert asyncio.run(backend.call("p", "s")).core_skills_band == 5
 
 
 # --- the meters ------------------------------------------------------------
