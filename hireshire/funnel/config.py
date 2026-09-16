@@ -116,13 +116,14 @@ class ExperienceConfig(BaseModel):
     """Deterministic years-of-experience gate. Costs nothing per job — see
     funnel/experience.py for why a regex rather than an encoder or an LLM.
 
-    OFF by default, and the default `candidate_years` of 0 is a second lock on the
-    same door. An install that predates this feature, or one whose setup was skipped,
-    must not silently start dropping jobs against a candidate with "no experience".
-    Both `enabled` and a positive `candidate_years` are required before it runs.
+ON by default, and the default `candidate_years` of 0 is what keeps it inert until
+    setup confirms a number. An install that predates this feature, or one whose setup
+    was skipped, must not silently start dropping jobs against a candidate with "no
+    experience". Both `enabled` and a positive `candidate_years` are required before it
+    runs.
     """
 
-    enabled: bool = False
+    enabled: bool = True
 
     #: The candidate's own total years of professional experience.
     #:

@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Duplicated here rather than imported because prompts.py is a prompt module, and a
 # renderer importing it would make the prompt text a report dependency.
 RUBRIC = (
-    ("core_skills_score", "core_skills_rationale", "Core technical skills", 40),
+    ("core_skills_score", "core_skills_rationale", "Core skills", 40),
     ("experience_score", "experience_rationale", "Relevant experience", 40),
     ("education_bonus_score", "education_rationale", "Education & nice-to-haves", 20),
 )

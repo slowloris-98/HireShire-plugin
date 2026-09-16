@@ -31,9 +31,12 @@ class MatcherSettings(BaseModel):
     # Thinking level: low|medium|high|xhigh|max. Thinking tokens bill as output, and
     # once the resume prefix is cached they are the dominant cost of a sweep — which
     # matters because scoring draws on the same allowance as the user's own Claude
-    # chat. Medium is the default because no per-level token figure is published, so
-    # the honest way to raise it is to measure a small run at each level first.
-    effort: str = "medium"
+    # chat. Low is the default because the judge no longer reasons privately: the
+    # evidence checklist and per-criterion rationales in ScoringSchema are that
+    # reasoning, written out, bounded, and generated before each band. Measured on one
+    # call at low: zero thinking tokens, 344 output. Medium is the fallback if verdicts
+    # look shallow — measure a small run at each level before raising it.
+    effort: str = "low"
     max_content_chars: int = 8000
     resume_path: str = "resume.pdf"
     projects_path: str = ""  # optional markdown file appended to candidate profile

@@ -7,9 +7,9 @@ import os
 import re
 import shutil
 from datetime import datetime, timezone
-from typing import Optional, Protocol, runtime_checkable
+from typing import Literal, Optional, Protocol, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from tenacity import retry, retry_if_exception, stop_never
 
 from hireshire import claude_cli
@@ -120,17 +120,193 @@ class UsageTally:
         )
 
 
+def _bounded_text(max_chars: int, description: str):
+    """A string field whose bound the model is shown but a response is never failed on.
+
+    `Field(max_length=...)` would put `maxLength` in the schema *and* reject anything
+    longer, turning a 201-character rationale — from a call that has already been
+    billed — into an `api_error` row. The bound is there to keep output short, which is
+    a cost lever, not a correctness property, so it is advertised in the schema and
+    enforced by truncation.
+    """
+    return Field(description=description, json_schema_extra={"maxLength": max_chars})
+
+
+def _bounded_list(max_items: int, description: str):
+    """A list field bounded the same way as `_bounded_text`: shown, then truncated."""
+    return Field(description=description, json_schema_extra={"maxItems": max_items})
+
+
+def _bounded_int(low: int, high: int, description: str):
+    """An int field shown as a range and clamped into it rather than rejected."""
+    return Field(description=description, json_schema_extra={"minimum": low, "maximum": high})
+
+
+def _clip(value, limit: int):
+    return value[:limit] if isinstance(value, (str, list)) else value
+
+
+def _clamp(value, low: int, high: int):
+    return max(low, min(high, value)) if isinstance(value, int) and not isinstance(value, bool) else value
+
+
+# One requirement the posting states, and the resume's evidence for it.
+#
+# This is the checklist half of evidence-anchored scoring: the judge commits to a
+# discrete, quotable decision per requirement *before* it writes any rationale or picks
+# any band, so the bands are conditioned on the evidence rather than the other way
+# round. The gates that act on it live in `score_bands`, in Python.
+#
+# Comments rather than docstrings on both wire models, deliberately: pydantic copies a
+# class docstring into the JSON schema's `description`, and that schema is sent to the
+# model on every judge call. Maintainer notes there cost tokens and address the wrong
+# reader. `tests/test_scoring_cost.py` fails the build if a description creeps back.
+class RequirementCheck(BaseModel):
+    requirement: str = _bounded_text(80, "The requirement as the posting states it.")
+    criterion: Literal["skills", "experience", "education"]
+    mandatory: bool
+    evidence: str = _bounded_text(
+        120, "A verbatim quote from the resume, or an empty string when there is none."
+    )
+    met: int = _bounded_int(0, 2, "0 no evidence, 1 partial, 2 clearly evidenced.")
+
+    @field_validator("requirement", mode="before")
+    @classmethod
+    def _clip_requirement(cls, v):
+        return _clip(v, 80)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _clip_evidence(cls, v):
+        return _clip(v, 120)
+
+    @field_validator("met", mode="before")
+    @classmethod
+    def _clamp_met(cls, v):
+        return _clamp(v, 0, 2)
+
+
+# What the judge emits. Not what is stored — see `score_bands` and `MatchResult`.
+#
+# **Field order is generation order, and it is the design.** Structured output is
+# produced front to back, so each `*_rationale` sits before its `*_band` and the
+# checklist before both: the model reasons, then commits. This used to be the other way
+# round (`core_skills_score` first), which had the judge pick a number and then write
+# prose to justify it. `tests/test_scoring_cost.py` pins the order.
+#
+# Bands are 0-5 rather than points out of 40 because wide scales cluster on round
+# numbers and align worse with human raters. `years_experience_required` is gone:
+# funnel/experience.py reads that from the description for free, before this call.
 class ScoringSchema(BaseModel):
-    years_experience_required: Optional[float] = None
-    core_skills_score: int
-    core_skills_rationale: str
-    experience_score: int
-    experience_rationale: str
-    education_bonus_score: int
-    education_rationale: str
-    match_reasons: list[str]
-    disqualifiers: list[str]
+    requirements: list[RequirementCheck] = _bounded_list(
+        6, "At most 6 requirements the posting states, most important first."
+    )
+    core_skills_rationale: str = _bounded_text(200, "What matched and what was missing.")
+    core_skills_band: int = _bounded_int(0, 5, "The anchored band, 0-5.")
+    experience_rationale: str = _bounded_text(200, "What matched and what was missing.")
+    experience_band: int = _bounded_int(0, 5, "The anchored band, 0-5.")
+    education_rationale: str = _bounded_text(200, "What matched and what was missing.")
+    education_band: int = _bounded_int(0, 5, "The anchored band, 0-5.")
+    match_reasons: list[str] = _bounded_list(3, "At most 3 short reasons for.")
+    disqualifiers: list[str] = _bounded_list(3, "At most 3 short reasons against.")
     recommend: bool
+
+    @field_validator("requirements", "match_reasons", "disqualifiers", mode="before")
+    @classmethod
+    def _clip_lists(cls, v, info):
+        return _clip(v, 6 if info.field_name == "requirements" else 3)
+
+    @field_validator(
+        "core_skills_rationale", "experience_rationale", "education_rationale", mode="before"
+    )
+    @classmethod
+    def _clip_rationales(cls, v):
+        return _clip(v, 200)
+
+    @field_validator("core_skills_band", "experience_band", "education_band", mode="before")
+    @classmethod
+    def _clamp_bands(cls, v):
+        return _clamp(v, 0, 5)
+
+
+# Points each criterion is worth once stored. These are the maxima `MatchResult`, the
+# overview page (`reporting.data.RUBRIC`) and every existing `matches` row are built
+# on, so the bands are mapped back into them rather than the other way round — which
+# is what lets the judge's scale change without the stored schema changing at all.
+_CRITERION_MAX = {"skills": 40, "experience": 40, "education": 20}
+_BAND_FIELD = {
+    "skills": "core_skills_band",
+    "experience": "experience_band",
+    "education": "education_band",
+}
+# A criterion with a mandatory requirement the resume shows no evidence for cannot
+# score above this band — the anchor the prompt itself gives band 2.
+_MANDATORY_CAP_BAND = 2
+
+
+def score_bands(result: ScoringSchema) -> dict:
+    """Turn the judge's checklist and bands into the stored verdict.
+
+    All the arithmetic lives here, none of it in the prompt. prompts.py's second
+    editing rule asks for flat arithmetic because a wrong cap is invisible — the
+    number still looks like a score. Moving it into code makes it impossible to get
+    wrong rather than merely unlikely.
+
+    Three steps, in this order:
+
+    1. **Evidence gate.** `met: 2` with no quote is demoted to 1, and `met: 0` has any
+       text in `evidence` cleared, because that text is a remark ("no MBA listed"),
+       not a quote. Grounding is enforced, not requested.
+    2. **Mandatory cap.** A criterion holding a mandatory item at `met: 0` is capped at
+       `_MANDATORY_CAP_BAND`, **once**, however many such items it holds. The cap is
+       appended to that criterion's rationale, because the overview page shows the
+       rationale beside the capped number and a "strong match" over 16/40 would
+       otherwise read as a bug.
+    3. **Scale.** `band * max // 5` — exact on both 40 and 20, so no rounding.
+    """
+    checks = []
+    for item in result.requirements:
+        met = item.met
+        evidence = item.evidence.strip()
+        if met == 2 and not evidence:
+            met = 1
+        if met == 0:
+            evidence = ""
+        checks.append(item.model_copy(update={"met": met, "evidence": evidence}))
+
+    rationale = {
+        "skills": result.core_skills_rationale,
+        "experience": result.experience_rationale,
+        "education": result.education_rationale,
+    }
+    scores = {}
+    for criterion, maximum in _CRITERION_MAX.items():
+        band = getattr(result, _BAND_FIELD[criterion])
+        missing = [
+            c.requirement for c in checks
+            if c.criterion == criterion and c.mandatory and c.met == 0
+        ]
+        if missing and band > _MANDATORY_CAP_BAND:
+            band = _MANDATORY_CAP_BAND
+            named = "; ".join(missing)
+            rationale[criterion] = (
+                f"{rationale[criterion]} [Capped: no evidence for mandatory {named}.]"
+            ).strip()
+        scores[criterion] = band * maximum // 5
+
+    return {
+        "relevance_score": min(100, sum(scores.values())),
+        "requirements": [c.model_dump() for c in checks],
+        "core_skills_score": scores["skills"],
+        "core_skills_rationale": rationale["skills"],
+        "experience_score": scores["experience"],
+        "experience_rationale": rationale["experience"],
+        "education_bonus_score": scores["education"],
+        "education_rationale": rationale["education"],
+        "match_reasons": result.match_reasons,
+        "disqualifiers": result.disqualifiers,
+        "recommend": result.recommend,
+    }
 
 
 class MatchResult(BaseModel):
@@ -178,7 +354,15 @@ class MatchResult(BaseModel):
     cluster_representative: Optional[str] = None
     # How many postings shared this job's cluster key, including itself.
     cluster_size: int = 1
+    # The judge's own reading of the posting's YoE requirement. Nothing writes it any
+    # more — the judge is no longer asked, because `yoe_required` above answers the same
+    # question for free — and nothing renders it. It stays, like `rerank_score_wide`,
+    # because rows written before the change carry it in `raw_json`.
     years_experience_required: Optional[float] = None
+    # The judge's evidence checklist after `score_bands` has gated it: one dict per
+    # requirement, with the quote it rests on. Stored only in `raw_json`; it is the
+    # answer to "why this number" that the three rationales summarise.
+    requirements: list[dict] = []
     core_skills_score: int = 0
     core_skills_rationale: str = ""
     experience_score: int = 0
@@ -446,11 +630,29 @@ class ClaudeCodeBackend:
             # about the litter and the cost, not visibility. The env-var equivalent,
             # CLAUDE_CODE_SKIP_PROMPT_HISTORY, suppresses transcripts in every mode;
             # the process environment belongs to the user, so prefer the per-call flag.
+            #
+            # `--safe-mode` and `--tools ""` strip everything a judge does not use: the
+            # built-in tool schemas, user-level MCP servers, CLAUDE.md, skills, plugins
+            # and hooks. Measured on one call (2026-09-16, Sonnet 5, effort low): 54,441
+            # input tokens without them, 1,765 with. The resume prefix caches, but every
+            # cache write — the first call of a sweep, each concurrent cold start, any
+            # TTL miss — paid for those ~52k again. Structured output still works with
+            # no tools, which was checked before this shipped.
+            #
+            # Two things not to "tidy":
+            #   - `--safe-mode` is not `--bare`. Auth works normally under it; `--bare`
+            #     never reads OAuth, which would end subscription scoring (NOTE above).
+            #   - These flags belong HERE, not in `claude_cli`. The apply worker shares
+            #     that module and needs an MCP server and tools to drive a browser;
+            #     either flag there would silently break auto-apply.
+            #     `tests/test_apply_worker.py` fails the build if they reach its argv.
             proc = await asyncio.create_subprocess_exec(
                 "claude", "-p",
                 "--system-prompt", system_prompt,
                 "--model", self._settings.model,
                 "--effort", self._settings.effort,
+                "--safe-mode",
+                "--tools", "",
                 "--no-session-persistence",
                 "--output-format", "json",
                 "--json-schema", self._schema,
@@ -586,10 +788,14 @@ class JobScorer:
         #     does not happen. That is one of the reasons the shipped default is
         #     Sonnet; see MatcherSettings.model.
         # `UsageTally.cache_read` is how you check it is actually working.
-        system_prompt = f"{SYSTEM_PROMPT}\n## Candidate Resume\n{candidate_profile}"
+        #
+        # Both inputs are fenced in tags. The resume and the posting are data, and a
+        # posting in particular is third-party text sitting beside instructions; the
+        # tags are what the prompt refers to when it says which is which.
+        system_prompt = f"{SYSTEM_PROMPT}\n<resume>\n{candidate_profile}\n</resume>\n"
         prompt = (
-            f"## Job: {job.title} at {job.board_token}\n"
-            f"{job.content_text[:self._settings.max_content_chars]}\n\n"
+            f"<posting>\n## Job: {job.title} at {job.board_token}\n"
+            f"{job.content_text[:self._settings.max_content_chars]}\n</posting>\n"
         )
 
         try:
@@ -599,18 +805,4 @@ class JobScorer:
             self.last_error = str(exc)
             return base.model_copy(update={"skipped": True, "skip_reason": "api_error"})
 
-        relevance_score = min(100, result.core_skills_score + result.experience_score + result.education_bonus_score)
-
-        return base.model_copy(update={
-            "relevance_score": relevance_score,
-            "years_experience_required": result.years_experience_required,
-            "core_skills_score": result.core_skills_score,
-            "core_skills_rationale": result.core_skills_rationale,
-            "experience_score": result.experience_score,
-            "experience_rationale": result.experience_rationale,
-            "education_bonus_score": result.education_bonus_score,
-            "education_rationale": result.education_rationale,
-            "match_reasons": result.match_reasons,
-            "disqualifiers": result.disqualifiers,
-            "recommend": result.recommend,
-        })
+        return base.model_copy(update=score_bands(result))

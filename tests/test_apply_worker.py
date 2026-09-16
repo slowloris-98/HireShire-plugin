@@ -143,6 +143,19 @@ def test_the_session_brings_its_own_browser_server(tmp_path, launcher):
     assert "mcp__playwright__browser_navigate" in worker.PROMPT_PATH.read_text(encoding="utf-8")
 
 
+def test_the_session_keeps_the_tools_the_judge_strips(tmp_path, launcher):
+    """The scorer runs `claude -p --safe-mode --tools ""`, and `hireshire/claude_cli.py`
+    is the obvious place to "share" those flags. It is the wrong one: `--safe-mode`
+    disables MCP servers and `--tools ""` removes the built-ins, so either would leave
+    this session with no browser and every application would fail."""
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1")])
+    argv = list(calls[0]["argv"])
+
+    assert "--safe-mode" not in argv
+    assert "--tools" not in argv
+
+
 def test_the_session_runs_in_applied_dir_so_screenshots_survive_updates(tmp_path, launcher):
     """Playwright MCP writes screenshots under the session's working directory. A
     sweep's is ROOT, which every plugin update replaces."""

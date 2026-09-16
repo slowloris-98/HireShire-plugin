@@ -8,6 +8,28 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Changed
 
+- **The judge shows its evidence before it scores, and costs far less per job.** It
+  used to pick a number out of 40 per category and then write a sentence justifying
+  it. It now lists the posting's requirements first, quoting your resume for each one
+  it can, writes its reasoning, and only then picks a 0-5 band per category. The
+  plugin turns those bands into the same 40/40/20 scores as before, so the overview
+  page and the results CSV look the same. The arithmetic moved out of the judge: a
+  mandatory requirement with no evidence caps its category, applied once, by the
+  engine, and the rationale says so when it happens.
+
+  Each judge call now runs with no tools and none of Claude Code's surrounding
+  context (`--safe-mode --tools ""`). On one measured call that was **54,441 input
+  tokens without, 1,765 with**. Thinking effort defaults to `low`, since the written
+  checklist now carries the reasoning; one measured call used no thinking tokens.
+
+  The judge is no longer asked for years of experience. The free pattern-match before
+  it already reads that, so the judge only mentions years if a posting asks for
+  plainly more than your resume shows.
+
+  **Check your `threshold` after updating.** Scores now move in steps of 8 (skills,
+  experience) and 4 (education), so a threshold chosen under the old judge will not
+  shortlist the same share of jobs.
+
 - **Applications go out as soon as a job is shortlisted, not after the sweep.** The
   apply phase used to be one `claude -p` session run once the whole sweep had
   finished, reading the shortlist back out of `last_run.json` — so a job judged in
