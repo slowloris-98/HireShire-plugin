@@ -9,6 +9,14 @@ venv/
 # it; the CSVs in analysis/results/ are the committed artifacts.
 analysis/cache/
 
+# Claude Code's own permission state for THIS repo. A plugin install is a copy of
+# this tree, and a sweep runs with the install dir as its working directory — so a
+# committed settings file means a developer's allow rules and absolute paths ship to
+# every user, and warn on stderr of every judge call. Permissions users need are
+# granted deliberately by scripts/approve.py, never by a file in the package.
+.claude/settings.json
+.claude/settings.local.json
+
 __pycache__/
 *.py[cod]
 .pytest_cache/

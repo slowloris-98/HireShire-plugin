@@ -671,13 +671,28 @@ class ClaudeCodeBackend:
                 await proc.communicate()
                 raise RuntimeError(f"claude CLI timed out after {self._timeout}s")
             if proc.returncode != 0:
-                # The CLI reports some failures (a bad --model, for one) on stdout and
-                # leaves stderr empty. Falling back keeps the circuit breaker's summary
-                # from reading "claude CLI exited 1:" with nothing after the colon.
-                detail = stderr.decode(errors="replace").strip() or \
-                    stdout.decode(errors="replace").strip() or "(no output)"
+                # Report BOTH streams, each truncated on its own, stdout first.
+                #
+                # This used to be `stderr or stdout`, on the theory that stderr is empty
+                # when the CLI reports a failure (a bad --model, for one) on stdout. That
+                # does not hold: stderr carries routine warnings on every call — an
+                # untrusted workspace alone is 645 characters — so the fallback never
+                # fired, and one real failure was logged as a trust warning while five
+                # more read "(no output)".
+                #
+                # Truncating the two together would not fix it either: a joined string cut
+                # at 500 is still all stderr, because the warning outruns that cap by
+                # itself. Hence a budget per stream, and stdout first.
+                out = stdout.decode(errors="replace").strip()
+                err = stderr.decode(errors="replace").strip()
+                detail = " | ".join(
+                    part for part in (
+                        f"stdout: {out[:300]}" if out else "",
+                        f"stderr: {err[:300]}" if err else "",
+                    ) if part
+                ) or "(no output)"
                 raise RuntimeError(
-                    f"claude CLI exited {proc.returncode}: {detail[:500]}"
+                    f"claude CLI exited {proc.returncode}: {detail}"
                 )
             if self._settings.request_interval_s > 0:
                 await asyncio.sleep(self._settings.request_interval_s)

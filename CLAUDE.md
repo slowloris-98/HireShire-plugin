@@ -24,7 +24,7 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 360 tests, no network, no model weights
+pytest                                # 521 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_only_jobs_reaching_the_cutoff_are_judged
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
@@ -653,6 +653,15 @@ suppresses Rich in favour of `logging` — required under the monitor.
   design.
 - **`userConfig` is not used** for anything load-bearing — its enable-time prompt
   has open bugs. The `setup` skill is the source of truth.
+- **`.claude/settings.json` is gitignored, and must stay that way.** Same argument as
+  the root `CLAUDE.md`: an install is a copy of this tree, so anything here ships. It
+  once did — 51 dev allow rules (`sed -i`, `git mv`, scratchpad paths) plus
+  `additionalDirectories` naming a developer's drive. The rules never fired, because a
+  plugin directory is never trusted, but the refusal printed **645 characters to stderr
+  on every judge call**, which is what let a real scoring failure be misread as a trust
+  warning. Permissions a user needs are granted by `scripts/approve.py`, one recognised
+  command at a time; a settings file is the opposite of that boundary. Dev permissions
+  belong in `.claude/settings.local.json`, ignored alongside it.
 - **Set an explicit `version` in `plugin.json`.** Omitting it pushes every commit at
   users. Semver + `CHANGELOG.md`.
 - **The clean-machine test is the real acceptance test**: fresh user dir,
