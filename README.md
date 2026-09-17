@@ -11,14 +11,21 @@ Automated job search on your own Claude subscription.
 ## 2. Install and set up
 
 1. Start a Claude Code session from that folder.
-2. Install the plugin:
+2. Install the plugin and setup:
    ```
    /plugin marketplace add slowloris-98/HireShire-plugin
-   /plugin install hireshire@hireshire
+
+   /plugin install hireshire@hireshire 
+   (install for you)
+   
+   /hireshire:setup
    ```
-3. Run `/hireshire:setup` and answer the questions as asked (~15 min).
+
+`/hireshire:setup` will ask your preferences for the run (~15 min).
 
 ## 3. Run HireShire
+
+Start Hireshire from a claude session in a folder with your resume.
 
 ```
 /hireshire:start-orchestration

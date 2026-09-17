@@ -1,3 +1,13 @@
+- Exclusing list should be single word like staff, senior, but not senior software and should be minimal.
+
+- recommendations thorugh the setup:
+
+    1. number of jobs scoring recommended - 100
+    2. jobs seen in the last - 24hrs, 12 hrs (recommended), 5 hours
+    3. 
+
+
+
 - Judge the last orchestrate run. my observations:
     - The best matches were left out of the top_k.
     - top_k had some irrelevant jobs as well

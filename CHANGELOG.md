@@ -85,6 +85,13 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Fixed
 
+- **When a scoring call fails, the log now shows why.** The plugin reported whichever of
+  the CLI's two output streams it found first, and one of them always carries a routine
+  warning — so the real message, which the CLI writes to the other stream for failures
+  like an unavailable model, was thrown away. Failures logged as an unrelated warning, or
+  as "(no output)". Both streams are now reported, each kept short enough that neither can
+  crowd out the other.
+
 - **A sweep that fails part-way now leaves its results.** Before this, a run that died
   fifteen minutes in wrote no JSON, no diagnostic CSV, and left `last_run.json` still
   pointing at the *previous* run — everything it had actually scored was reachable
