@@ -37,8 +37,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Literal, Optional
@@ -110,7 +113,65 @@ def terminate_apply_subprocess() -> None:
         logger.exception("Could not terminate the apply subprocess (pid %s)", proc.pid)
 
 
-def build_prompt(job: dict, settings: ApplierSettings, resume_path: Path,
+@dataclass(frozen=True)
+class SessionDirs:
+    """Where an apply session runs, where its files go, and the resume it uploads."""
+
+    cwd: Path
+    out_dir: Path
+    resume_path: Path
+
+
+def session_dirs(settings: ApplierSettings, resume_path: Path) -> SessionDirs:
+    """Pick the apply session's working directory, and a resume path it may upload.
+
+    Playwright MCP refuses to upload a file outside the client's roots, and Claude
+    Code's root is the session's cwd. The session used to run in `applied_dir`, under
+    DATA, while setup puts the resume in the workspace — so every form that required
+    a resume failed with nothing submitted. Running in the workspace puts the resume
+    inside the root.
+
+    `out_dir` must sit under `cwd` too, for the same reason: the server also refuses
+    to write outside the roots. A resume that is still outside `cwd` (an install
+    predating `workspace_dir`, or a `resume_path` pointed elsewhere) is copied in.
+    """
+    ws = paths.workspace_dir()
+    if ws is not None and ws.is_dir():
+        cwd = ws
+        out_dir = ws / paths.RUN_RESULTS_DIRNAME / "applied"
+    else:
+        cwd = out_dir = paths.resolve_data(settings.applied_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    upload = resume_path
+    if not resume_path.resolve().is_relative_to(cwd.resolve()):
+        upload = out_dir / resume_path.name
+        src = resume_path.stat()
+        if not (upload.exists() and upload.stat().st_size == src.st_size
+                and upload.stat().st_mtime == src.st_mtime):
+            shutil.copy2(resume_path, upload)
+    return SessionDirs(cwd=cwd, out_dir=out_dir, resume_path=upload)
+
+
+def _mcp_config(out_dir: Path) -> str:
+    """The plugin's `.mcp.json`, with the browser server's output sent to `out_dir`.
+
+    `--output-dir` only covers files the server names itself; an explicit filename
+    resolves against the root instead, which is why the prompt hands the model an
+    absolute `screenshot_path`.
+    """
+    config = json.loads((paths.ROOT / ".mcp.json").read_text(encoding="utf-8"))
+    server = config["mcpServers"]["playwright"]
+    server["args"] = [*server.get("args", []), "--output-dir", str(out_dir)]
+    return json.dumps(config)
+
+
+def _screenshot_name(job: dict) -> str:
+    raw = f"{job.get('company') or 'job'}-{job.get('job_id') or 'unknown'}"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", raw) + ".png"
+
+
+def build_prompt(job: dict, settings: ApplierSettings, dirs: SessionDirs,
                  resume_text: str) -> str:
     """The shared per-job instructions, plus this job's inputs and how to finish."""
     inputs = {
@@ -126,7 +187,8 @@ def build_prompt(job: dict, settings: ApplierSettings, resume_path: Path,
             "email": settings.email,
             "phone": settings.phone,
         },
-        "resume_path": str(resume_path),
+        "resume_path": str(dirs.resume_path),
+        "screenshot_path": str(dirs.out_dir / _screenshot_name(job)),
         "generate_cover_letter": settings.generate_cover_letter,
     }
     return (
@@ -140,7 +202,7 @@ def build_prompt(job: dict, settings: ApplierSettings, resume_path: Path,
     )
 
 
-async def apply_one(job: dict, settings: ApplierSettings, resume_path: Path,
+async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
                     resume_text: str) -> ApplyOutcome:
     """Run one apply session and return what it reported.
 
@@ -149,7 +211,7 @@ async def apply_one(job: dict, settings: ApplierSettings, resume_path: Path,
     the form may already have been submitted — see the module docstring.
     """
     global _apply_proc
-    prompt = build_prompt(job, settings, resume_path, resume_text)
+    prompt = build_prompt(job, settings, dirs, resume_text)
     schema = json.dumps(ApplyOutcome.model_json_schema())
 
     # The prompt goes on stdin, never in argv: it opens with a Markdown heading today,
@@ -166,18 +228,16 @@ async def apply_one(job: dict, settings: ApplierSettings, resume_path: Path,
     # out of an unattended session — at the cost that the tools are named
     # `mcp__playwright__*` here, which `apply_one.md` says.
     #
-    # It also runs in `applied_dir`, under DATA. The Playwright MCP server writes its
-    # screenshots into `.playwright-mcp/` beneath the session's working directory, and
-    # a sweep's working directory is ROOT — which every plugin update replaces, taking
-    # the only record of each submitted form with it.
-    workdir = paths.resolve_data(settings.applied_dir)
-    workdir.mkdir(parents=True, exist_ok=True)
+    # It runs in the user's workspace — see `session_dirs` — and never in the sweep's
+    # own working directory, ROOT: every plugin update replaces that, and it is outside
+    # the roots the browser server may upload the resume from. The config goes as a
+    # JSON string, the same way `--json-schema` does, because it carries `out_dir`.
     try:
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p",
             "--permission-mode", "auto",
             "--no-session-persistence",
-            "--mcp-config", str(paths.ROOT / ".mcp.json"),
+            "--mcp-config", _mcp_config(dirs.out_dir),
             "--strict-mcp-config",
             "--output-format", "json",
             "--json-schema", schema,
@@ -185,7 +245,7 @@ async def apply_one(job: dict, settings: ApplierSettings, resume_path: Path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=claude_cli.subscription_env(),
-            cwd=str(workdir),
+            cwd=str(dirs.cwd),
         )
     except OSError as exc:
         raise ApplyLaunchError(f"could not start the claude CLI: {exc}") from exc
@@ -256,8 +316,15 @@ async def run_apply_worker(
 
     resume_path = paths.resolve_data(settings.resume_path) if settings.resume_path else None
     blocked = None
+    dirs: SessionDirs | None = None
     if resume_path is None or not resume_path.exists():
         blocked = f"resume not found at {settings.resume_path or '(not set)'}"
+    else:
+        try:
+            dirs = session_dirs(settings, resume_path)
+        except OSError as exc:
+            blocked = f"could not prepare the apply directory ({exc})"
+    if blocked:
         logger.error("Applier: %s — not applying to anything this sweep.", blocked)
 
     async def handle(job: dict, from_backlog: bool) -> None:
@@ -287,7 +354,7 @@ async def run_apply_worker(
 
         logger.info("Applying: %s — %s", company, title)
         try:
-            outcome = await apply_one(job, settings, resume_path, resume_text)
+            outcome = await apply_one(job, settings, dirs, resume_text)
         except ApplyLaunchError as exc:
             stats["deferred"] += 1
             state["consecutive"] += 1

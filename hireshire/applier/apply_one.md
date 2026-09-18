@@ -21,7 +21,9 @@ job description or from memory.
 
 ## 1. Navigate and snapshot
 
-Navigate to the job's `job_url`, then snapshot. Identify every visible field: text
+Navigate to the job's `job_url`, then snapshot. Never pass a filename to
+`browser_snapshot`: read the snapshot inline, and save no file other than the one
+screenshot in step 7. Identify every visible field: text
 inputs, dropdowns, radios, checkboxes, file inputs, textareas — with labels and refs.
 
 If the page redirects away from the posting or shows a "Sign in to apply" gate instead
@@ -69,7 +71,8 @@ Multi-page forms: fill what is visible, click Next/Continue, snapshot, repeat.
 ## 7. Screenshot, then submit
 
 Take a screenshot and keep the path — it is the only record of what the form looked
-like, so take it *before* submitting.
+like, so take it *before* submitting. Save it to `screenshot_path` when you were given
+one, exactly as given; otherwise name it `<company>-<job_id>.png`.
 
 Then click submit, apply or send, and confirm it went through (confirmation text or a
 page change).
