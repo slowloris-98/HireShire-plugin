@@ -578,6 +578,17 @@ Four things about the applier that are easy to break:
   that session the tools are `mcp__playwright__*`, while inside the skill they are
   `mcp__plugin_hireshire_playwright__*`; `apply_one.md` names both. Do not "fix" the
   worker to use the namespaced names.
+- **The session runs in the WORKSPACE, because that is where the resume is.**
+  Playwright MCP uploads and writes only inside the client's roots, which Claude Code
+  sets to the cwd. Running in `DATA/applied` refused 5 of 8 uploads on one sweep with
+  nothing submitted. `worker.session_dirs` decides: cwd = workspace (else
+  `applied_dir`), screenshots in `<workspace>/hireshire_run_results/applied/` via
+  `--output-dir` plus an absolute `screenshot_path` — `--output-dir` only covers files
+  the server names itself, and an explicit filename resolves against the root — and a
+  resume outside cwd is copied in. Both output locations must stay *under* cwd, or the
+  server refuses them the same way. The scorer stays in ROOT: `--safe-mode --tools ""`
+  touches no files. The interactive `/hireshire:apply` still depends on the user's
+  own session cwd.
 
 Each `main()` takes optional `in_queue` / `out_queue` / `quiet`. `quiet=True`
 suppresses Rich in favour of `logging` — required under the monitor.

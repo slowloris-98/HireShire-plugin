@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -66,6 +67,14 @@ def launcher(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     monkeypatch.setattr(worker, "terminate_apply_subprocess", lambda: killed.append(True))
     return calls, script, killed
+
+
+@pytest.fixture(autouse=True)
+def workspace(monkeypatch):
+    """No workspace unless a test sets one — never whatever the dev config says."""
+    ws: dict = {"dir": None}
+    monkeypatch.setattr(worker.paths, "workspace_dir", lambda: ws["dir"])
+    return ws
 
 
 def _settings(tmp_path, **over) -> ApplierSettings:
@@ -136,11 +145,74 @@ def test_the_session_brings_its_own_browser_server(tmp_path, launcher):
     argv = list(calls[0]["argv"])
 
     assert "--strict-mcp-config" in argv
-    config = Path(argv[argv.index("--mcp-config") + 1])
-    assert config.name == ".mcp.json" and config.is_file()
-    assert "playwright" in json.loads(config.read_text(encoding="utf-8"))["mcpServers"]
+    config = json.loads(argv[argv.index("--mcp-config") + 1])
+    shipped = json.loads((worker.paths.ROOT / ".mcp.json").read_text(encoding="utf-8"))
+    server = config["mcpServers"]["playwright"]
+    assert server["command"] == shipped["mcpServers"]["playwright"]["command"]
+    args = server["args"]
+    assert args[:len(shipped["mcpServers"]["playwright"]["args"])] == \
+        shipped["mcpServers"]["playwright"]["args"]
+    assert args[args.index("--output-dir") + 1] == str(tmp_path / "applied")
     # The per-job rules must name the tools as that server exposes them.
     assert "mcp__playwright__browser_navigate" in worker.PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def _inputs(call) -> dict:
+    """The job's JSON block out of the prompt a session was sent."""
+    sent = call["proc"].sent.decode("utf-8")
+    return json.loads(sent.split("## This job\n\n```json\n", 1)[1].split("\n```", 1)[0])
+
+
+def test_the_session_runs_in_the_workspace_so_the_resume_can_be_uploaded(
+        tmp_path, launcher, workspace):
+    """Playwright MCP refuses uploads outside the session's cwd. Running in
+    `applied_dir` while the resume sat in the workspace refused 5 of 8 forms on
+    2026-09-18, with nothing submitted."""
+    ws = tmp_path / "ws"
+    resume = ws / "resume" / "original" / "cv.pdf"
+    resume.parent.mkdir(parents=True)
+    resume.write_bytes(b"%PDF-1.4")
+    workspace["dir"] = ws
+
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1")], settings=_settings(tmp_path, resume_path=str(resume)))
+
+    (call,) = calls
+    assert call["kwargs"]["cwd"] == str(ws)
+    inputs = _inputs(call)
+    assert inputs["resume_path"] == str(resume), "a resume already inside cwd is not copied"
+    shot = Path(inputs["screenshot_path"])
+    assert shot.parent == ws / "hireshire_run_results" / "applied"
+    assert shot.parent.is_dir()
+    argv = list(call["argv"])
+    out_dir = json.loads(argv[argv.index("--mcp-config") + 1])[
+        "mcpServers"]["playwright"]["args"][-1]
+    assert out_dir == str(shot.parent)
+
+
+def test_a_resume_outside_the_workspace_is_copied_into_it(tmp_path, launcher, workspace):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    workspace["dir"] = ws
+
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1"), _job("j2")])  # resume at tmp_path/resume.pdf
+
+    uploaded = Path(_inputs(calls[0])["resume_path"])
+    assert uploaded.is_relative_to(ws) and uploaded.read_bytes() == b"%PDF-1.4"
+    assert _inputs(calls[1])["resume_path"] == str(uploaded)
+
+
+def test_without_a_workspace_the_session_runs_in_applied_dir(tmp_path, launcher):
+    """Installs predating `workspace_dir`. The session must still stay out of ROOT,
+    which every plugin update replaces, and the resume is copied in."""
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1")])
+
+    (call,) = calls
+    assert call["kwargs"]["cwd"] == str(tmp_path / "applied")
+    uploaded = Path(_inputs(call)["resume_path"])
+    assert uploaded == tmp_path / "applied" / "resume.pdf" and uploaded.is_file()
 
 
 def test_the_session_keeps_the_tools_the_judge_strips(tmp_path, launcher):
@@ -154,15 +226,6 @@ def test_the_session_keeps_the_tools_the_judge_strips(tmp_path, launcher):
 
     assert "--safe-mode" not in argv
     assert "--tools" not in argv
-
-
-def test_the_session_runs_in_applied_dir_so_screenshots_survive_updates(tmp_path, launcher):
-    """Playwright MCP writes screenshots under the session's working directory. A
-    sweep's is ROOT, which every plugin update replaces."""
-    calls, _, _ = launcher
-    _run(tmp_path, [_job("j1")])
-    assert calls[0]["kwargs"]["cwd"] == str(tmp_path / "applied")
-    assert (tmp_path / "applied").is_dir()
 
 
 # --- verdicts ---------------------------------------------------------------

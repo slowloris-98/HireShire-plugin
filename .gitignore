@@ -17,6 +17,9 @@ analysis/cache/
 .claude/settings.json
 .claude/settings.local.json
 
+# Personal scratch notes. Same reason: anything tracked ships to every install.
+notes
+
 __pycache__/
 *.py[cod]
 .pytest_cache/

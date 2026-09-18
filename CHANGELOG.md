@@ -6,6 +6,8 @@ All notable changes to this plugin are documented here. Versions follow
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-18
+
 ### Changed
 
 - **The judge shows its evidence before it scores, and costs far less per job.** It
@@ -58,6 +60,28 @@ All notable changes to this plugin are documented here. Versions follow
 
   **With `enable_applier` on, the browser now opens mid-sweep.** Nothing else about
   the gate changed.
+
+- **The years-of-experience gate is now on by default**
+  (`funnel.experience.enabled: true`). It still does nothing until
+  `/hireshire:setup` has recorded your years of experience. Once that is set,
+  postings that ask for more than you have are filtered out before they cost a
+  scoring call.
+
+### Fixed
+
+- **The plugin no longer ships a `.claude/settings.json`.** Claude Code refused it on
+  every scoring call, because the plugin folder is never trusted, and each refusal
+  printed about 645 characters of warning. That warning is what made one real scoring
+  failure look like a trust problem.
+
+- **Sweep applications no longer fail at the resume upload.** The browser server only
+  uploads files from inside the session's working directory. That directory was the
+  plugin's data folder, while your resume is in your job-search folder, so every form
+  that required a resume stopped unsubmitted (5 of 8 errors on one real sweep). Each
+  apply session now runs in your job-search folder. The pre-submit screenshot, one per
+  job, goes to `hireshire_run_results/applied/`, and the session no longer leaves page
+  snapshots lying around. On an install without a job-search folder, or with a resume
+  kept elsewhere, the resume is copied into the session's folder first.
 
 ## [0.4.0] — 2026-09-11
 

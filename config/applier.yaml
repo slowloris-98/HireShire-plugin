@@ -10,7 +10,7 @@ settings:
   enable_applier: false   # true = fills and SUBMITS applications, with no further prompt
 
   db_path: hireshire.db   # shared SQLite datastore — reads shortlisted matches, writes `applied`
-  applied_dir: applied    # on-disk home for screenshots/ (records go to the applied table)
+  applied_dir: applied    # screenshots, only when no workspace_dir is set (records go to the applied table)
   resume_path: ""         # your resume PDF, set by /hireshire:setup
   inter_job_delay_s: 10   # seconds to wait between applications
   apply_timeout_s: 900    # give up on one application after this long (recorded as an error to check)
