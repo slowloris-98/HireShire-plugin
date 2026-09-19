@@ -86,20 +86,20 @@ a:focus-visible, summary:focus-visible, input:focus-visible {
 h1, h2, h3, h4, p, ul, ol, figure { margin: 0; }
 ul, ol { padding: 0; }
 
-.mono, .eyebrow, .stat-n, .stat-l, .pts, .chip,
+.mono, .stat-n, .stat-l, .pts, .chip,
 th, td, input, .denom, .filter-note {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
 }
 
-.eyebrow {
-  font-size: .72rem; letter-spacing: .14em; text-transform: uppercase;
-  color: var(--ink-faint); margin-bottom: 1rem;
-  display: flex; flex-wrap: wrap; align-items: center; gap: .75rem;
-}
 h1 {
   font-size: clamp(2rem, 5vw, 3rem); font-weight: 600; line-height: 1.1;
-  letter-spacing: -.02em; text-wrap: balance; margin-bottom: .9rem;
+  letter-spacing: -.02em; text-wrap: balance; margin-bottom: .35rem;
+}
+.subtitle {
+  font-size: clamp(1.15rem, 2.6vw, 1.5rem); font-weight: 500; line-height: 1.25;
+  color: var(--ink-soft); margin-bottom: .9rem; overflow-wrap: anywhere;
+  display: flex; flex-wrap: wrap; align-items: center; gap: .75rem;
 }
 .stats {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));

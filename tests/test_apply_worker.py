@@ -152,7 +152,7 @@ def test_the_session_brings_its_own_browser_server(tmp_path, launcher):
     args = server["args"]
     assert args[:len(shipped["mcpServers"]["playwright"]["args"])] == \
         shipped["mcpServers"]["playwright"]["args"]
-    assert args[args.index("--output-dir") + 1] == str(tmp_path / "applied")
+    assert args[args.index("--output-dir") + 1] == str(tmp_path / "applied" / ".browser" / "j1")
     # The per-job rules must name the tools as that server exposes them.
     assert "mcp__playwright__browser_navigate" in worker.PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -187,7 +187,91 @@ def test_the_session_runs_in_the_workspace_so_the_resume_can_be_uploaded(
     argv = list(call["argv"])
     out_dir = json.loads(argv[argv.index("--mcp-config") + 1])[
         "mcpServers"]["playwright"]["args"][-1]
-    assert out_dir == str(shot.parent)
+    assert out_dir == str(shot.parent / ".browser" / "j1")
+    assert Path(out_dir).is_relative_to(ws), "the server refuses to write outside cwd"
+
+
+# --- the browser server's own output -----------------------------------------
+
+def _output_dir(call) -> Path:
+    args = json.loads(call["argv"][list(call["argv"]).index("--mcp-config") + 1])[
+        "mcpServers"]["playwright"]["args"]
+    return Path(args[args.index("--output-dir") + 1])
+
+
+def _writes_snapshots(proc: _Proc, seen: dict) -> _Proc:
+    """Wrap a fake session so it writes what Playwright MCP writes unasked, and notes
+    whether its scratch dir and the `applied` row existed while it ran."""
+    inner = proc.communicate
+
+    async def communicate(payload=None):
+        out = seen["dir"]()
+        (out / "page-2026-09-19T19-11-50-406Z.yml").write_text("- main")
+        (out / "console-2026-09-19T19-11-49-722Z.log").write_text("[ERROR] 401")
+        seen["existed"] = out.is_dir()
+        return await inner(payload)
+
+    proc.communicate = communicate
+    return proc
+
+
+def test_snapshots_and_console_logs_are_deleted_once_the_outcome_is_recorded(
+        tmp_path, launcher, monkeypatch):
+    """Playwright MCP writes a `page-*.yml` per snapshot and a `console-*.log` into
+    `--output-dir` whether or not anything asks — 204 and 20 beside 7 screenshots on
+    one sweep. The session may read them while it fills the form, so they must exist
+    until it exits, and be gone only after the `applied` row is written."""
+    calls, script, _ = launcher
+    seen: dict = {"dir": lambda: _output_dir(calls[-1])}
+    script.append(_writes_snapshots(_outcome(status="submitted"), seen))
+
+    order: list[str] = []
+    real_record = Database.record_applied
+
+    def record(self, *a, **k):
+        order.append("recorded" if _output_dir(calls[0]).is_dir() else "already deleted")
+        return real_record(self, *a, **k)
+
+    monkeypatch.setattr(Database, "record_applied", record)
+    _, db = _run(tmp_path, [_job("j1")])
+
+    assert seen["existed"], "the session had nowhere to write its snapshots"
+    assert order == ["recorded"], "output was deleted before the outcome was recorded"
+    assert _statuses(db) == {"j1": "submitted"}
+    applied = tmp_path / "applied"
+    assert not _output_dir(calls[0]).exists()
+    assert not (applied / ".browser").exists()
+    assert not list(applied.glob("*.yml")) and not list(applied.glob("*.log"))
+
+
+@pytest.mark.parametrize("ending", ["timeout", "launch_failure"])
+def test_output_is_deleted_however_the_session_ends(tmp_path, launcher, ending):
+    calls, script, _ = launcher
+    seen: dict = {"dir": lambda: _output_dir(calls[-1])}
+    proc = _Proc(hang=True) if ending == "timeout" else _Proc(rc=1)
+    script.append(_writes_snapshots(proc, seen))
+    _run(tmp_path, [_job("j1")], settings=_settings(tmp_path, apply_timeout_s=0.05))
+
+    assert seen["existed"]
+    assert not (tmp_path / "applied" / ".browser").exists()
+
+
+def test_leftover_output_is_cleared_and_screenshots_are_kept(tmp_path, launcher):
+    """What earlier sweeps left: loose snapshots and logs from before the scratch dir,
+    and a `.browser/` a killed session never deleted. Screenshots and the copied
+    resume beside them are the user's and must survive."""
+    applied = tmp_path / "applied"
+    (applied / ".browser" / "old").mkdir(parents=True)
+    (applied / ".browser" / "old" / "page-x.yml").write_text("- main")
+    (applied / "page-2026-09-19T19-11-50-406Z.yml").write_text("- main")
+    (applied / "console-2026-09-19T19-11-49-722Z.log").write_text("[ERROR]")
+    (applied / "roblox-8083944.png").write_bytes(b"\x89PNG")
+    (applied / "notes.log").write_text("not ours")
+
+    _run(tmp_path, [_job("j1")])
+
+    left = sorted(p.name for p in applied.iterdir())
+    assert left == ["notes.log", "resume.pdf", "roblox-8083944.png"]
 
 
 def test_a_resume_outside_the_workspace_is_copied_into_it(tmp_path, launcher, workspace):

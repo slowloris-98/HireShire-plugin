@@ -683,8 +683,8 @@ def _bar(bar: dict) -> str:
 def _progress_block(bars: list[dict]) -> str:
     """The three bars, or nothing for a run that predates them.
 
-    No caption at either scope: the eyebrow already names the run or says "All
-    sweeps", and the live chip already says whether one is running.
+    No caption at either scope: the subtitle already names the run or says
+    "Lifetime", and the live chip already says whether one is running.
     """
     if not bars:
         return ""
@@ -723,7 +723,7 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
                 usd((snapshot.get("usage") or {}).get("cost_usd")), "Est. cost"
             ))
 
-    scope = f"Run {stamp}" if per_run and stamp else "All sweeps"
+    heading = f"{stamp} Control Room" if per_run and stamp else "Lifetime Control Room"
     live_chip = '<span class="chip live">running</span>' if snapshot["live"] else ""
 
     # The third accordion. Its rows are built by script rather than written out as
@@ -754,8 +754,8 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
   </div></details>"""
 
     body = f"""<div class="wrap">
-  <p class="eyebrow"><span>HireShire</span><span>{e(scope)}</span>{live_chip}</p>
-  <h1>Control room</h1>
+  <h1>HireShire</h1>
+  <p class="subtitle"><span>{e(heading)}</span>{live_chip}</p>
   {_progress_block(snapshot.get("progress") or [])}
 
   <div class="stats">{''.join(tiles)}</div>

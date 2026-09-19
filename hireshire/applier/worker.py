@@ -134,6 +134,11 @@ def session_dirs(settings: ApplierSettings, resume_path: Path) -> SessionDirs:
     `out_dir` must sit under `cwd` too, for the same reason: the server also refuses
     to write outside the roots. A resume that is still outside `cwd` (an install
     predating `workspace_dir`, or a `resume_path` pointed elsewhere) is copied in.
+
+    `out_dir` is meant to hold screenshots only. Browser-server output that an earlier
+    sweep left behind is cleared here: a `.browser/` a killed session never got to
+    delete, and the loose snapshots and console logs from before the scratch dir
+    existed. One sweep runs at a time, so none of it belongs to a live session.
     """
     ws = paths.workspace_dir()
     if ws is not None and ws.is_dir():
@@ -142,6 +147,7 @@ def session_dirs(settings: ApplierSettings, resume_path: Path) -> SessionDirs:
     else:
         cwd = out_dir = paths.resolve_data(settings.applied_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    _clear_browser_output(out_dir)
 
     upload = resume_path
     if not resume_path.resolve().is_relative_to(cwd.resolve()):
@@ -153,22 +159,59 @@ def session_dirs(settings: ApplierSettings, resume_path: Path) -> SessionDirs:
     return SessionDirs(cwd=cwd, out_dir=out_dir, resume_path=upload)
 
 
-def _mcp_config(out_dir: Path) -> str:
-    """The plugin's `.mcp.json`, with the browser server's output sent to `out_dir`.
+#: Under `out_dir`: the browser server's own output, one subdirectory per session.
+SCRATCH_DIRNAME = ".browser"
+
+#: What the browser server writes into `--output-dir` unasked: a `page-*.yml` for
+#: every snapshot, a `console-*.log` for the page's console.
+_LEGACY_OUTPUT = ("page-*.yml", "console-*.log")
+
+
+def _clear_browser_output(out_dir: Path) -> None:
+    """Delete browser-server output from `out_dir`, leaving screenshots alone."""
+    shutil.rmtree(out_dir / SCRATCH_DIRNAME, ignore_errors=True)
+    for pattern in _LEGACY_OUTPUT:
+        for f in out_dir.glob(pattern):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
+def _safe_name(raw: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", raw)
+
+
+def scratch_dir(dirs: SessionDirs, job: dict) -> Path:
+    """Where one session's browser server writes its automatically named files.
+
+    Playwright MCP saves every page snapshot as a `page-*.yml` and the console as a
+    `console-*.log` in `--output-dir`, whether or not anything asks for them — 204
+    snapshots and 20 logs beside 7 screenshots on one sweep. The session may read those
+    snapshots while it fills the form, so they live here until it has exited and its
+    outcome is recorded, then `run_apply_worker` deletes the directory. Under `out_dir`,
+    and therefore under `cwd`, because the server refuses to write outside its roots.
+    """
+    return dirs.out_dir / SCRATCH_DIRNAME / _safe_name(str(job.get("job_id") or "unknown"))
+
+
+def _mcp_config(output_dir: Path) -> str:
+    """The plugin's `.mcp.json`, with the browser server's output sent to `output_dir`.
 
     `--output-dir` only covers files the server names itself; an explicit filename
     resolves against the root instead, which is why the prompt hands the model an
-    absolute `screenshot_path`.
+    absolute `screenshot_path` — and why the screenshot lands in `out_dir` while
+    everything else lands in the per-session `scratch_dir`.
     """
     config = json.loads((paths.ROOT / ".mcp.json").read_text(encoding="utf-8"))
     server = config["mcpServers"]["playwright"]
-    server["args"] = [*server.get("args", []), "--output-dir", str(out_dir)]
+    server["args"] = [*server.get("args", []), "--output-dir", str(output_dir)]
     return json.dumps(config)
 
 
 def _screenshot_name(job: dict) -> str:
     raw = f"{job.get('company') or 'job'}-{job.get('job_id') or 'unknown'}"
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", raw) + ".png"
+    return _safe_name(raw) + ".png"
 
 
 def build_prompt(job: dict, settings: ApplierSettings, dirs: SessionDirs,
@@ -236,13 +279,16 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
     # It runs in the user's workspace — see `session_dirs` — and never in the sweep's
     # own working directory, ROOT: every plugin update replaces that, and it is outside
     # the roots the browser server may upload the resume from. The config goes as a
-    # JSON string, the same way `--json-schema` does, because it carries `out_dir`.
+    # JSON string, the same way `--json-schema` does, because it carries the session's
+    # `scratch_dir` — which the caller deletes once the outcome is recorded.
+    scratch = scratch_dir(dirs, job)
     try:
+        scratch.mkdir(parents=True, exist_ok=True)
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p",
             "--permission-mode", "auto",
             "--no-session-persistence",
-            "--mcp-config", _mcp_config(dirs.out_dir),
+            "--mcp-config", _mcp_config(scratch),
             "--strict-mcp-config",
             "--output-format", "json",
             "--json-schema", schema,
@@ -361,35 +407,48 @@ async def run_apply_worker(
         state["launched"] = True
 
         logger.info("Applying: %s — %s", company, title)
+        # The session's snapshots and console logs are deleted only once it has exited
+        # and its outcome is written: it may read them while filling the form, and
+        # nothing after that does. `ignore_errors`, because on Windows a just-killed
+        # browser can still hold a file, and tidying up is never worth a job.
         try:
-            outcome = await apply_one(job, settings, dirs, resume_text)
-        except ApplyLaunchError as exc:
-            stats["deferred"] += 1
-            state["consecutive"] += 1
-            logger.warning("Apply session failed for %s — %s (will retry next sweep): %s",
-                           company, title, exc)
-            if state["consecutive"] >= BREAKER_LIMIT:
-                state["tripped"] = True
-                logger.error(
-                    "Applier: %d apply sessions failed in a row — not launching any "
-                    "more this sweep. Nothing was recorded; those jobs stay pending "
-                    "and are retried next sweep. Last error: %s", BREAKER_LIMIT, exc,
-                )
-            return
-        state["consecutive"] = 0
+            try:
+                outcome = await apply_one(job, settings, dirs, resume_text)
+            except ApplyLaunchError as exc:
+                stats["deferred"] += 1
+                state["consecutive"] += 1
+                logger.warning(
+                    "Apply session failed for %s — %s (will retry next sweep): %s",
+                    company, title, exc)
+                if state["consecutive"] >= BREAKER_LIMIT:
+                    state["tripped"] = True
+                    logger.error(
+                        "Applier: %d apply sessions failed in a row — not launching any "
+                        "more this sweep. Nothing was recorded; those jobs stay pending "
+                        "and are retried next sweep. Last error: %s", BREAKER_LIMIT, exc,
+                    )
+                return
+            state["consecutive"] = 0
 
-        if outcome.status == "skipped_location":
-            stats["skipped_location"] += 1
-            logger.info("Skipped (location): %s — %s", company, title)
-        else:
-            await asyncio.to_thread(
-                db.record_applied, job_id, company, title, job.get("job_url") or "",
-                datetime.now(timezone.utc).isoformat(), outcome.status,
-                outcome.screenshot, outcome.error,
-            )
-            stats[outcome.status] += 1
-            logger.info("Applied (%s): %s — %s%s", outcome.status, company, title,
-                        f" — {outcome.error}" if outcome.error else "")
+            if outcome.status == "skipped_location":
+                stats["skipped_location"] += 1
+                logger.info("Skipped (location): %s — %s", company, title)
+            else:
+                await asyncio.to_thread(
+                    db.record_applied, job_id, company, title, job.get("job_url") or "",
+                    datetime.now(timezone.utc).isoformat(), outcome.status,
+                    outcome.screenshot, outcome.error,
+                )
+                stats[outcome.status] += 1
+                logger.info("Applied (%s): %s — %s%s", outcome.status, company, title,
+                            f" — {outcome.error}" if outcome.error else "")
+        finally:
+            scratch = scratch_dir(dirs, job)
+            shutil.rmtree(scratch, ignore_errors=True)
+            try:
+                scratch.parent.rmdir()          # only succeeds once it is empty
+            except OSError:
+                pass
         if on_progress:
             on_progress(dict(stats))
 
