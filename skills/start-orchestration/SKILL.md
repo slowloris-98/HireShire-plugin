@@ -1,6 +1,6 @@
 ---
 name: start-orchestration
-description: Keep sweeping the job boards on a schedule, in a background shell task, until it is stopped or hits its 24-hour limit.
+description: Keep sweeping the job boards on a schedule, in a background shell task, until it is stopped.
 ---
 
 # Start orchestration
@@ -52,12 +52,12 @@ only thing here that knows the user's actual interval.
 Tell the user, plainly:
 
 - **How often** it sweeps — from the startup line, not from memory.
-- **How it ends.** It runs until one of three things: they run `--stop`, they kill the
-  shell task, or it reaches its **24-hour limit** and stops by itself. Say this
-  accurately. It is *not* tied to this session any more — closing Claude Code does not
-  reliably stop it, and earlier versions of this skill promised that it did. If they
-  want it to keep going beyond a day, the OS scheduler entry `/hireshire:setup` offers
-  is the supported way.
+- **How it ends.** It runs until they run `--stop` or kill the shell task. It has **no
+  time limit** and does not stop by itself. Say this accurately. It is *not* tied to
+  this session any more: closing Claude Code does not reliably stop it, and earlier
+  versions of this skill promised that it did. If they want sweeps that do not depend
+  on a Claude Code session at all, the OS scheduler entry `/hireshire:setup` offers is
+  the supported way.
 - **How to stop it:**
   ```bash
   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --stop
@@ -74,7 +74,7 @@ browser **as soon as a job is shortlisted** — mid-sweep, not at the end — an
 real applications**, unattended and with no confirmation step.
 There is no rehearsal mode; `enable_applier` is the only thing holding it back. This
 matters more than it used to: nothing stops the sweep automatically when they walk away,
-so the 24-hour bound and `--stop` are the only limits.
+so it keeps submitting applications until they run `--stop`.
 
 ## While it runs
 
@@ -92,7 +92,7 @@ hours, and relaying every internal milestone would put several messages into the
 session every few hours. One per completed cycle is the right rate.
 
 **When the task ends you will be notified** with its exit code. Say what happened rather
-than assuming: a clean end means the 24-hour bound or a `--stop`; a failure means
+than assuming: a clean end means a `--stop`; a failure means
 something broke, and `<DATA>/logs/orchestration.log` says what. Offer to restart it.
 
 Two log files, which are easy to confuse:

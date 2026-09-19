@@ -7,9 +7,10 @@ null-owner fallback let every ending Claude Code session reap the sweep. Since t
 spawns a `claude -p` per scoring call, it manufactured its own killers and died on the
 first one: 60 s in, exit code 1, no traceback, on every sweep path including `--once`.
 
-So a sweep now ends in exactly three ways — `--stop`, its shell task being killed, or
-its own runtime bound. These tests cover the bound and the rule that keeps the file from
-reacquiring a session dependency.
+So a sweep now ends in exactly two ways: `--stop`, or its process being killed. A
+24-hour runtime bound used to be a third, and it was removed because it stopped sweeps
+the user wanted running. These tests keep both decisions in place: no session
+dependency, and no bound.
 """
 from __future__ import annotations
 
@@ -45,40 +46,16 @@ def _executable_source(path) -> str:
     return "\n".join(ln for ln in lines if not ln.lstrip().startswith("#"))
 
 
-# --- the runtime bound ------------------------------------------------------------
+# --- no runtime bound ---------------------------------------------------------------
 
 
-def test_a_cycle_that_fits_before_the_deadline_is_allowed():
-    assert run_orchestration._another_cycle_fits(
-        now=0.0, deadline=100.0, interval_s=10.0
-    ) is True
-
-
-def test_a_cycle_that_would_run_past_the_deadline_is_refused():
-    """The bound is the whole safety story. An unattended sweep with auto-apply on
-    submits real applications with no human checkpoint, and before this it could do so
-    indefinitely — the incident that motivated the watchdog was exactly that."""
-    assert run_orchestration._another_cycle_fits(
-        now=95.0, deadline=100.0, interval_s=10.0
-    ) is False
-
-
-def test_the_deadline_is_checked_before_sleeping_not_after_waking():
-    """A sweep due to start exactly at the deadline is refused rather than started.
-
-    Checking after the sleep instead would park a process for four hours and then exit
-    the instant it woke, which looks to the user like a sweep that silently did nothing.
-    """
-    assert run_orchestration._another_cycle_fits(
-        now=90.0, deadline=100.0, interval_s=10.0
-    ) is False
-
-
-def test_the_bound_is_a_real_limit_not_an_off_switch():
-    """Guards against someone "simplifying" it to 0 or to a value so large it stops
-    bounding anything. A day is long enough to be useful unattended and short enough
-    that a forgotten sweep does not run all week."""
-    assert 3600 <= run_orchestration._MAX_RUNTIME_S <= 7 * 24 * 3600
+def test_the_recurring_sweep_has_no_runtime_bound():
+    """A recurring sweep runs until `--stop`. The 24-hour cap it used to have ended
+    sweeps the user wanted running, and that is the failure this test prevents."""
+    for removed in ("_MAX_RUNTIME_S", "_another_cycle_fits"):
+        assert not hasattr(run_orchestration, removed), (
+            f"{removed} is back: the recurring sweep must run until --stop"
+        )
 
 
 # --- no session dependency, ever again ---------------------------------------------

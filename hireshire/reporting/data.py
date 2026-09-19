@@ -166,9 +166,9 @@ def partition_jobs(
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Split match rows into the overview page's last three sections, in page order.
 
-    Returns `(shortlisted, filtered, seen)`; the applied section is built from the
-    `applied` table instead, because it carries the timestamp and status that no
-    `matches` row has.
+    Returns `(shortlisted, filtered, seen)`; the Jobs Applied and Needs Attention
+    sections are built from the `applied` table instead, split on its status, because
+    it carries the timestamp, status and reason that no `matches` row has.
 
     The sections are **disjoint** — every job renders exactly once. That is the whole
     point of the page: it is the only list the user has of what is left to do, and a
@@ -247,8 +247,14 @@ def overview_snapshot(
     sweep, so re-deriving either here would double that work ~300 times a run.
     """
     counts = db.overview_counts(run_id)
-    applied = db.load_applied_matches(run_id)
-    applied_ids = {r.get("job_id") for r in applied}
+    # The `applied` table feeds two sections. A submission goes under Jobs Applied;
+    # every other status — `error`, or one nobody has named yet — is an application
+    # that needs the user, so it goes under Needs Attention rather than vanishing.
+    # Both halves stay in `applied_ids`, so neither reappears under Shortlisted.
+    attempts = db.load_applied_matches(run_id)
+    applied = [r for r in attempts if r.get("applied_status") == "submitted"]
+    attention = [r for r in attempts if r.get("applied_status") != "submitted"]
+    applied_ids = {r.get("job_id") for r in attempts}
 
     if run_id:
         rows = db.load_all_matches(run_id) if records is None else records
@@ -257,7 +263,7 @@ def overview_snapshot(
         # half actually has. Concatenated in that order, the partition below inherits
         # "LLM score first, then the cross-encoder logit" for free.
         rows = db.load_lifetime_matches(
-            judged=True, limit=MAX_JOB_ROWS * 2 + len(applied)
+            judged=True, limit=MAX_JOB_ROWS * 2 + len(attempts)
         ) + db.load_lifetime_matches(judged=False, limit=MAX_TAIL_ROWS)
 
     shortlisted, filtered, seen = partition_jobs(rows, applied_ids)
@@ -275,6 +281,8 @@ def overview_snapshot(
         "counts": counts,
         "applied": applied[:MAX_JOB_ROWS],
         "applied_total": len(applied),
+        "attention": attention[:MAX_JOB_ROWS],
+        "attention_total": len(attention),
         "shortlisted": shortlisted[:MAX_JOB_ROWS],
         "shortlisted_total": len(shortlisted),
         "filtered": filtered[:MAX_JOB_ROWS],

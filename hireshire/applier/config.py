@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import yaml
 from pydantic import BaseModel
@@ -38,6 +39,16 @@ class ApplierSettings(BaseModel):
     last_name: str = ""
     email: str = ""
     phone: str = ""
+    # Read off the resume at setup and confirmed by the user; empty when it has none.
+    linkedin_url: str = ""
+    portfolio_url: str = ""
+
+    # Screening answers the resume cannot give, asked once at setup. None means the
+    # user was never asked — an install predating these — and `apply_one.md` falls
+    # back to its old defaults for authorization and sponsorship.
+    work_authorized: Optional[bool] = None
+    requires_sponsorship: Optional[bool] = None
+    willing_to_relocate: Optional[bool] = None
 
     generate_cover_letter: bool = True
     model: str = "gpt-4o-mini"

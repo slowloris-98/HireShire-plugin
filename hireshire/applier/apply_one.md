@@ -16,8 +16,10 @@ The browser tools you need are `browser_navigate`, `browser_snapshot`, `browser_
 
 Use whichever set you have.
 
-The resume is the ground truth for every question you answer. Do not answer from the
-job description or from memory.
+The resume is the ground truth for every question about the applicant, followed by the
+screening answers in the applicant's details. The job description may shape how an
+answer is *framed* — which experience to lead with, which of the employer's words to
+use — but it is never evidence about the applicant. Never answer from memory.
 
 ## 1. Navigate and snapshot
 
@@ -40,6 +42,9 @@ If the page states a location and it does not case-insensitively contain any of
 Fill first name, last name, email and phone from the applicant's details. No reasoning
 needed.
 
+Fill LinkedIn from `linkedin_url`, and GitHub, portfolio or personal website from
+`portfolio_url`. Leave an optional link field blank when the value is empty.
+
 ## 4. Resume upload
 
 Find the resume/CV file input and upload the file at `resume_path`.
@@ -52,18 +57,42 @@ resume; a forward-looking close.
 
 ## 6. Remaining questions
 
-Reason from the resume, the job title and company, and the URL. The rules that matter:
+Reason from the resume, the applicant's details, and the job description on the
+posting page (open its description tab if the form hides it). The rules that matter:
 
-- **Never fabricate experience or qualifications that are not in the resume.** This is
-  the one hard rule — a wrong answer here is a lie told in the user's name, on a real
-  application.
-- Years of experience: estimate conservatively from the resume's dates.
+- **Never invent a fact about the applicant's record**: an employer, a job title, a
+  degree, a graduation date, a certification, a licence, a security clearance, or an
+  answer to a background or criminal-history question. A wrong answer here is a lie
+  told in the user's name, on a real application.
+- **A tool or technology the resume does not show** is the one deliberate exception,
+  chosen by the user. Find the closest thing the resume *does* show — RabbitMQ for
+  Kafka, Vue for React, Tableau for Power BI — and:
+  - on a yes/no or checkbox question ("Have you worked with Kafka?"), answer **Yes**;
+  - in any free-text or follow-up box, name the adjacent tool plainly: "Hands-on with
+    RabbitMQ for event-driven messaging; the same patterns carry over to Kafka.";
+  - for "years of experience with X", give the years spent on the adjacent tool.
+
+  If nothing on the resume is reasonably close, answer **No**. The exception covers
+  tools, languages, frameworks and platforms only — never anything in the rule above.
+- **Essays and paragraphs** ("Why do you want to work here?", "Why this role?", "Tell
+  us about yourself", "Anything else we should know?"): write 3-5 sentences. Build
+  them from the resume's summary and most relevant experience, tied to specifics the
+  job description names — the product, the team's problem, the stack. Plain and
+  concrete; no superlatives, no restating the job title back.
+- Years of experience in general: estimate conservatively from the resume's dates.
+- Work authorization: `work_authorized`. Sponsorship required: `requires_sponsorship`.
+  If either is `null` the user was never asked; answer authorized **yes** and
+  sponsorship **no**, unless the resume contradicts it.
+- Willing to relocate: `willing_to_relocate`. If it is `null` and the question is
+  required, the outcome is `error`.
+- Salary expectation: "Open / negotiable". Salary history: "Prefer not to disclose".
+  Start date or notice period: "Flexible". If the field accepts only a number or a
+  date, the outcome is `error`.
 - Demographic / EEO questions: "Prefer not to answer" or "Decline to self-identify",
   always.
 - "How did you hear about us": "Job board".
-- Work authorization: yes. Sponsorship required: no. Unless the resume contradicts it.
 
-If a required question cannot be answered honestly from the resume, the outcome is
+If a required question still cannot be answered under these rules, the outcome is
 `error`, naming the question that blocked it. Stop there.
 
 Multi-page forms: fill what is visible, click Next/Continue, snapshot, repeat.
@@ -86,9 +115,13 @@ the same job is worse than asking the user to check.
 Exactly one of:
 
 - `submitted` — the form was submitted and the page confirmed it.
-- `error` — anything that stopped this job, with a one-sentence explanation in
-  `error`: a sign-in gate, a redirect, a question that cannot be answered honestly, a
-  submit that did not go through or could not be confirmed.
+- `error` — anything that stopped this job: a sign-in gate, a redirect, a question
+  these rules cannot answer, a submit that did not go through or could not be
+  confirmed. Put **one line, under 120 characters,** in `error`, saying what the user
+  has to do. It is shown to them verbatim under "Needs Attention". For example:
+  `Required question: graduation date (not on resume).`,
+  `Sign-in required before the form appears.`,
+  `Submit clicked but not confirmed — check before applying again.`
 - `skipped_location` — the page states a location outside the accepted list.
 
 Include `screenshot` whenever you took one.

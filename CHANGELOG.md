@@ -4,7 +4,26 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
-## [Unreleased]
+## [0.6.0] — 2026-09-19
+
+### Changed
+
+- **Recurring sweeps no longer stop after 24 hours.** `/hireshire:start-orchestration`
+  now keeps sweeping on your schedule until you run `--stop` or kill its task. If
+  auto-apply is on, it keeps submitting applications until then.
+- **Fewer applications stop on a question your resume can't answer.** When you turn on
+  auto-apply, `/hireshire:setup` now asks three screening questions: are you authorized
+  to work, do you need sponsorship, will you relocate. It also reads your LinkedIn and
+  portfolio links off your resume, along with your name, email and phone, and asks you
+  to confirm them rather than typing each one. Essay questions ("why do you want to
+  work here?") are written from your resume and the job description. A question about
+  a tool your resume doesn't list is answered **yes**, citing the closest tool it does
+  list.
+- **Applications that didn't go through now have their own section.** The overview
+  page has a **Needs Attention** section after Jobs Applied, listing each application
+  that stopped short with a one-line reason (for example, a sign-in wall or a required
+  question with no answer). The **Jobs applied** number now counts only real
+  submissions. Before, it also counted those failed attempts.
 
 ## [0.5.1] — 2026-09-18
 

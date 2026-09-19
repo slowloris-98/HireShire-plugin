@@ -38,8 +38,10 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --paths
 It prints `ROOT=<path>` and `DATA=<path>`.
 
 Read `<DATA>/config/applier.yaml` for `enable_applier`, `first_name`, `last_name`,
-`email`, `phone`, `resume_path`, `inter_job_delay_s`, `generate_cover_letter` and
-`exclude_companies`.
+`email`, `phone`, `linkedin_url`, `portfolio_url`, `work_authorized`,
+`requires_sponsorship`, `willing_to_relocate`, `resume_path`, `inter_job_delay_s`,
+`generate_cover_letter` and `exclude_companies`. An empty screening answer means the
+user was never asked; pass it on as `null` and `apply_one.md` says what to do.
 
 If `enable_applier` is false, stop here and say so. Do not apply to anything, and do
 not offer to flip it.
@@ -94,8 +96,8 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/applied_cli.py list
 Skip the job if its `job_id` is listed.
 
 Then follow `apply_one.md` for the job. Its inputs are the job row (`job_url`,
-`company`, `title`), the applicant's details and `generate_cover_letter` from the
-config, and `resume_path`. It ends in one outcome: `submitted`, `error` or
+`company`, `title`), the applicant's details — contact fields, links and screening
+answers — and `generate_cover_letter` from the config, and `resume_path`. It ends in one outcome: `submitted`, `error` or
 `skipped_location`.
 
 Record `submitted` and `error`; do not record `skipped_location`:
@@ -114,7 +116,8 @@ Wait `inter_job_delay_s` seconds before the next job.
 ## Step 4 — Summary
 
 A table of Company / Title / Status / Screenshot, then totals for submitted and
-error.
+error. Every `error` job now appears under **Needs Attention** on the overview page,
+with its one-line reason, so tell the user that is where to find them.
 
 Then, **always**, an **Apply manually** section listing the pending jobs you set
 aside in Step 1 because their company is in `exclude_companies` — company, title and

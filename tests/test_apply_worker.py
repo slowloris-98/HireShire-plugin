@@ -305,7 +305,8 @@ def test_a_timeout_is_recorded_as_an_unconfirmed_error_and_kills_the_session(
 
     (row,) = db.load_applied()
     assert row["status"] == "error"
-    assert "check before applying again" in row["error"]
+    assert "check whether it was submitted" in row["error"]
+    assert "\n" not in row["error"], "Needs Attention prints this as one line"
     assert killed, "the timed-out browser session was left running"
 
 
@@ -314,6 +315,30 @@ def test_an_unreadable_result_is_recorded_rather_than_retried(tmp_path, launcher
     script.append(_Proc(b"not json at all"))
     _, db = _run(tmp_path, [_job("j1")])
     assert _statuses(db) == {"j1": "error"}
+    (row,) = db.load_applied()
+    assert "check whether it was submitted" in row["error"]
+
+
+def test_the_prompt_carries_the_screening_answers_and_links(tmp_path):
+    """Setup asks these once so a form's authorization, sponsorship and relocation
+    questions stop ending in `error` (known issue A4). An unset answer goes through
+    as null, which `apply_one.md` reads as "never asked"."""
+    settings = _settings(
+        tmp_path, linkedin_url="https://linkedin.com/in/ada",
+        portfolio_url="https://ada.dev", work_authorized=True,
+        requires_sponsorship=False,
+    )
+    dirs = worker.SessionDirs(cwd=tmp_path, out_dir=tmp_path,
+                              resume_path=tmp_path / "resume.pdf")
+    prompt = worker.build_prompt(_job("j1"), settings, dirs, "RESUME")
+    inputs = json.loads(prompt.split("```json\n", 1)[1].split("\n```", 1)[0])
+
+    applicant = inputs["applicant"]
+    assert applicant["linkedin_url"] == "https://linkedin.com/in/ada"
+    assert applicant["portfolio_url"] == "https://ada.dev"
+    assert applicant["work_authorized"] is True
+    assert applicant["requires_sponsorship"] is False
+    assert applicant["willing_to_relocate"] is None
 
 
 def test_cancelling_the_worker_kills_the_session_in_flight(tmp_path, launcher):

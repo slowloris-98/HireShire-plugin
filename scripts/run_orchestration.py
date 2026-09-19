@@ -29,10 +29,13 @@ sweep path including `--once`.
 
 The lesson is not "pick a better session signal". It is that a sweep must not depend on
 host-specific identity it cannot verify, because the failure direction is destroying the
-user's work, and the next host breaks it again. What replaces it is `_MAX_RUNTIME_S`: the
-loop cannot run forever, so an unattended sweep with auto-apply on has a bound without
-anyone watching a pid. `--stop` is the manual backstop, and surviving a closed terminal
-*on purpose* is the OS scheduler entry `/hireshire:setup` offers.
+user's work, and the next host breaks it again.
+
+It also has no runtime bound. A 24-hour cap used to stand in for the session tie, and
+it stopped sweeps the user wanted running. A recurring sweep now ends only on `--stop`
+or when its process is killed. With `enable_applier: true` it therefore keeps
+submitting applications, unattended, until one of those happens. Surviving a closed
+terminal *on purpose* is still the OS scheduler entry `/hireshire:setup` offers.
 """
 
 from __future__ import annotations
@@ -47,33 +50,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bootstrap import DATA, ROOT, is_current, main as bootstrap_main, venv_python  # noqa: E402
 
 _CHILD_FLAG = "HIRESHIRE_IN_VENV"
-
-#: How long a recurring sweep may run before it stops on its own.
-#:
-#: This is the whole safety story now that nothing watches a session. An unattended
-#: monitor with `enable_applier: true` submits real applications with no human
-#: checkpoint, and before this it could do so indefinitely — the incident that
-#: motivated the watchdog was exactly that, a sweep outliving its session with a
-#: shortlist in hand and auto-apply on. A bound achieves the same protection without
-#: asking the host a question it may not be able to answer.
-#:
-#: Not configurable on purpose: a setting invites `0` or `99999`, and this is a
-#: backstop rather than a preference. The user who genuinely wants unattended sweeps
-#: forever has the OS scheduler, which is honest about what it is.
-_MAX_RUNTIME_S = 24 * 3600
-
-
-def _another_cycle_fits(now: float, deadline: float, interval_s: float) -> bool:
-    """Whether there is room for one more sweep before the bound.
-
-    Asked *before* sleeping rather than after waking, so the loop never parks a process
-    for four hours only to exit the moment it comes back. A sweep that would finish
-    past the deadline is not started at all.
-
-    Its own function because it is the whole of the safety story and the rest of the
-    loop is untestable without a database, a config file and a scrape.
-    """
-    return now + interval_s < deadline
 
 
 def _reexec_in_venv() -> int:
@@ -104,7 +80,6 @@ def _reexec_in_venv() -> int:
 def _loop(once: bool = False) -> int:
     import asyncio
     import logging
-    import time
 
     import orchestrate
     from hireshire import paths, sweep_pid
@@ -154,12 +129,10 @@ def _loop(once: bool = False) -> int:
         logging.exception("Could not read applier config; continuing without it")
 
     sweep_pid.write(os.getpid())
-    deadline = time.monotonic() + _MAX_RUNTIME_S
     print(
         "HireShire: sweeping once." if once
         else f"HireShire orchestration started — sweeping every {interval_h:g}h."
-             f" It stops on its own after {_MAX_RUNTIME_S // 3600}h,"
-             " or when you run --stop.",
+             " It runs until you run --stop.",
         flush=True,
     )
 
@@ -177,14 +150,6 @@ def _loop(once: bool = False) -> int:
 
             if once:
                 print(f"HireShire: {summary}.", flush=True)
-                return
-
-            if not _another_cycle_fits(time.monotonic(), deadline, interval_h * 3600):
-                print(f"HireShire: {summary}. Stopping —"
-                      f" the {_MAX_RUNTIME_S // 3600}h limit is up."
-                      " Run /hireshire:start-orchestration again to continue.",
-                      flush=True)
-                logging.info("Reached the %ss runtime bound; stopping.", _MAX_RUNTIME_S)
                 return
 
             print(f"HireShire: {summary}. Next in {interval_h:g}h.", flush=True)

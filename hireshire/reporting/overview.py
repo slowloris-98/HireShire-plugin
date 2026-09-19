@@ -1,4 +1,4 @@
-"""The overview page: four numbers and the four collapsible lists that match them.
+"""The overview page: four numbers over five collapsible lists.
 
 The other two reports explain themselves at length, and that is the right call for
 a diagnostic someone opens when a sweep did something surprising. This one is for
@@ -149,6 +149,7 @@ OVERVIEW_CSS = """
 .job-x { font-variant-numeric: tabular-nums; text-align: right; }
 /* A whole sentence, so it wraps where the cells above it do not. */
 .job-sub { display: block; margin-top: .25rem; white-space: normal; }
+.job-sub.warn { color: var(--warn); }
 
 /* A block child of `.job`, not a grid item — so it spans the full width for free,
    inherits body typography rather than a table cell's nowrap, and simply makes the
@@ -219,7 +220,31 @@ def _cross(job: dict) -> str:
         return "—"
 
 
-def _job_entry(job: dict, rank: int, applied: bool = False) -> str:
+#: Where a Needs Attention reason is cut. Long enough for "Required question: <the
+#: question's own wording> (not on resume)", short enough to stay one line on a laptop.
+_REASON_CHARS = 140
+
+
+def _attention_reason(job: dict) -> tuple[str, str]:
+    """`(line, full)`: the one line saying why an application needs the user, and the
+    whole message for its tooltip.
+
+    `apply_one.md` asks the session for a single short line, but rows recorded before
+    that rule carry paragraph-length messages, and a model can ignore an instruction.
+    Cut at a word, not at a sentence: on the first real render, splitting on ". "
+    cut "can you get a U.S. security clearance" at "U.S.".
+    """
+    full = " ".join((job.get("applied_error") or "").split())
+    if not full:
+        return "Not submitted — open the posting to finish it.", ""
+    if len(full) <= _REASON_CHARS:
+        return full, full
+    cut = full[:_REASON_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:—-")
+    return cut + "…", full
+
+
+def _job_entry(job: dict, rank: int, applied: bool = False,
+               attention: bool = False) -> str:
     """One job as a `<details>`: a six-column row closed, the rationales open.
 
     Still a native `<details>` with a stable id, and that is not a style choice.
@@ -255,12 +280,20 @@ def _job_entry(job: dict, rank: int, applied: bool = False) -> str:
     # sit under the title, which keeps the six columns scannable and — the part that
     # matters — keeps a *why* on the section whose only question is why.
     sub = "" if judged else data.reason_label(reason)
-    if applied:
+    tip = ""
+    if attention:
+        # The reason replaces the funnel's label: this job cleared the funnel, and
+        # the only question left is what the user has to do about it.
+        line, full = _attention_reason(job)
+        sub = f"{line} · {local_time(job.get('applied_at'))}"
+        tip = f' title="{e(full)}"' if full != line else ""
+    elif applied:
         status = job.get("applied_status") or "applied"
         sub = " · ".join(
             x for x in (sub, f"{status} {local_time(job.get('applied_at'))}") if x
         )
-    sub_html = f'<span class="job-sub">{e(sub)}</span>' if sub else ""
+    sub_cls = "job-sub warn" if attention else "job-sub"
+    sub_html = f'<span class="{sub_cls}"{tip}>{e(sub)}</span>' if sub else ""
 
     # Lowercased server-side so filtering is one `indexOf` per row per keystroke,
     # with no allocation. Space-separated to match the last section's
@@ -290,7 +323,7 @@ def _job_entry(job: dict, rank: int, applied: bool = False) -> str:
 
 
 def _accordion(key: str, label: str, jobs: list[dict], total: int,
-               applied: bool = False) -> str:
+               applied: bool = False, attention: bool = False) -> str:
     """One section: a filter box, a sticky column header, a bounded scroll box.
 
     No pagination, unlike the last section, and deliberately: every row is already
@@ -312,7 +345,7 @@ def _accordion(key: str, label: str, jobs: list[dict], total: int,
         return head + '<p class="empty">Nothing yet.</p></div></details>'
 
     rows = "".join(
-        _job_entry(job, i, applied) for i, job in enumerate(jobs, start=1)
+        _job_entry(job, i, applied, attention) for i, job in enumerate(jobs, start=1)
     )
     capped = (
         f'<p class="empty">Showing the first {num(len(jobs))} of {num(total)}.</p>'
@@ -620,6 +653,9 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     # ready the moment it opens. The scroll listener cannot misfire while it is shut
     # either — a hidden box is never scrolled.
     seen, seen_total = snapshot["seen"], snapshot["seen_total"]
+    # `.get` because a snapshot built before this section existed has no such keys.
+    attention = snapshot.get("attention") or []
+    attention_total = snapshot.get("attention_total") or 0
     seen_html = ""
     if seen:
         seen_html = f"""
@@ -646,6 +682,7 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
   <p class="hint">In scope means matching your location and posted inside your time window. Click a section to open it, filter it if it is long, then click any job for the full reasoning behind its score.</p>
 
   {_accordion("applied", "Jobs Applied", snapshot["applied"], snapshot["applied_total"], applied=True)}
+  {_accordion("attention", "Needs Attention", attention, attention_total, attention=True)}
   {_accordion("shortlisted", "Jobs Shortlisted (to be applied)", snapshot["shortlisted"], snapshot["shortlisted_total"])}
   {_accordion("filtered", "Jobs Filtered (yet to be scored or not picked)", snapshot["filtered"], snapshot["filtered_total"])}
 {seen_html}
@@ -653,7 +690,8 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
 
     # The filter script is wired by class, so it covers however many of the three
     # rendered a list — but there is no point shipping it when none of them did.
-    listed = bool(snapshot["applied"] or snapshot["shortlisted"] or snapshot["filtered"])
+    listed = bool(snapshot["applied"] or attention or snapshot["shortlisted"]
+                  or snapshot["filtered"])
 
     return document(
         f"{TITLE} — {stamp}" if per_run and stamp else TITLE,

@@ -173,7 +173,7 @@ rather than one call per question:
 | `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `poll_interval_hours`, `workspace_dir` |
 | `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
 | `funnel` | `targets`, `top_k`, `rerank_min_score` |
-| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone` |
+| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `portfolio_url`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate` |
 
 So it is `set matcher --json '{"exclude_keywords": [...]}'` — **not**
 `'{"title_filter": {"exclude_keywords": [...]}}'`, which is rejected.
@@ -529,8 +529,41 @@ Three things that trip people up:
      environment and install `requirements-byo-key.txt` into the plugin venv.
 
 11. **Auto-apply?** → `applier.enable_applier`. Default to **no**, and only turn it
-    on if they ask for it. If yes, collect first name, last name, email and phone,
-    and say plainly, before writing the setting:
+    on if they ask for it. If yes, gather two things before writing anything.
+
+    **Contact details and links, read off the resume.** You already have its text
+    from question 6. Pull out first name, last name, email, phone, a LinkedIn URL and
+    one portfolio-type URL (GitHub, personal site, portfolio). Show them back on one
+    line and let the user correct them, as free text; do not ask for each one
+    separately. Leave a link empty when the resume has none, and never construct
+    one from their name: a guessed URL on a real application points at a stranger.
+
+    **Three screening questions, as one `AskUserQuestion` call.** Forms ask these
+    constantly, the resume never answers them, and an unanswered required one used to
+    stop the application:
+
+    - Authorized to work in the country or countries they are applying in? → `work_authorized`
+    - Will they need visa sponsorship, now or in future? → `requires_sponsorship`
+    - Open to relocating for a role? → `willing_to_relocate`
+
+    Each is yes/no. Offer no recommended option, because only the user knows the
+    answer.
+
+    Once they have heard the warning below, write it all in one call, alongside the
+    gate:
+
+    ```bash
+    sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
+        set applier --json '{"enable_applier": true, "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "linkedin_url": "...", "portfolio_url": "...", "work_authorized": true, "requires_sponsorship": false, "willing_to_relocate": false}'
+    ```
+
+    Tell them what the applier does with the rest, in two sentences: essay questions
+    ("why do you want to work here?") are written from their resume and the job
+    description; a question about a tool the resume does not show is answered **yes**,
+    citing the closest tool it does show. Anything it still cannot answer lands under
+    **Needs Attention** on the overview page, with the reason.
+
+    And say plainly, before writing the setting:
 
     > Each sweep will open a browser on its own the moment a job is shortlisted and
     > **submit real applications** to real employers, with no confirmation step. There

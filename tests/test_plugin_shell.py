@@ -190,14 +190,17 @@ def test_the_orchestration_skill_does_not_promise_a_session_scoped_sweep():
     of failure as announcing a sweep that was not running.
 
     A sweep no longer ends with the session: there is no `SessionEnd` hook and no
-    watchdog. It ends on `--stop`, on the shell task being killed, or on its own
-    runtime bound — and the skill has to say so, because the natural assumption runs
-    the other way and auto-apply submits real applications unattended.
+    watchdog. It ends on `--stop` or when the shell task is killed, and the skill has to
+    say so, because the natural assumption runs the other way and auto-apply submits
+    real applications unattended. It also has no runtime bound any more, so promising
+    one would be the same failure in the other direction.
     """
     text = (ROOT / "skills" / "start-orchestration" / "SKILL.md").read_text(encoding="utf-8")
     assert "--status" not in text, "there is no --status to ask"
     assert "--stop" in text, "the user must be told how to end it"
-    assert "24-hour" in text or "24h" in text, "the runtime bound must be stated"
+    assert "24-hour" not in text and "24h" not in text, (
+        "there is no runtime bound; the skill must not promise one"
+    )
 
 
 def _shell_blocks(text: str) -> str:

@@ -116,10 +116,13 @@ Consequences already worked out, which should not be re-derived:
   The lesson is not "find a better session signal". It is that a sweep must not act on
   host-specific identity it cannot verify, because the absence of that identity is
   indistinguishable from a legitimate reap and the failure direction is destroying work.
-  What replaces both layers is `_MAX_RUNTIME_S` (24 h): the loop cannot run forever, so
-  an unattended sweep with `enable_applier: true` is bounded without anyone watching a
-  pid. `--stop` is the only deliberate stop, and surviving a closed terminal *on purpose*
-  is the OS scheduler entry `/hireshire:setup` offers.
+  Both layers were first replaced by a 24-hour runtime bound (`_MAX_RUNTIME_S`). That
+  bound is gone too, because it stopped sweeps users wanted running. A recurring sweep
+  now runs until `--stop` or until its process is killed, so **unattended auto-apply has
+  no time limit, by design**. Do not bring back a session tie to bound it, and
+  `tests/test_sweep_lifetime.py` fails if the bound reappears. `--stop` is the only
+  deliberate stop, and surviving a closed terminal *on purpose* is the OS scheduler
+  entry `/hireshire:setup` offers.
 
   Consequences that should not be re-derived:
 
@@ -128,8 +131,8 @@ Consequences already worked out, which should not be re-derived:
     the liveness veto, `describe()` — is gone with the teardown it served. The user
     watches a sweep through the overview page or their shell task.
   - **`/hireshire:start-orchestration` must not claim the sweep stops with the session.**
-    It no longer does. It ends on `--stop`, on the shell task being killed, or on the
-    bound. Saying otherwise is the same class of failure as announcing a sweep that was
+    It no longer does. It ends on `--stop` or on the shell task being killed, and it must
+    not promise a time limit either. Saying otherwise is the same class of failure as announcing a sweep that was
     never running, and `tests/test_plugin_shell.py` pins the skill's wording.
   - **`process_liveness.is_alive` survives, for one caller only:** the guard that refuses
     to start a second writer onto the same SQLite database. It was never the bug — it
@@ -417,14 +420,24 @@ Three consequences that should not be re-derived:
 every sweep the install has done; `<stamp>_overview.html` in a run folder covers that
 sweep and adds how long it took and what it cost. Both are complete local documents.
 Four numbers — `Jobs in scope`, `Relevant jobs`, `Jobs shortlisted`, `Jobs applied` —
-over the four `<details>` sections that match them, under a `HireShire` /
+over five `<details>` sections, under a `HireShire` /
 `Control room` header. It explains nothing: past one line naming the scope and telling
 the reader the sections open and filter, the judge's rationales inside an opened job
 are the only sentences on it. **Both scopes are the same markup fed different data**,
 and the two extra tiles are the single deliberate exception — how long it took and
 what it cost are facts about a sweep, not about an install.
 
-**All four sections read the same way, and the rows stay `<details>` for one
+**Needs Attention sits between Jobs Applied and Jobs Shortlisted, and the `applied`
+table feeds both.** `overview_snapshot` splits it on `status`: `submitted` goes to
+Jobs Applied, and every other status goes to Needs Attention (`error`, plus any status
+nobody has named yet, so a new one cannot disappear). The row's `error` text is
+printed as a one-line `.job-sub` (`_attention_reason` clips it to its first sentence).
+`apply_one.md` asks the session for exactly that line. The `Jobs applied` tile
+counts **`submitted` only**. It used to count every attempt, which is how known issue
+A4 hid: a form stuck on a question read as a finished application. Both halves stay
+in `applied_ids`, so a needs-attention job never also appears under Shortlisted.
+
+**All five sections read the same way, and the rows stay `<details>` for one
 load-bearing reason.** Each section is a filter box over a sticky six-column header
 (`# | Title | Company | Location | LLM | Cross`) over a `.scroll-y` box. Three of them
 used to be unbounded flat lists beside one that was not, which made a sweep with 300
@@ -435,7 +448,7 @@ would shut the rationale they were halfway through. `<summary>` also gets Enter/
 for free, and BASE_CSS's `th, td { white-space: nowrap }` would flatten every
 rationale inside a `colspan` cell. Four more things about it:
 
-- **The three rendered lists are server markup, never a payload.** `_STATE_SCRIPT`
+- **The four rendered lists are server markup, never a payload.** `_STATE_SCRIPT`
   reopens by `getElementById` at parse time, so a row a paginating script has not
   built yet cannot be restored — which is the bug that script exists to prevent. They
   are capped at `MAX_JOB_ROWS` and bounded in height, not paginated.
@@ -470,7 +483,7 @@ since there can be tens of thousands a run — and it is why that section alone 
 script-built from a JSON payload with a filter box. Its `NOT EXISTS` is deliberately
 **not** correlated on `run_id`: a job the `SeenStore` skipped because an earlier sweep
 judged it would otherwise be listed here with a blank score, as though nothing had
-ever read it. The price, accepted, is that on later sweeps the four sections no longer
+ever read it. The price, accepted, is that on later sweeps the five sections no longer
 sum to the `Jobs in scope` tile. Its payload carries **no LLM key** — a key holding 0
 invites a renderer to print it as a verdict — while the renderer still prints an em
 dash in that column, so the six columns match the sections above. A printed dash and
@@ -570,6 +583,16 @@ Four things about the applier that are easy to break:
   may come after the submit click, so it is written as an `error` telling the user to
   check. Retrying it would risk a second application to the same employer, which is
   worse than a lost one.
+- **The no-fabrication rule has one exception, chosen by the user.** When a form asks
+  about a tool the resume does not show, `apply_one.md` answers **yes** and names the
+  closest tool the resume *does* show, or **no** when nothing is close. The exception
+  covers tools, languages, frameworks and platforms only. Employers, titles, degrees,
+  dates, certifications, licences, clearances and background answers are never
+  invented. Do not widen the exception, and do not "restore" the strict rule without
+  asking. Screening answers (`work_authorized`, `requires_sponsorship`,
+  `willing_to_relocate`) come from setup, and `null` means never asked, which is
+  different from "no". Essays are written from the resume and the job description,
+  never from the search profile, for the same reason the scorer never sees it.
 - **`applied_ids` is re-read before every launch**, because `/hireshire:apply` can run
   alongside a sweep and both work from the same pending list.
 - **The session loads the browser server itself** (`--mcp-config <ROOT>/.mcp.json

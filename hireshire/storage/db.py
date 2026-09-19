@@ -437,10 +437,15 @@ class Database:
             # `applied` has no run_id — an application is a fact about a job, not
             # about the sweep that surfaced it — so run scope means "applications to
             # jobs this sweep saw" rather than "applications made during it".
+            #
+            # Submissions only. An `error` row is an attempt that stopped short — a
+            # sign-in gate, a question nothing could answer — and counting it here made
+            # the tile promise applications that never reached the employer. Those
+            # rows are the page's Needs Attention section instead.
             applied = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM applied a"
+                "SELECT COUNT(*) AS n FROM applied a WHERE a.status = 'submitted'"
                 + (
-                    " WHERE EXISTS (SELECT 1 FROM matches m WHERE m.job_id = a.job_id"
+                    " AND EXISTS (SELECT 1 FROM matches m WHERE m.job_id = a.job_id"
                     " AND m.run_id = ?)" if run_id else ""
                 ),
                 params,

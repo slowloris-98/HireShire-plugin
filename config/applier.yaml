@@ -26,5 +26,13 @@ settings:
   last_name: ""
   email: ""
   phone: ""
+  linkedin_url: ""        # read off your resume at setup; empty if it has none
+  portfolio_url: ""       # GitHub, personal site or portfolio, likewise
+
+  # Screening questions your resume cannot answer, asked once at setup.
+  # Empty means never asked: authorization then defaults to yes and sponsorship to no.
+  work_authorized:        # authorized to work where you are applying
+  requires_sponsorship:   # need visa sponsorship now or in future
+  willing_to_relocate:    # open to relocating for the role
 
   generate_cover_letter: false
