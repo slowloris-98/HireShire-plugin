@@ -49,6 +49,28 @@ def test_write_rejects_non_whitelisted_fields(data_dir):
         cw.write_config("matcher", {"db_path": "/etc/passwd"})
 
 
+def test_the_screening_answers_start_unasked_and_are_writable(data_dir):
+    """Known issue A4: setup asks these so a form's authorization, sponsorship and
+    relocation questions stop ending the application. Shipped empty, because an empty
+    answer is how `apply_one.md` tells "never asked" from "no"."""
+    before = cw.read_config("applier")
+    for key in ("work_authorized", "requires_sponsorship", "willing_to_relocate"):
+        assert before[key] is None
+
+    cw.write_config("applier", {
+        "work_authorized": True, "requires_sponsorship": False,
+        "willing_to_relocate": False, "linkedin_url": "https://linkedin.com/in/ada",
+        "portfolio_url": "https://ada.dev",
+    })
+    after = cw.read_config("applier")
+    assert after["work_authorized"] is True
+    assert after["requires_sponsorship"] is False
+    assert after["linkedin_url"] == "https://linkedin.com/in/ada"
+
+    with pytest.raises(cw.ConfigError):
+        cw.write_config("applier", {"requires_sponsorship": "maybe"})
+
+
 def test_a_bare_string_is_accepted_for_a_list_field(data_dir):
     """Setup asks for locations in plain English, so "united states" is the natural
     answer — and pydantic can reject that but never clean it."""

@@ -1,6 +1,6 @@
-"""The minimal overview page — its four sections, and its two scopes.
+"""The minimal overview page — its five sections, and its two scopes.
 
-The page's whole promise is that a job appears in exactly one of its four lists,
+The page's whole promise is that a job appears in exactly one of its five lists,
 and that a number on it means what its label says. Most of what follows pins those
 two claims, because both are invisible when they break: a job showing up twice
 still renders, and a count that quietly means something else still prints.
@@ -80,10 +80,11 @@ def _match(db: Database, run_id: str, job_id: str, *, score=78, shortlisted=Fals
     )
 
 
-def _apply(db: Database, job_id: str, status: str = "submitted") -> None:
+def _apply(db: Database, job_id: str, status: str = "submitted",
+           error: str | None = None) -> None:
     db.record_applied(
         job_id, "acme", "Backend Engineer", f"https://example.com/jobs/{job_id}",
-        "2026-09-09T08:00:00+00:00", status, None, None,
+        "2026-09-09T08:00:00+00:00", status, None, error,
     )
 
 
@@ -136,7 +137,7 @@ def _snapshot(db: Database, run_id: str | None = RUN, **over) -> dict:
 
 # --- the four lists partition the jobs -----------------------------------------
 
-_SECTIONS = ("applied", "shortlisted", "filtered", "seen")
+_SECTIONS = ("applied", "attention", "shortlisted", "filtered", "seen")
 
 
 def _section_of(snap: dict, job_id: str) -> list[str]:
@@ -152,6 +153,39 @@ def test_every_job_appears_in_exactly_one_section(tmp_path):
     assert _section_of(snap, "j1") == ["applied"]
     for job_id in ("j2", "j3", "j4", "j5"):
         assert len(_section_of(snap, job_id)) == 1, job_id
+
+
+def test_an_application_that_stopped_short_needs_attention(tmp_path):
+    """Known issue A4. An `error` row used to be listed under Jobs Applied and counted
+    in its tile, beside real submissions, so a form stuck on a question looked like a
+    finished application and the user never learned they had to act."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=80, shortlisted=True, rerank=7.90)
+    db.insert_jobs(RUN, [_job("j6")])
+    # Paragraph-length, as rows recorded before the one-line rule are, and with a
+    # "U.S." in it — a sentence split cut the first real render there.
+    long = ("Blocked by the required question (can you get a U.S. security clearance?) "
+            "which the resume cannot answer, so the filled form was left unsent and "
+            "needs the user to review it and submit it themselves.")
+    _apply(db, "j6", "error", long)
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j6") == ["attention"]
+    assert _section_of(snap, "j1") == ["applied"]
+    assert db.overview_counts(RUN)["applied"] == 1
+    assert db.overview_counts(None)["applied"] == 1
+
+    html = overview.build(snap, RUN)
+    block = _job_block(html, "j6")
+    # One line, cut at a word and past the "U.S."; the whole message is the tooltip.
+    line, full = overview._attention_reason({"applied_error": long})
+    assert full == long and line.endswith("…") and len(line) <= 141
+    assert "U.S. security clearance" in line
+    assert long.startswith(line[:-1]) and long[len(line) - 1] == " "
+    assert line in block
+    assert f'title="{long}"' in block
+    assert html.index('id="acc:applied"') < html.index('id="acc:attention"') \
+        < html.index('id="acc:shortlisted"')
 
 
 def test_a_cluster_sibling_follows_its_verdict_not_the_tail(tmp_path):
@@ -360,14 +394,14 @@ def test_both_scopes_carry_the_same_header(tmp_path):
 # --- the page itself ----------------------------------------------------------
 
 
-def test_all_four_accordions_render_with_their_counts(tmp_path):
+def test_all_five_accordions_render_with_their_counts(tmp_path):
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
     # `class` stays the first attribute of every `.acc` — this count is why. The
-    # ids below are the assertion that actually means "four sections".
-    assert html.count('<details class="acc"') == 4
-    for key in ("applied", "shortlisted", "filtered", "seen"):
+    # ids below are the assertion that actually means "five sections".
+    assert html.count('<details class="acc"') == 5
+    for key in _SECTIONS:
         assert f'id="acc:{key}"' in html
-    for label in ("Jobs Applied", "Jobs Shortlisted (to be applied)",
+    for label in ("Jobs Applied", "Needs Attention", "Jobs Shortlisted (to be applied)",
                   "Jobs Filtered (yet to be scored or not picked)",
                   "Total Jobs Seen"):
         assert label in html

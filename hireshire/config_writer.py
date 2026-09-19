@@ -253,6 +253,26 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
             "last_name": FieldSpec(("settings", "last_name"), "str", "Applicant last name."),
             "email": FieldSpec(("settings", "email"), "str", "Applicant email."),
             "phone": FieldSpec(("settings", "phone"), "str", "Applicant phone."),
+            "linkedin_url": FieldSpec(
+                ("settings", "linkedin_url"), "str",
+                "LinkedIn profile URL, read off the resume. Empty if it has none.",
+            ),
+            "portfolio_url": FieldSpec(
+                ("settings", "portfolio_url"), "str",
+                "GitHub, personal site or portfolio URL, read off the resume.",
+            ),
+            "work_authorized": FieldSpec(
+                ("settings", "work_authorized"), "bool",
+                "Legally authorized to work where the user is applying.",
+            ),
+            "requires_sponsorship": FieldSpec(
+                ("settings", "requires_sponsorship"), "bool",
+                "Needs visa sponsorship now or in the future.",
+            ),
+            "willing_to_relocate": FieldSpec(
+                ("settings", "willing_to_relocate"), "bool",
+                "Open to relocating for a role.",
+            ),
             "generate_cover_letter": FieldSpec(
                 ("settings", "generate_cover_letter"), "bool",
                 "Write a cover letter when the form asks for one.",

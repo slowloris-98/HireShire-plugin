@@ -186,6 +186,11 @@ def build_prompt(job: dict, settings: ApplierSettings, dirs: SessionDirs,
             "last_name": settings.last_name,
             "email": settings.email,
             "phone": settings.phone,
+            "linkedin_url": settings.linkedin_url,
+            "portfolio_url": settings.portfolio_url,
+            "work_authorized": settings.work_authorized,
+            "requires_sponsorship": settings.requires_sponsorship,
+            "willing_to_relocate": settings.willing_to_relocate,
         },
         "resume_path": str(dirs.resume_path),
         "screenshot_path": str(dirs.out_dir / _screenshot_name(job)),
@@ -260,8 +265,9 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
         terminate_apply_subprocess()
         return ApplyOutcome(
             status="error",
-            error=(f"Timed out after {settings.apply_timeout_s:g}s. The application "
-                   "may or may not have been submitted — check before applying again."),
+            # One line: the overview's Needs Attention section prints it verbatim.
+            error=(f"Timed out after {settings.apply_timeout_s:g}s — check whether it "
+                   "was submitted before applying again."),
         )
     except asyncio.CancelledError:
         # The sweep is being torn down. An orphaned session would go on submitting
@@ -285,9 +291,8 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
         logger.error("Unreadable apply result for %s: %s", job.get("job_id"), raw[:500])
         return ApplyOutcome(
             status="error",
-            error=("The browser session ended without a readable result. The "
-                   "application may or may not have been submitted — check before "
-                   "applying again."),
+            error=("Session ended without a result — check whether it was submitted "
+                   "before applying again."),
         )
 
 
