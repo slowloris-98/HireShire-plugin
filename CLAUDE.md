@@ -549,9 +549,25 @@ Three rules to keep:
   sweeps' shortlists.
 - **The matcher bar counts the whole batch** once it is finished. Its total is the
   `Jobs in scope` tile.
-- **The run page keeps its bars after the sweep ends; the lifetime page drops them.**
-  Once the sweep is over, the bars describe one sweep on a page that covers every
-  sweep.
+- **Both pages show their bars all the time, but the lifetime page's are different
+  numbers.** The run page keeps that sweep's bars after it ends, as a record of where
+  each stage stopped. The lifetime page shows install-wide bars
+  (`Database.lifetime_progress`):
+  - Scraper and matcher are sums over every sweep that has a `run_progress` row, and
+    the matcher's total counts jobs from those sweeps only, so older runs cannot hold
+    it short.
+  - The lifetime scraper bar **prints unique jobs but fills by companies**. A company
+    count summed across sweeps means nothing to a user, and unique jobs
+    (`COUNT(DISTINCT job_id)` over every run) has no total to fill against. The
+    bar's `count` key is what lets a bar print a figure that is not its fill. The run
+    page keeps printing companies, because that is how far a live scrape has got.
+  - The applier is **not** a sum. It is every distinct shortlisted representative
+    ever, against how many have an `applied` row. A sum of per-sweep counters reads
+    ~100% whenever no sweep is running; the backlog keeps meaning something, and it
+    covers sweeps made before tracking began.
+
+  These queries group whole tables, so they ride `LIFETIME_INTERVAL_S` like the other
+  lifetime reads.
 
 The lifetime page carries its own throttle (`LIFETIME_INTERVAL_S`, 60 s) because its
 queries group a table that has no `run_id` filter to narrow them; everything else in

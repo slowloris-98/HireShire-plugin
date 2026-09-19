@@ -188,10 +188,6 @@ OVERVIEW_CSS = """
   display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
   gap: 1.25rem 2rem; margin: 2rem 0 0;
 }
-.prog-cap {
-  grid-column: 1 / -1; margin: 0; font-family: "IBM Plex Mono", monospace;
-  font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; color: var(--warn);
-}
 .bar-head { display: flex; justify-content: space-between; align-items: baseline; gap: .75rem; }
 .bar-l { font-weight: 600; font-size: .95rem; }
 .bar-n {
@@ -654,8 +650,11 @@ def _bar(bar: dict) -> str:
     """
     state = bar["state"]
     done, total = bar["done"], bar["total"]
+    # `count` lets a bar print a figure that is not its fill. The lifetime scraper
+    # does: it prints unique jobs, and fills by companies checked.
     count = (
-        f"{num(done)} / {num(total)} {e(bar['unit'])}" if total else "—"
+        e(bar["count"]) if bar.get("count")
+        else f"{num(done)} / {num(total)} {e(bar['unit'])}" if total else "—"
     )
     track = ""
     if state != "off":
@@ -681,20 +680,17 @@ def _bar(bar: dict) -> str:
     )
 
 
-def _progress_block(bars: list[dict], label: str | None) -> str:
+def _progress_block(bars: list[dict]) -> str:
     """The three bars, or nothing for a run that predates them.
 
-    `label` is set on the lifetime page only, which is about every sweep and so has
-    to say which one these bars belong to. The run page's eyebrow already does.
+    No caption at either scope: the eyebrow already names the run or says "All
+    sweeps", and the live chip already says whether one is running.
     """
     if not bars:
         return ""
-    cap = (
-        f'<p class="prog-cap">Sweep {e(label)} in progress</p>' if label else ""
-    )
     return (
-        '<section class="prog" aria-label="Sweep progress">'
-        + cap + "".join(_bar(b) for b in bars) + "</section>"
+        '<section class="prog" aria-label="Progress">'
+        + "".join(_bar(b) for b in bars) + "</section>"
     )
 
 
@@ -760,7 +756,7 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     body = f"""<div class="wrap">
   <p class="eyebrow"><span>HireShire</span><span>{e(scope)}</span>{live_chip}</p>
   <h1>Control room</h1>
-  {_progress_block(snapshot.get("progress") or [], snapshot.get("progress_label"))}
+  {_progress_block(snapshot.get("progress") or [])}
 
   <div class="stats">{''.join(tiles)}</div>
   <p class="hint">In scope means matching your location and posted inside your time window. Click a section to open it, filter it if it is long, then click any job for the full reasoning behind its score.</p>

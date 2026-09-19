@@ -4,6 +4,22 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.7.1] — 2026-09-19
+
+### Changed
+
+- **The main overview page's progress bars now cover all your sweeps, and they
+  stay put.** In 0.7.0 the bars on `overview.html` showed only the sweep that was
+  running, and disappeared when it finished. They now show totals and remain on the
+  page between sweeps:
+  - **Scraper:** how many different jobs your sweeps have found, with each posting
+    counted once. The bar fills as companies are checked.
+  - **Matcher:** jobs filtered or scored across all your sweeps.
+  - **Applier:** every job you've ever been shortlisted for, and how many have been
+    applied to, split into applied, needs attention and not yet applied.
+
+  Each sweep's own page is unchanged.
+
 ## [0.7.0] — 2026-09-19
 
 ### Added
