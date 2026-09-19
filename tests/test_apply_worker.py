@@ -417,15 +417,43 @@ def test_a_job_in_both_the_backlog_and_the_stream_is_applied_to_once(tmp_path, l
     assert stats["submitted"] == 1
 
 
+def test_the_applier_bar_counts_every_streamed_job_but_not_the_backlog(
+        tmp_path, launcher):
+    """An excluded company writes no `applied` row, so a bar counting rows would
+    stop short of the shortlist. The backlog belongs to earlier sweeps and must not
+    push this sweep's bar past its own total."""
+    db = Database(tmp_path / "test.db")
+    db.start_progress("now", apply_enabled=True)
+    _match(db, "r0", "old")                       # a backlog job from an earlier sweep
+
+    async def go():
+        q: asyncio.Queue = asyncio.Queue()
+        for j in (_job("j1"), _job("j2", company="Google")):
+            await q.put(j)
+        await q.put(None)
+        return await worker.run_apply_worker(
+            q, _settings(tmp_path), "RESUME TEXT", db=db, include_backlog=True,
+            run_id="now",
+        )
+
+    asyncio.run(go())
+    assert len(launcher[0]) == 2                  # the backlog job and j1 launched
+    assert db.run_progress("now")["apply_handled"] == 2
+
+
 # --- the queue it is fed from -----------------------------------------------
 
 class _RecordingDB:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
+        self.queued = 0
 
     def record_pipeline_result(self, run_id, record):
         if self.fail:
             raise RuntimeError("disk full")
+
+    def bump_progress(self, run_id, **deltas):
+        self.queued += deltas.get("apply_queued", 0)
 
 
 def _track(tmp_path, monkeypatch, db, records):
@@ -448,8 +476,11 @@ def _track(tmp_path, monkeypatch, db, records):
 
 
 def test_every_tracked_result_is_handed_to_the_applier(tmp_path, monkeypatch):
-    got = _track(tmp_path, monkeypatch, _RecordingDB(), [_job("a"), _job("b")])
+    db = _RecordingDB()
+    got = _track(tmp_path, monkeypatch, db, [_job("a"), _job("b")])
     assert [g and g["job_id"] for g in got] == ["a", "b", None]
+    # The overview's applier bar counts what reached the worker.
+    assert db.queued == 2
 
 
 def test_the_applier_gets_its_sentinel_even_when_tracking_fails(tmp_path, monkeypatch):

@@ -167,6 +167,9 @@ async def _track_results(
             logger.info("Tracked result: %s — %s", record["company"], record["title"])
             if apply_q is not None:
                 await apply_q.put(record)
+                # The applier bar's denominator: representatives only, because
+                # siblings never reach this queue and would hold the bar short.
+                await asyncio.to_thread(db.bump_progress, run_id, apply_queued=1)
     finally:
         if apply_q is not None:
             await apply_q.put(None)
@@ -458,6 +461,7 @@ async def run_pipeline(
             ticker = asyncio.create_task(_tick_reports(schedule_report_refresh))
             try:
                 if skip_matcher:
+                    await asyncio.to_thread(get_db().start_progress, run_id, False)
                     await scraper.main(quiet=True, run_id=run_id, on_company_start=on_company_start)
                     await q3.put(None)
                     await _track_results(q3, results_dir, run_id, stamp, quiet)
@@ -499,9 +503,16 @@ async def run_pipeline(
                                 "passes the free gates will be applied to."
                             )
                         stages.append(run_apply_worker(
-                            q4, applier_settings, resume_text, on_progress=on_apply_progress
+                            q4, applier_settings, resume_text, run_id=run_id,
+                            on_progress=on_apply_progress,
                         ))
                     stages.append(_track_results(q3, results_dir, run_id, stamp, quiet, apply_q=q4))
+                    # Before anything starts writing counters: every progress write
+                    # is an UPDATE against this row. Nothing has been awaited since
+                    # the stages were built, so none of them is running yet.
+                    await asyncio.to_thread(
+                        get_db().start_progress, run_id, apply_inputs is not None
+                    )
 
                     # `gather` does not cancel its siblings when one raises. That used to
                     # leave the scrape running orphaned; with the applier on the queue it

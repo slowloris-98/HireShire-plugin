@@ -304,6 +304,7 @@ async def run_apply_worker(
     db: Database | None = None,
     include_backlog: bool = True,
     on_progress: Callable[[dict[str, int]], None] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, int]:
     """Apply to each job put on `in_q` until the `None` sentinel. Returns the tallies.
 
@@ -399,6 +400,12 @@ async def run_apply_worker(
             raise
         except Exception:  # noqa: BLE001 - one job is never worth the sweep
             logger.exception("Applier failed on job %s", job.get("job_id"))
+        # The overview's applier bar counts every job this sweep queued, whatever
+        # happened to it: an excluded company, a deferral or a location skip writes
+        # no `applied` row, and counting rows instead would hold the bar short. The
+        # backlog belongs to earlier sweeps' shortlists, so it is left out.
+        if run_id and not from_backlog:
+            await asyncio.to_thread(db.bump_progress, run_id, apply_handled=1)
 
     if include_backlog and not blocked:
         since = datetime.now(timezone.utc) - timedelta(hours=settings.backlog_hours)

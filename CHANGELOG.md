@@ -4,6 +4,21 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.7.0] — 2026-09-19
+
+### Added
+
+- **The overview page shows how far a sweep has got.** Three progress bars sit above
+  the numbers:
+  - **Scraper:** companies checked out of all the companies in the sweep.
+  - **Matcher:** jobs filtered or scored out of the jobs in scope.
+  - **Applier:** shortlisted jobs dealt with out of the jobs shortlisted, split into
+    applied, needs attention and skipped.
+
+  A sweep's own page keeps its bars after the sweep ends, so you can see where each
+  stage finished. The main `overview.html` shows the bars only while a sweep is
+  running.
+
 ## [0.6.0] — 2026-09-19
 
 ### Changed

@@ -528,6 +528,31 @@ Five things about it that are easy to get wrong:
   through that same parameter: when the matcher has written no rows yet, `refresh`
   passes `[]` and no loader runs.
 
+**The three progress bars above the tiles (Scraper, Matcher, Applier) read counters,
+not rows.** They come from `run_progress`, a table that holds one row per
+orchestrated sweep. No table the rest of the page reads can give these numbers:
+
+- The scraper's company total exists only in memory.
+- A not-found slug writes no `run_companies` row.
+- Title-gate rejections and seen-store skips write no `matches` row.
+- An excluded company, a deferral or a location skip writes no `applied` row.
+
+Counting rows instead leaves every bar short of its total. The row itself is created
+by `start_progress` in `run_pipeline`, and every write after that is an `UPDATE`.
+That is why a phase run standalone records nothing, and why a failed write only logs.
+
+Three rules to keep:
+
+- **The applier bar counts jobs the worker has finished with, not applications
+  sent.** Its total is `apply_queued`, which covers representatives only; siblings
+  never reach the queue. The backlog is left out, because it belongs to earlier
+  sweeps' shortlists.
+- **The matcher bar counts the whole batch** once it is finished. Its total is the
+  `Jobs in scope` tile.
+- **The run page keeps its bars after the sweep ends; the lifetime page drops them.**
+  Once the sweep is over, the bars describe one sweep on a page that covers every
+  sweep.
+
 The lifetime page carries its own throttle (`LIFETIME_INTERVAL_S`, 60 s) because its
 queries group a table that has no `run_id` filter to narrow them; everything else in
 `refresh` is indexed on `run_id` and stays cheap however long the user has been at it —

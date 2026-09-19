@@ -225,6 +225,7 @@ async def main(
                 + len(workday_companies)
                 + len(direct_companies)
             )
+            await store.set_companies_total(total_companies)
             prog_ctx = (
                 Progress(
                     SpinnerColumn(),
@@ -299,6 +300,7 @@ async def main(
                             errors_detail.append((company.name, msg))
                     finally:
                         progress.advance(task)
+                        await store.company_done()
                         if on_company_start:
                             async with lock:
                                 counters["done"] += 1

@@ -64,6 +64,15 @@ class RunStore:
             status, 0, fetch_time_s, error,
         )
 
+    async def set_companies_total(self, total: int) -> None:
+        """The scraper bar's denominator, known only once the slug lists are loaded."""
+        await asyncio.to_thread(self._db.set_progress, self.run_id, companies_total=total)
+
+    async def company_done(self) -> None:
+        """One company finished, whatever the outcome — including a not-found slug,
+        which writes no `run_companies` row and would otherwise hold the bar short."""
+        await asyncio.to_thread(self._db.bump_progress, self.run_id, companies_done=1)
+
     async def finalise_run(self, started_at: datetime, stats: Optional[dict] = None) -> None:
         merged = {
             "total_jobs": self._total_jobs,
