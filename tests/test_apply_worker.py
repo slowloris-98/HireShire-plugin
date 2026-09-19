@@ -286,6 +286,17 @@ def test_a_success_resets_the_breaker(tmp_path, launcher):
     assert len(calls) == 6
 
 
+def test_a_windows_launch_failure_is_named_and_deferred(tmp_path, launcher, caplog):
+    """0xC0000142 used to log as a bare 3221225794, which reads like an API error."""
+    _, script, _ = launcher
+    script.append(_Proc(rc=3221225794))
+    with caplog.at_level("WARNING", logger=worker.logger.name):
+        stats, db = _run(tmp_path, [_job("j1")])
+
+    assert _statuses(db) == {} and stats["deferred"] == 1
+    assert "0xC0000142 STATUS_DLL_INIT_FAILED" in caplog.text
+
+
 def test_a_timeout_is_recorded_as_an_unconfirmed_error_and_kills_the_session(
         tmp_path, launcher):
     _, script, killed = launcher

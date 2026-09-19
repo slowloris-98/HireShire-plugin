@@ -13,6 +13,31 @@ from typing import Any
 
 _API_AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
+# Exit codes meaning Windows never got `claude.exe` running, so the CLI said nothing and
+# nothing was billed. Observed: every scoring call of a monitor cycle exited 0xC0000142
+# at once — the first with no other call in flight and no apply session running — two
+# hours after the same process had scored 31 jobs. That is the host refusing to start a
+# console child, not the backend failing, and the log needs to say so.
+LAUNCH_FAILURE_CODES = {
+    0xC0000142: "STATUS_DLL_INIT_FAILED: Windows could not start claude.exe",
+}
+
+
+def is_launch_failure(returncode: int | None) -> bool:
+    """True when the exit code means the CLI process never started."""
+    return returncode is not None and (returncode & 0xFFFFFFFF) in LAUNCH_FAILURE_CODES
+
+
+def describe_exit(returncode: int | None) -> str:
+    """The exit code, with its NTSTATUS name when it is a known launch failure.
+
+    Matched on the unsigned value, so the signed spelling (-1073741502) is caught too.
+    """
+    if not is_launch_failure(returncode):
+        return str(returncode)
+    code = returncode & 0xFFFFFFFF
+    return f"{returncode} (0x{code:08X} {LAUNCH_FAILURE_CODES[code]})"
+
 
 def subscription_env() -> dict[str, str]:
     """The process environment without the API auth variables.

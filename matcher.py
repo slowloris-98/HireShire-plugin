@@ -136,6 +136,10 @@ class _ScoringBreaker:
         self._consecutive = 0
         self.tripped = False
         self.last_error: str | None = None
+        # Set when `last_error` was the host refusing to start `claude` at all
+        # (scorer.CLILaunchError). The generic summary blames the backend, which then
+        # sends the user looking at their login instead of their machine.
+        self.launch_failed = False
 
     # `backend_unavailable` is excluded: it is this class's own output, not evidence.
     _FAILURE_REASONS = {"api_error", "unexpected_error"}
@@ -153,6 +157,14 @@ class _ScoringBreaker:
             self._consecutive = 0
 
     def summary(self) -> str:
+        if self.launch_failed:
+            return (
+                f"Scoring aborted after {self._limit} consecutive failures to start the "
+                f"claude CLI. Last error: {self.last_error or 'unknown'}. This is the "
+                "machine, not the scoring backend: usually the terminal or session "
+                "running the sweep was closed, or the PC was locked or asleep. "
+                "No jobs were retired — they will be rescored on the next run."
+            )
         return (
             f"Scoring aborted after {self._limit} consecutive backend failures. "
             f"Last error: {self.last_error or 'unknown'}. "
@@ -620,8 +632,11 @@ async def main(
             except Exception as exc:
                 logger.exception("Unexpected error scoring job %s/%s", job.board_token, job.job_id)
                 breaker.last_error = str(exc)
+                breaker.launch_failed = False
                 result = _failed("unexpected_error")
             else:
+                if result.skip_reason == "api_error":
+                    breaker.launch_failed = scorer.last_error_was_launch
                 breaker.last_error = scorer.last_error or breaker.last_error
             breaker.record(result)
         _apply_rerank_scores(result, score, cluster_size, _yoe_required(job))
