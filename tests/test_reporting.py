@@ -298,6 +298,12 @@ class _ReportDB:
                  "title": "Barista", "location": "Mountain View, CA",
                  "absolute_url": "https://example.com/j99"}]
 
+    def run_progress(self, run_id):
+        return {"run_id": run_id, "companies_total": 9641, "companies_done": 9641,
+                "jobs_processed": 8504, "apply_enabled": 0, "apply_queued": 0,
+                "apply_handled": 0, "jobs_in_scope": 8504, "submitted": 0,
+                "attention": 0}
+
 
 def _finalise_with_reports(tmp_path, monkeypatch, stamp="2026-08-25_153432",
                            complete=True):
@@ -352,6 +358,10 @@ def test_the_overview_survives_the_finalise_path(tmp_path, monkeypatch):
 
     assert "Total Jobs Seen" in html
     assert "Jobs Filtered (yet to be scored or not picked)" in html
+    # A finished run page keeps its bars; the lifetime page drops them.
+    assert 'id="bar:scraper"' in html
+    lifetime = (tmp_path / overview.OVERVIEW_NAME).read_text(encoding="utf-8")
+    assert 'class="prog"' not in lifetime
     # The title-gate job reached the page, which it can only do via the jobs table.
     assert "Barista" in html
     # And the judge's reasoning is on it, which is the only prose the page carries.

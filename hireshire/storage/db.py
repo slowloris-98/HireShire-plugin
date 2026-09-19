@@ -138,6 +138,22 @@ CREATE TABLE IF NOT EXISTS pipeline_results (
 );
 CREATE INDEX IF NOT EXISTS idx_pipeline_run ON pipeline_results(run_id);
 
+-- Live progress for the overview page's three bars, one row per orchestrated sweep.
+-- Counters rather than a derivation from the tables above, because none of them can
+-- give these numbers: the scraper's total exists only in memory, a not-found slug
+-- writes no run_companies row, title-gate rejections write no matches row, and an
+-- excluded or deferred application writes no applied row.
+CREATE TABLE IF NOT EXISTS run_progress (
+    run_id          TEXT PRIMARY KEY,
+    companies_total INTEGER,            -- NULL until the scraper has loaded its lists
+    companies_done  INTEGER DEFAULT 0,
+    jobs_processed  INTEGER DEFAULT 0,  -- jobs whose batch the matcher has finished
+    apply_enabled   INTEGER DEFAULT 0,
+    apply_queued    INTEGER DEFAULT 0,  -- representatives handed to the apply worker
+    apply_handled   INTEGER DEFAULT 0,  -- of those, how many the worker is done with
+    updated_at      TEXT
+);
+
 CREATE TABLE IF NOT EXISTS applied (
     job_id       TEXT PRIMARY KEY,
     board_token  TEXT,
@@ -641,6 +657,89 @@ class Database:
             out[r["phase"]] = stats
         return out
 
+    # -- progress ------------------------------------------------------------
+    #
+    # Written from inside the sweep, once per company, batch and application, so a
+    # failure here must never reach the caller: the bars are a diagnostic, and a
+    # locked database is not worth a sweep. Only a misspelt column raises, because
+    # that is a bug in this codebase rather than a condition at runtime.
+    #
+    # Every write is an UPDATE against a row `start_progress` created, so the phases
+    # run standalone (`python scraper.py`) simply record nothing — only an
+    # orchestrated sweep has an overview page to feed.
+
+    _PROGRESS_COLUMNS = frozenset({
+        "companies_total", "companies_done", "jobs_processed",
+        "apply_enabled", "apply_queued", "apply_handled",
+    })
+
+    def _progress_write(self, run_id: str, cols: dict[str, int], add: bool) -> None:
+        unknown = set(cols) - self._PROGRESS_COLUMNS
+        if unknown:
+            raise ValueError(f"not a run_progress column: {sorted(unknown)}")
+        if not cols:
+            return
+        sets = ", ".join(f"{c} = {c} + ?" if add else f"{c} = ?" for c in cols)
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    f"UPDATE run_progress SET {sets}, updated_at = ? WHERE run_id = ?",
+                    (*(int(v) for v in cols.values()), now_iso(), run_id),
+                )
+        except sqlite3.Error as exc:
+            logger.warning("Could not record progress for %s: %s", run_id, exc)
+
+    def start_progress(self, run_id: str, apply_enabled: bool) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO run_progress(run_id, apply_enabled, updated_at) "
+                    "VALUES (?, ?, ?)",
+                    (run_id, int(bool(apply_enabled)), now_iso()),
+                )
+        except sqlite3.Error as exc:
+            logger.warning("Could not start progress for %s: %s", run_id, exc)
+
+    def set_progress(self, run_id: str, **cols: int) -> None:
+        """Absolute values — the scraper's company total."""
+        self._progress_write(run_id, cols, add=False)
+
+    def bump_progress(self, run_id: str, **deltas: int) -> None:
+        """Increments — one per company swept, batch matched, job applied."""
+        self._progress_write(run_id, deltas, add=True)
+
+    def run_progress(self, run_id: str) -> dict | None:
+        """The counters plus the three figures derived from other tables, or None
+        for a run made before progress was recorded.
+
+        `jobs_in_scope` is the matcher bar's denominator and the same number as the
+        page's `Jobs in scope` tile. `submitted` and `attention` split the applier
+        bar; they count applications to this run's shortlisted *representatives*,
+        because siblings are never sent to the worker and would hold the bar short.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM run_progress WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            jobs = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM jobs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            applied = self._conn.execute(
+                "SELECT SUM(CASE WHEN a.status = 'submitted' THEN 1 ELSE 0 END) AS ok, "
+                "       SUM(CASE WHEN a.status != 'submitted' THEN 1 ELSE 0 END) AS bad "
+                "FROM applied a WHERE EXISTS (SELECT 1 FROM matches m "
+                "  WHERE m.job_id = a.job_id AND m.run_id = ? AND m.shortlisted = 1 "
+                f"  AND NOT ({self._sibling_sql('m')}))",
+                (run_id,),
+            ).fetchone()
+        out = dict(row)
+        out["jobs_in_scope"] = jobs["n"] or 0
+        out["submitted"] = applied["ok"] or 0
+        out["attention"] = applied["bad"] or 0
+        return out
+
     def recent_runs(self, limit: int = 30) -> list[dict]:
         """Newest-first run index: run_id and its time span."""
         with self._lock:
@@ -1035,7 +1134,8 @@ class Database:
         to_delete = sorted(set(to_delete))
         if not to_delete:
             return []
-        tables = ("runs", "run_companies", "jobs", "matches", "pipeline_results")
+        tables = ("runs", "run_companies", "jobs", "matches", "pipeline_results",
+                  "run_progress")
         with self._lock, self._conn:
             for rid in to_delete:
                 for table in tables:

@@ -52,6 +52,14 @@ class _FakeStore:
     def __init__(self, *args, **kwargs):
         self.ok: dict[str, float] = {}
         self.errors: dict[str, tuple[str, float]] = {}
+        self.total: int | None = None
+        self.done = 0
+
+    async def set_companies_total(self, total):
+        self.total = total
+
+    async def company_done(self):
+        self.done += 1
 
     async def save_company(self, token, jobs, platform=None, fetch_time_s=None):
         self.ok[token] = fetch_time_s
@@ -108,6 +116,11 @@ def test_queue_wait_does_not_count_against_timeout(monkeypatch, tmp_path):
 
     # Worker pool actually capped in-flight companies at WORKERS.
     assert _FakeScraper.peak <= WORKERS
+
+    # The overview's scraper bar: the total is recorded up front, and every company
+    # counts as done exactly once.
+    assert store.total == N_COMPANIES
+    assert store.done == N_COMPANIES
 
 
 def test_request_timeout_floored_at_ten_seconds():

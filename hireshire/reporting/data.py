@@ -100,6 +100,7 @@ def run_snapshot(db: Database, run_id: str) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "in_progress": PHASE_PIPELINE not in phases,
+        "scrape_done": PHASE_SCRAPE in phases,
         "matching_done": matching_done,
         "started_at": (phases.get(PHASE_PIPELINE) or phases.get(PHASE_SCRAPE) or {}).get("started_at"),
         "finished_at": (phases.get(PHASE_PIPELINE) or {}).get("finished_at"),
@@ -214,6 +215,107 @@ def reason_label(reason: str | None) -> str:
     return REASON_LABELS.get(key, key.replace("_", " ").capitalize() or "—")
 
 
+def _pct(done: int, total: int) -> float:
+    """0–100, clamped, and never a division by zero."""
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(100.0, 100.0 * done / total))
+
+
+def progress_bars(progress: dict | None, run: dict[str, Any]) -> list[dict]:
+    """The overview's three bars, from `Database.run_progress` and a `run_snapshot`.
+
+    Returns `[]` for a run with no progress row: one made before the bars existed,
+    or a phase run standalone. The page then simply has no progress block.
+
+    Each bar's `state` is `waiting` (nothing to count yet), `running`, `done`, or
+    `off` (the applier only). Once the pipeline's own run row exists every bar is
+    `done` whatever its fill — a sweep that died part-way keeps the fill where it
+    stopped, and that shortfall is the fact worth showing.
+
+    The applier bar is stacked, because "handled" is not "applied": an excluded
+    company or a deferral finishes a job without an application, and a bar that only
+    counted submissions could never reach the end on a sweep that had one.
+    """
+    if not progress:
+        return []
+    finished = not run.get("in_progress", True)
+
+    def state(total: int, done_when: bool) -> str:
+        if finished or done_when:
+            return "done"
+        return "running" if total > 0 else "waiting"
+
+    # -- scraper
+    c_total = int(progress.get("companies_total") or 0)
+    c_done = min(int(progress.get("companies_done") or 0), c_total) if c_total else 0
+    s_note = f"{int(run.get('jobs') or 0):,} jobs in scope"
+    if run.get("scrape_errors"):
+        s_note += f" · {int(run['scrape_errors']):,} boards failed"
+    scraper = {
+        "key": "scraper", "label": "Scraper", "unit": "companies",
+        "done": c_done, "total": c_total,
+        "state": state(c_total, bool(run.get("scrape_done"))),
+        "note": s_note if c_total else "Loading the company lists",
+    }
+
+    # -- matcher. Not done until the scrape is: the denominator is still growing.
+    j_total = int(progress.get("jobs_in_scope") or 0)
+    j_done = min(int(progress.get("jobs_processed") or 0), j_total)
+    if j_total:
+        m_note = (f"{int(run.get('scored') or 0):,} scored by the LLM · "
+                  f"{int(run.get('shortlisted') or 0):,} shortlisted")
+    elif run.get("scrape_done") or finished:
+        m_note = "No jobs in scope this sweep"
+    else:
+        m_note = "Waiting for the scraper"
+    matcher = {
+        "key": "matcher", "label": "Matcher", "unit": "jobs",
+        "done": j_done, "total": j_total,
+        "state": state(j_total, bool(run.get("matching_done"))),
+        "note": m_note,
+    }
+
+    # -- applier
+    if not progress.get("apply_enabled"):
+        applier = {
+            "key": "applier", "label": "Applier", "unit": "jobs",
+            "done": 0, "total": 0, "state": "off", "note": "Auto-apply is off",
+        }
+    else:
+        a_total = int(progress.get("apply_queued") or 0)
+        handled = min(int(progress.get("apply_handled") or 0), a_total)
+        submitted = min(int(progress.get("submitted") or 0), handled)
+        attention = min(int(progress.get("attention") or 0), handled - submitted)
+        skipped = handled - submitted - attention
+        if a_total:
+            parts = [f"{submitted:,} applied"]
+            if attention:
+                parts.append(f"{attention:,} need attention")
+            if skipped:
+                parts.append(f"{skipped:,} skipped")
+            a_note = " · ".join(parts)
+        else:
+            a_note = ("Nothing shortlisted this sweep" if finished
+                      else "Waiting for shortlisted jobs")
+        applier = {
+            "key": "applier", "label": "Applier", "unit": "shortlisted",
+            "done": handled, "total": a_total,
+            "state": state(a_total, False),
+            "note": a_note,
+            "segments": [
+                ("ok", _pct(submitted, a_total)),
+                ("warn", _pct(attention, a_total)),
+                ("skip", _pct(skipped, a_total)),
+            ],
+        }
+
+    bars = [scraper, matcher, applier]
+    for bar in bars:
+        bar["pct"] = _pct(bar["done"], bar["total"])
+    return bars
+
+
 # Caps on what the overview page renders. A closed `<details>` still costs its full
 # DOM, so an uncapped lifetime page on a mature install would be tens of megabytes
 # reloading itself every fifteen seconds. The summaries print the true count either
@@ -228,6 +330,8 @@ def overview_snapshot(
     live: bool | None = None,
     run: dict[str, Any] | None = None,
     records: list[dict] | None = None,
+    progress: dict | None = None,
+    progress_label: str | None = None,
 ) -> dict[str, Any]:
     """Everything the overview page renders, at one scope or the other.
 
@@ -245,6 +349,13 @@ def overview_snapshot(
     rows from `load_all_matches`. `reporting.refresh` has both a few lines earlier and
     always passes them: the reports rebuild on a clock for the whole length of a
     sweep, so re-deriving either here would double that work ~300 times a run.
+
+    `progress` is `Database.run_progress` for the sweep driving this refresh, and
+    `run` is that sweep's `run_snapshot` at *both* scopes. The run page always
+    carries the bars, finished or not, so it keeps a record of where each stage
+    ended. The lifetime page carries them only while that sweep is live, because
+    once it ends the bars describe one sweep on a page about all of them;
+    `progress_label` names the sweep there, since nothing else on that page does.
     """
     counts = db.overview_counts(run_id)
     # The `applied` table feeds two sections. A submission goes under Jobs Applied;
@@ -292,10 +403,13 @@ def overview_snapshot(
         "started_at": None,
         "finished_at": None,
         "usage": None,
+        "progress": [],
+        "progress_label": None,
     }
 
     if run_id:
         run = run if run is not None else run_snapshot(db, run_id)
+        snapshot["progress"] = progress_bars(progress, run)
         snapshot["started_at"] = run.get("started_at")
         snapshot["finished_at"] = run.get("finished_at")
         snapshot["usage"] = run.get("usage")
@@ -306,4 +420,7 @@ def overview_snapshot(
         # Its caller knows — `reporting.refresh` is always driven by a live run — so
         # it passes the answer in, and the default is the safe one.
         snapshot["live"] = bool(live)
+        if snapshot["live"] and run is not None:
+            snapshot["progress"] = progress_bars(progress, run)
+            snapshot["progress_label"] = progress_label
     return snapshot

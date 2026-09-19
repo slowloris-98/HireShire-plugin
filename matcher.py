@@ -771,6 +771,14 @@ async def main(
                             *[score_cluster(j, s, siblings) for j, s in winners]
                         ):
                             results.extend(group)
+
+                    # The overview's matcher bar. The whole batch, not what reached
+                    # the reranker: seen-store skips and title-gate rejections write
+                    # no `matches` row, and the bar's denominator is every job the
+                    # scraper put in scope. Last in the iteration, so it means done.
+                    await asyncio.to_thread(
+                        db.bump_progress, run_id, jobs_processed=len(batch_jobs)
+                    )
             except Exception:
                 logger.exception("Matcher queue loop failed")
             finally:

@@ -179,6 +179,35 @@ OVERVIEW_CSS = """
    the accordions read as headings rather than as things to click. */
 .hint { color: var(--ink-faint); font-size: .92rem; margin: 0 0 2.25rem; }
 
+/* The three stage bars, above the tiles. Pure markup — the meta refresh is what
+   moves them — so a width is the whole animation. The running stage keeps the
+   accent and a finished one goes neutral, so the eye lands on what is moving. The
+   applier's segments keep their colours when done: there they mean applied versus
+   needs attention, not progress. */
+.prog {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 1.25rem 2rem; margin: 2rem 0 0;
+}
+.prog-cap {
+  grid-column: 1 / -1; margin: 0; font-family: "IBM Plex Mono", monospace;
+  font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; color: var(--warn);
+}
+.bar-head { display: flex; justify-content: space-between; align-items: baseline; gap: .75rem; }
+.bar-l { font-weight: 600; font-size: .95rem; }
+.bar-n {
+  font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums;
+  font-size: .75rem; color: var(--ink-faint); white-space: nowrap;
+}
+.bar-track { display: flex; height: 6px; background: var(--rule); border-radius: 3px; overflow: hidden; margin: .45rem 0 .4rem; }
+.bar-fill { height: 100%; background: var(--accent); }
+.bar.is-done .bar-fill.solo { background: var(--ink-faint); }
+.bar-fill.warn { background: var(--warn); }
+.bar-fill.skip { background: var(--ink-faint); opacity: .55; }
+.bar-note {
+  display: block; font-family: "IBM Plex Mono", monospace; font-size: .68rem;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--ink-faint);
+}
+
 /* Locations run to "Hyderabad, Telangana, India ; Bengaluru, Karnataka, India ; …"
    and `th, td` are nowrap, so an uncapped column pushed the cross-encoder score —
    the column the table is *sorted by* — off the right edge of the box. */
@@ -615,6 +644,60 @@ def _stat(value: str, label: str, css: str = "", hint: str = "") -> str:
     )
 
 
+def _bar(bar: dict) -> str:
+    """One stage: label and count, a track, and a one-line note.
+
+    `role="progressbar"` with the numbers in `aria-valuetext`, so the bar reads
+    without its colour. A waiting bar prints an em dash rather than `0 / 0`, which
+    would claim the stage had counted to nothing; the applier switched off prints no
+    track at all, because an empty one reads as zero progress rather than no stage.
+    """
+    state = bar["state"]
+    done, total = bar["done"], bar["total"]
+    count = (
+        f"{num(done)} / {num(total)} {e(bar['unit'])}" if total else "—"
+    )
+    track = ""
+    if state != "off":
+        segments = bar.get("segments")
+        if segments:
+            fills = "".join(
+                f'<span class="bar-fill {kind}" style="width:{pct:.2f}%"></span>'
+                for kind, pct in segments if pct > 0
+            )
+        else:
+            fills = f'<span class="bar-fill solo" style="width:{bar["pct"]:.2f}%"></span>'
+        text = f"{done:,} of {total:,} {bar['unit']}" if total else bar["note"]
+        track = (
+            f'<div class="bar-track" role="progressbar" aria-label="{e(bar["label"])}" '
+            f'aria-valuemin="0" aria-valuemax="{total}" aria-valuenow="{done}" '
+            f'aria-valuetext="{e(text)}">{fills}</div>'
+        )
+    return (
+        f'<div class="bar is-{e(state)}" id="bar:{e(bar["key"])}">'
+        f'<div class="bar-head"><span class="bar-l">{e(bar["label"])}</span>'
+        f'<span class="bar-n">{count}</span></div>'
+        f'{track}<span class="bar-note">{e(bar["note"])}</span></div>'
+    )
+
+
+def _progress_block(bars: list[dict], label: str | None) -> str:
+    """The three bars, or nothing for a run that predates them.
+
+    `label` is set on the lifetime page only, which is about every sweep and so has
+    to say which one these bars belong to. The run page's eyebrow already does.
+    """
+    if not bars:
+        return ""
+    cap = (
+        f'<p class="prog-cap">Sweep {e(label)} in progress</p>' if label else ""
+    )
+    return (
+        '<section class="prog" aria-label="Sweep progress">'
+        + cap + "".join(_bar(b) for b in bars) + "</section>"
+    )
+
+
 def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     """Render the page. Pure — takes data, returns HTML, touches no disk."""
     counts = snapshot["counts"]
@@ -677,6 +760,7 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     body = f"""<div class="wrap">
   <p class="eyebrow"><span>HireShire</span><span>{e(scope)}</span>{live_chip}</p>
   <h1>Control room</h1>
+  {_progress_block(snapshot.get("progress") or [], snapshot.get("progress_label"))}
 
   <div class="stats">{''.join(tiles)}</div>
   <p class="hint">In scope means matching your location and posted inside your time window. Click a section to open it, filter it if it is long, then click any job for the full reasoning behind its score.</p>

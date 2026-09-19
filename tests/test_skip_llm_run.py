@@ -188,6 +188,19 @@ def test_passthrough_rows_are_shortlisted_despite_a_high_threshold(harness):
     assert rows[0]["shortlisted"] is True
 
 
+def test_the_matcher_bar_counts_the_whole_batch(harness):
+    """The overview's matcher bar divides by every job in scope, so its numerator
+    has to count jobs that never get a `matches` row: here, one the seen-store
+    skips because an earlier sweep judged it."""
+    db = harness
+    db.start_progress(RUN_ID, apply_enabled=False)
+    db.mark_seen(["old"])
+    run_queue_mode([make_job("j1", "Account Manager"), make_job("old", "Account Manager")])
+
+    assert len(db.load_all_matches(RUN_ID)) == 1
+    assert db.run_progress(RUN_ID)["jobs_processed"] == 2
+
+
 def test_the_call_cap_still_bounds_a_no_llm_run(harness):
     """top_k is 3 in the fixture, and clusters — not postings — are what it counts.
 
