@@ -18,7 +18,7 @@ class ApplyRecord(BaseModel):
     title: str
     absolute_url: str
     applied_at: datetime
-    status: str  # "submitted" | "error" | "skipped"
+    status: str  # "submitted" | "error" | "excluded" | "skipped"
     screenshot: Optional[str] = None
     error: Optional[str] = None
 

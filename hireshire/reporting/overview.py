@@ -723,7 +723,8 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
                 usd((snapshot.get("usage") or {}).get("cost_usd")), "Est. cost"
             ))
 
-    heading = f"{stamp} Control Room" if per_run and stamp else "Lifetime Control Room"
+    heading = (f"Control Room Run: {stamp}" if per_run and stamp
+               else "Lifetime Control Room")
     live_chip = '<span class="chip live">running</span>' if snapshot["live"] else ""
 
     # The third accordion. Its rows are built by script rather than written out as

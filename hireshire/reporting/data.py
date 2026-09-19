@@ -416,8 +416,10 @@ def overview_snapshot(
     """
     counts = db.overview_counts(run_id)
     # The `applied` table feeds two sections. A submission goes under Jobs Applied;
-    # every other status — `error`, or one nobody has named yet — is an application
-    # that needs the user, so it goes under Needs Attention rather than vanishing.
+    # every other status — `error`, `excluded`, or one nobody has named yet — is an
+    # application that needs the user, so it goes under Needs Attention rather than
+    # vanishing. `excluded` is the one no session produces: the applier wrote it
+    # itself because the employer's portal needs an account login.
     # Both halves stay in `applied_ids`, so neither reappears under Shortlisted.
     attempts = db.load_applied_matches(run_id)
     applied = [r for r in attempts if r.get("applied_status") == "submitted"]

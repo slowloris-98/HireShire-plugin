@@ -52,7 +52,7 @@ def main() -> None:
     rec.add_argument("--title", default="")
     rec.add_argument("--url", default="")
     rec.add_argument("--status", required=True,
-                     help='"submitted" | "error"')
+                     help='"submitted" | "error" | "excluded"')
     rec.add_argument("--screenshot", default=None)
     rec.add_argument("--error", default=None)
 

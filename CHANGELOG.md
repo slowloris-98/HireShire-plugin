@@ -4,6 +4,28 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [Unreleased]
+
+### Changed
+
+- **Employers the applier can't apply to now appear under Needs Attention.** A few
+  companies (Google, Apple, Meta, Microsoft, Intuit by default — the
+  `exclude_companies` list) make you sign in before their application form appears, so
+  the applier can never complete them. Those jobs used to sit under **Jobs
+  Shortlisted** looking like something it would get to, and the only mention of them
+  was a line in a log file — which nobody sees on an unattended sweep. They now appear
+  under **Needs Attention** on the overview page, with the reason *"Requires human
+  verification — this employer's portal needs an account login, so apply to it
+  yourself."*
+
+  They also stop being retried: previously the same job was picked up and dropped
+  again on every sweep for three days. The trade-off is that if you later remove a
+  company from `exclude_companies`, jobs already recorded that way are not applied to
+  automatically — apply to them from the Needs Attention list.
+
+  `/hireshire:apply` records them the same way, and still prints its **Apply
+  manually** list with the URLs.
+
 ## [0.7.1] — 2026-09-19
 
 ### Changed

@@ -149,9 +149,10 @@ a `dry_run` setting used to fill forms without submitting, but a rehearsal left 
 indefinitely is indistinguishable from a broken applier, which is what it became.
 
 Two things still limit the blast radius. `exclude_companies` skips employers whose
-portals need an account login — those are listed for you to apply to by hand. And the
-applier will not invent experience you do not have: if a required question cannot be
-answered honestly from your resume, it records an error and moves on.
+portals need an account login — those jobs go to **Needs Attention** on the overview
+page, for you to apply to by hand. And the applier will not invent experience you do
+not have: if a required question cannot be answered honestly from your resume, it
+records an error and moves on — which lands in the same place.
 
 ## Development
 
