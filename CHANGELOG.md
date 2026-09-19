@@ -6,6 +6,12 @@ All notable changes to this plugin are documented here. Versions follow
 
 ## [Unreleased]
 
+### Changed
+
+- **Recurring sweeps no longer stop after 24 hours.** `/hireshire:start-orchestration`
+  now keeps sweeping on your schedule until you run `--stop` or kill its task. If
+  auto-apply is on, it keeps submitting applications until then.
+
 ## [0.5.1] — 2026-09-18
 
 ### Fixed

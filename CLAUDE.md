@@ -116,10 +116,13 @@ Consequences already worked out, which should not be re-derived:
   The lesson is not "find a better session signal". It is that a sweep must not act on
   host-specific identity it cannot verify, because the absence of that identity is
   indistinguishable from a legitimate reap and the failure direction is destroying work.
-  What replaces both layers is `_MAX_RUNTIME_S` (24 h): the loop cannot run forever, so
-  an unattended sweep with `enable_applier: true` is bounded without anyone watching a
-  pid. `--stop` is the only deliberate stop, and surviving a closed terminal *on purpose*
-  is the OS scheduler entry `/hireshire:setup` offers.
+  Both layers were first replaced by a 24-hour runtime bound (`_MAX_RUNTIME_S`). That
+  bound is gone too, because it stopped sweeps users wanted running. A recurring sweep
+  now runs until `--stop` or until its process is killed, so **unattended auto-apply has
+  no time limit, by design**. Do not bring back a session tie to bound it, and
+  `tests/test_sweep_lifetime.py` fails if the bound reappears. `--stop` is the only
+  deliberate stop, and surviving a closed terminal *on purpose* is the OS scheduler
+  entry `/hireshire:setup` offers.
 
   Consequences that should not be re-derived:
 
@@ -128,8 +131,8 @@ Consequences already worked out, which should not be re-derived:
     the liveness veto, `describe()` — is gone with the teardown it served. The user
     watches a sweep through the overview page or their shell task.
   - **`/hireshire:start-orchestration` must not claim the sweep stops with the session.**
-    It no longer does. It ends on `--stop`, on the shell task being killed, or on the
-    bound. Saying otherwise is the same class of failure as announcing a sweep that was
+    It no longer does. It ends on `--stop` or on the shell task being killed, and it must
+    not promise a time limit either. Saying otherwise is the same class of failure as announcing a sweep that was
     never running, and `tests/test_plugin_shell.py` pins the skill's wording.
   - **`process_liveness.is_alive` survives, for one caller only:** the guard that refuses
     to start a second writer onto the same SQLite database. It was never the bug — it
