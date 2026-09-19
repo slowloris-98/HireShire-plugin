@@ -6,6 +6,20 @@ All notable changes to this plugin are documented here. Versions follow
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-18
+
+### Fixed
+
+- **Scoring no longer gives up after a brief Windows hiccup, and says so plainly when
+  it does stop.** When Windows refused to start the scoring process (exit code
+  `3221225794` = `0xC0000142`), five of those in a row stopped scoring for the whole
+  sweep, and the log looked like the scoring backend had broken. Each scoring call now
+  waits and tries again (after 5, 20 and 60 seconds) before it counts as a failure. If
+  scoring still stops, the log says the cause is the machine, not your login: usually
+  the terminal running the sweep was closed or the PC was locked or asleep. As before,
+  no jobs are lost; they are scored next sweep. Apply sessions that fail this way now
+  name the error too.
+
 ## [0.5.0] — 2026-09-18
 
 ### Changed

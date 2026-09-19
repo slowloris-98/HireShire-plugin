@@ -274,7 +274,9 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
     if proc.returncode != 0:
         detail = (stderr.decode(errors="replace").strip()
                   or stdout.decode(errors="replace").strip() or "(no output)")
-        raise ApplyLaunchError(f"claude CLI exited {proc.returncode}: {detail[:500]}")
+        raise ApplyLaunchError(
+            f"claude CLI exited {claude_cli.describe_exit(proc.returncode)}: {detail[:500]}"
+        )
 
     raw = stdout.decode(errors="replace")
     try:

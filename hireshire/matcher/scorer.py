@@ -580,6 +580,20 @@ class AnthropicBackend:
 # Claude Code backend — scores on the user's Claude subscription, not an API key
 # ---------------------------------------------------------------------------
 
+class CLILaunchError(RuntimeError):
+    """`claude` never started — the host refused the process, the backend was never asked.
+
+    A subclass of RuntimeError so `JobScorer.score` records it as `api_error` like any
+    other failure (retryable: a job is never retired on an error). The distinct type is
+    what lets the breaker's summary blame the machine rather than the backend.
+    """
+
+
+# Waits between attempts after a launch failure. Only launch failures are retried: exit
+# 1 carries a real answer from the API in its stdout, and asking again changes nothing.
+_LAUNCH_RETRY_DELAYS_S = (5.0, 20.0, 60.0)
+
+
 class ClaudeCodeBackend:
     """Score through the local `claude` CLI so the user's Pro/Max subscription
     pays for it instead of a metered API key.
@@ -613,6 +627,35 @@ class ClaudeCodeBackend:
         return claude_cli.subscription_env()
 
     async def call(self, prompt: str, system_prompt: str) -> ScoringSchema:
+        # The wait sits out here, not inside `_invoke`, so a retry does not hold one
+        # of the scoring slots while it sleeps.
+        for delay in (*_LAUNCH_RETRY_DELAYS_S, None):
+            try:
+                stdout = await self._invoke(prompt, system_prompt)
+                break
+            except CLILaunchError as exc:
+                if delay is None:
+                    raise
+                logger.warning("%s — retrying in %gs", exc, delay)
+                await asyncio.sleep(delay)
+
+        # Raise on anything unparseable rather than returning a half-built result:
+        # JobScorer.score catches it and records a per-job skip, which is a far
+        # better outcome than a bogus score or a dead run.
+        raw = stdout.decode(errors="replace")
+        try:
+            envelope = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"claude CLI returned non-JSON: {raw[:300]}") from exc
+
+        # Read the meters before unwrapping — the counts live on the envelope, and
+        # `_payload` throws it away. Recorded before validation deliberately: a call
+        # whose payload fails to parse was still billed.
+        self.usage.record(envelope)
+        return self._payload(envelope)
+
+    async def _invoke(self, prompt: str, system_prompt: str) -> bytes:
+        """One `claude -p` run. Returns its stdout; raises on a non-zero exit."""
         async with self._sem:
             # `--json-schema` takes the schema *itself*, not a path to it — the CLI
             # parses the argument value as JSON. Passing a filename made every call
@@ -670,6 +713,10 @@ class ClaudeCodeBackend:
                 proc.kill()
                 await proc.communicate()
                 raise RuntimeError(f"claude CLI timed out after {self._timeout}s")
+            if claude_cli.is_launch_failure(proc.returncode):
+                raise CLILaunchError(
+                    f"claude CLI exited {claude_cli.describe_exit(proc.returncode)}"
+                )
             if proc.returncode != 0:
                 # Report BOTH streams, each truncated on its own, stdout first.
                 #
@@ -696,21 +743,7 @@ class ClaudeCodeBackend:
                 )
             if self._settings.request_interval_s > 0:
                 await asyncio.sleep(self._settings.request_interval_s)
-
-        # Raise on anything unparseable rather than returning a half-built result:
-        # JobScorer.score catches it and records a per-job skip, which is a far
-        # better outcome than a bogus score or a dead run.
-        raw = stdout.decode(errors="replace")
-        try:
-            envelope = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"claude CLI returned non-JSON: {raw[:300]}") from exc
-
-        # Read the meters before unwrapping — the counts live on the envelope, and
-        # `_payload` throws it away. Recorded before validation deliberately: a call
-        # whose payload fails to parse was still billed.
-        self.usage.record(envelope)
-        return self._payload(envelope)
+        return stdout
 
     @staticmethod
     def _payload(envelope) -> ScoringSchema:
@@ -754,6 +787,9 @@ class JobScorer:
         # breaker quotes it, which is the difference between "0 new matches" and
         # "the scorer is broken, here is why".
         self.last_error: str | None = None
+        # Whether that failure was the host refusing to start the CLI. Carried as a
+        # flag rather than read back out of the message text.
+        self.last_error_was_launch = False
         # Only backends that can read their own meters expose one; the rest leave
         # this None and the caller says nothing rather than reporting zeros as fact.
         self.usage: UsageTally | None = getattr(backend, "usage", None)
@@ -818,6 +854,7 @@ class JobScorer:
         except Exception as exc:
             logger.warning("LLM call failed for job %s/%s: %s", job.board_token, job.job_id, exc)
             self.last_error = str(exc)
+            self.last_error_was_launch = isinstance(exc, CLILaunchError)
             return base.model_copy(update={"skipped": True, "skip_reason": "api_error"})
 
         return base.model_copy(update=score_bands(result))
