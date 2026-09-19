@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from hireshire.models.job import Job, Location
 from hireshire.reporting import data, overview
-from hireshire.reporting.render import duration
+from hireshire.reporting.render import duration, e
 from hireshire.storage.db import Database
 
 RUN = "2026-09-09T06-51-12Z"
@@ -186,6 +186,26 @@ def test_an_application_that_stopped_short_needs_attention(tmp_path):
     assert f'title="{long}"' in block
     assert html.index('id="acc:applied"') < html.index('id="acc:attention"') \
         < html.index('id="acc:shortlisted"')
+
+
+def test_an_excluded_employer_needs_attention_not_a_shortlist_slot(tmp_path):
+    """`exclude_companies` names portals that need an account login, so no sweep can
+    ever apply to them. Those jobs used to sit under Jobs Shortlisted, indistinguishable
+    from work the applier had simply not reached yet. The applier records an `excluded`
+    row instead, which lands here — and must not move the Jobs applied tile, which
+    counts submissions."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j7")])
+    _match(db, RUN, "j7", score=84, shortlisted=True, rerank=8.40)
+    reason = ("Requires human verification — this employer's portal needs an account "
+              "login, so apply to it yourself.")
+    _apply(db, "j7", "excluded", reason)
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j7") == ["attention"]
+    assert db.overview_counts(RUN)["applied"] == 1        # j1, the real submission
+    # Escaped, because the reason carries an apostrophe and the page escapes it.
+    assert e(reason) in _job_block(overview.build(snap, RUN), "j7")
 
 
 def test_a_cluster_sibling_follows_its_verdict_not_the_tail(tmp_path):
@@ -388,7 +408,7 @@ def test_both_scopes_carry_the_same_header(tmp_path):
 
     # The subtitle names the scope, and it is what tells the two apart.
     assert "<span>Lifetime Control Room</span>" in lifetime
-    assert f"<span>{RUN} Control Room</span>" in per_run
+    assert f"<span>Control Room Run: {RUN}</span>" in per_run
 
 
 # --- the page itself ----------------------------------------------------------

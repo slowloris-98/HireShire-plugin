@@ -19,9 +19,11 @@ Three rules shape this file:
   subscription with the scorer's calls, so the worker drains the queue serially with
   `inter_job_delay_s` between launches.
 * **A verdict is recorded; a failure to launch is not.** `submitted` and `error` are
-  outcomes about the job and go to the `applied` table, which retires it. A session
-  that never got going — the CLI missing, a non-zero exit — writes nothing, so the
-  backlog (`Database.load_pending_applications`) retries it on a later sweep. That
+  outcomes about the job and go to the `applied` table, which retires it. So is
+  `excluded`, which no session produces: the employer's portal needs an account login,
+  so the answer is the same on every future sweep and the user has to do it by hand. A
+  session that never got going — the CLI missing, a non-zero exit — writes nothing, so
+  the backlog (`Database.load_pending_applications`) retries it on a later sweep. That
   matters because the matcher retires a judged job: without the backlog, a broken MCP
   server would lose a whole sweep's shortlist for good.
 * **Never apply twice.** A timeout, or a clean exit with an unreadable result, may
@@ -62,6 +64,12 @@ PROMPT_PATH = Path(__file__).resolve().parent / "apply_one.md"
 #: sweep. A missing Playwright MCP server or a logged-out CLI fails every job the same
 #: way; there is nothing to learn from the fourth attempt.
 BREAKER_LIMIT = 3
+
+#: Why an excluded employer never becomes an application. Recorded as the `error` of
+#: an `excluded` row and printed verbatim under the overview's Needs Attention
+#: section, so it obeys the same one-short-line contract `apply_one.md` imposes.
+EXCLUDED_REASON = ("Requires human verification — this employer's portal needs an "
+                   "account login, so apply to it yourself.")
 
 
 class ApplyOutcome(BaseModel):
@@ -390,11 +398,22 @@ async def run_apply_worker(
         title = job.get("title") or ""
 
         if company.strip().lower() in excluded:
-            # Not a failure: those portals need an account login. The job stays in the
-            # overview's Shortlisted section, and the log line says why nothing ran.
+            # Not a failure, but a verdict all the same: that portal needs an account
+            # login, so no sweep can ever complete this job. Recording it is what puts
+            # it under the overview's Needs Attention section rather than leaving it
+            # under Shortlisted looking like work the applier still has to do — and
+            # what takes it out of the backlog, which otherwise re-queued and
+            # re-dropped it every sweep for `backlog_hours` with only a log line.
+            # Checked before `blocked`: an exclusion holds whatever happened to the
+            # resume or the breaker.
             stats["excluded"] += 1
             log = logger.debug if from_backlog else logger.info
             log("Apply manually: %s — %s %s", company, title, job.get("job_url"))
+            await asyncio.to_thread(
+                db.record_applied, job_id, company, title, job.get("job_url") or "",
+                datetime.now(timezone.utc).isoformat(), "excluded", None,
+                EXCLUDED_REASON,
+            )
             return
         if blocked or state["tripped"]:
             stats["deferred"] += 1

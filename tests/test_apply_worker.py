@@ -8,7 +8,8 @@ What is pinned here, each for a failure that costs the user something real:
   lose a whole sweep's shortlist for good;
 * an ambiguous ending (timeout, unreadable result) *is* recorded, because the form may
   already be submitted and retrying would apply twice;
-* nothing is launched for excluded employers or jobs already applied to.
+* nothing is launched for excluded employers or jobs already applied to — but an
+  excluded employer is still recorded, so the user is told to apply by hand.
 """
 from __future__ import annotations
 
@@ -342,6 +343,28 @@ def test_excluded_and_already_applied_jobs_launch_nothing(tmp_path, launcher):
     assert stats["excluded"] == 1
 
 
+def test_an_excluded_employer_is_recorded_so_it_needs_attention(tmp_path, launcher):
+    """It used to be dropped with only a log line: the job sat under Jobs Shortlisted
+    as though the applier would get to it, and came back through the backlog every
+    sweep for `backlog_hours`. An account-login portal is a verdict — the answer is
+    the same on every future sweep — so it is recorded like any other verdict, which
+    is what puts it under Needs Attention and takes it out of the backlog."""
+    calls, _, _ = launcher
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    stats, _ = _run(tmp_path, [_job("j1", company="Google")], db=db)
+
+    assert calls == [] and stats["excluded"] == 1
+    (row,) = db.load_applied()
+    assert row["job_id"] == "j1" and row["status"] == "excluded"
+    assert row["error"] == worker.EXCLUDED_REASON
+    assert row["error"].startswith("Requires human verification")
+    assert "\n" not in row["error"], "Needs Attention prints this as one line"
+    # Out of the backlog: the only thing that stopped it being re-dropped every sweep.
+    since = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    assert db.load_pending_applications(since) == []
+
+
 def test_a_missing_resume_launches_nothing(tmp_path, launcher):
     calls, _, _ = launcher
     settings = _settings(tmp_path, resume_path=str(tmp_path / "nope.pdf"))
@@ -503,9 +526,9 @@ def test_a_job_in_both_the_backlog_and_the_stream_is_applied_to_once(tmp_path, l
 
 def test_the_applier_bar_counts_every_streamed_job_but_not_the_backlog(
         tmp_path, launcher):
-    """An excluded company writes no `applied` row, so a bar counting rows would
-    stop short of the shortlist. The backlog belongs to earlier sweeps and must not
-    push this sweep's bar past its own total."""
+    """A deferral or a location skip writes no `applied` row, so a bar counting rows
+    would stop short of the shortlist. The backlog belongs to earlier sweeps and must
+    not push this sweep's bar past its own total."""
     db = Database(tmp_path / "test.db")
     db.start_progress("now", apply_enabled=True)
     _match(db, "r0", "old")                       # a backlog job from an earlier sweep

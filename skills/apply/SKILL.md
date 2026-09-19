@@ -70,6 +70,18 @@ must not be silently dropped: a whole shortlist can consist of them — one real
 shortlisted three jobs, all at an excluded employer, and the applier would have
 reported nothing to do without ever saying why. You report them in Step 4.
 
+Record each one as you set it aside, so it appears under **Needs Attention** on the
+overview page and stops coming back as pending on every sweep:
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/applied_cli.py record \
+  --job-id "<job_id>" --board-token "<company>" --title "<title>" \
+  --url "<job_url>" --status "excluded" \
+  --error "Requires human verification — this employer's portal needs an account login, so apply to it yourself."
+```
+
+Use that `--error` text exactly; the page prints it verbatim.
+
 If `settings.resume_path` does not exist on disk, stop and say so — every
 application uploads it.
 
@@ -126,7 +138,8 @@ is empty; the whole point is that an excluded job never disappears without a tra
 
 Introduce it with one line of why: those employers require an account login before
 the form appears, so the applier cannot complete them and the user needs to apply
-themselves.
+themselves. Add that they are also on the overview page under **Needs Attention**, so
+the list survives the end of this session.
 
 ## Errors
 
