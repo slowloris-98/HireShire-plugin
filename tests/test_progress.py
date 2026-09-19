@@ -10,9 +10,11 @@ or overruns, and that each page shows the bars exactly when it should.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
+from hireshire.models.job import Job, Location
 from hireshire.reporting import data, overview
 from hireshire.storage.db import Database
 
@@ -187,12 +189,12 @@ def test_the_matcher_is_not_done_before_the_scrape():
 # --- the pages ------------------------------------------------------------------
 
 
-def _snapshot(tmp_path, run_id, in_progress: bool, **kw) -> dict:
+def _snapshot(tmp_path, run_id, in_progress: bool, progress=None) -> dict:
     db = _db(tmp_path)
     return data.overview_snapshot(
         db, run_id, live=None if run_id else in_progress,
         run=_run(in_progress=in_progress, started_at=None, finished_at=None),
-        progress=_progress(), **kw,
+        progress=progress if progress is not None else _progress(),
     )
 
 
@@ -202,18 +204,134 @@ def test_the_run_page_always_keeps_its_bars(tmp_path, in_progress):
     for key in ("scraper", "matcher", "applier"):
         assert f'id="bar:{key}"' in html
     assert 'role="progressbar"' in html
-    assert '<p class="prog-cap">' not in html, "the run page's eyebrow already names the sweep"
 
 
-def test_the_lifetime_page_shows_a_live_sweep_and_names_it(tmp_path):
-    html = overview.build(_snapshot(tmp_path, None, True, progress_label="2026-09-19_100000"))
-    assert 'id="bar:scraper"' in html
-    assert "Sweep 2026-09-19_100000 in progress" in html
+def _lifetime(**over) -> dict:
+    base = {"sweeps": 3, "companies_total": 600, "companies_done": 540,
+            "jobs_processed": 300, "jobs_in_scope": 400, "unique_jobs": 1234,
+            "shortlisted": 20,
+            "submitted": 8, "attention": 2}
+    base.update(over)
+    return base
 
 
-def test_the_lifetime_page_drops_the_bars_once_the_sweep_ends(tmp_path):
-    html = overview.build(_snapshot(tmp_path, None, False, progress_label="x"))
-    assert 'class="prog"' not in html
+@pytest.mark.parametrize("in_progress", [True, False])
+def test_the_lifetime_page_always_keeps_its_bars(tmp_path, in_progress):
+    """Lifetime totals describe the install, not a sweep, so they stay on the page
+    between sweeps — the file on disk is whatever the last sweep's final write left."""
+    html = overview.build(_snapshot(tmp_path, None, in_progress, progress=_lifetime()))
+    for key in ("scraper", "matcher", "applier"):
+        assert f'id="bar:{key}"' in html
+    assert "across 3 sweeps" in html
+
+
+def _scraper_count(html: str) -> str:
+    at = html.index('id="bar:scraper"')
+    start = html.index('<span class="bar-n">', at) + len('<span class="bar-n">')
+    return html[start:html.index("</span>", start)]
+
+
+def test_the_lifetime_scraper_prints_unique_jobs_but_fills_by_companies(tmp_path):
+    """A company count summed across sweeps means nothing to a user; unique jobs
+    does. It has no total, so the fill still tracks companies checked."""
+    html = overview.build(_snapshot(tmp_path, None, False, progress=_lifetime()))
+    assert _scraper_count(html) == "1,234 unique jobs"
+    bar = data.lifetime_progress_bars(_lifetime(), False)[0]
+    assert bar["pct"] == pytest.approx(90.0)
+
+
+def test_the_run_page_scraper_still_counts_companies(tmp_path):
+    html = overview.build(_snapshot(tmp_path, RUN, True), "2026-09-19_100000")
+    assert _scraper_count(html) == "50 / 200 companies"
+
+
+def test_lifetime_scraper_and_matcher_run_only_while_a_sweep_does():
+    live = {b["key"]: b["state"] for b in data.lifetime_progress_bars(_lifetime(), True)}
+    idle = {b["key"]: b["state"] for b in data.lifetime_progress_bars(_lifetime(), False)}
+    assert (live["scraper"], live["matcher"]) == ("running", "running")
+    assert (idle["scraper"], idle["matcher"]) == ("done", "done")
+    assert live["applier"] == idle["applier"] == "done"
+
+
+def test_the_lifetime_applier_is_the_backlog():
+    bar = data.lifetime_progress_bars(_lifetime(), False)[2]
+    assert (bar["done"], bar["total"]) == (10, 20)
+    assert dict(bar["segments"]) == {"ok": 40.0, "warn": 10.0}
+    assert bar["note"] == "8 applied · 2 need attention · 10 not yet applied"
+
+
+def test_a_fresh_install_has_no_lifetime_bars():
+    empty = _lifetime(sweeps=0, companies_total=0, companies_done=0, jobs_processed=0,
+                      jobs_in_scope=0, shortlisted=0, submitted=0, attention=0)
+    assert data.lifetime_progress_bars(empty, False) == []
+    assert data.lifetime_progress_bars(None, False) == []
+
+
+def test_a_shortlist_from_before_tracking_still_shows_the_applier():
+    bars = data.lifetime_progress_bars(
+        _lifetime(sweeps=0, companies_total=0, companies_done=0, jobs_processed=0,
+                  jobs_in_scope=0), False)
+    states = {b["key"]: b["state"] for b in bars}
+    assert states == {"scraper": "waiting", "matcher": "waiting", "applier": "done"}
+    assert bars[0]["note"] == "No sweeps tracked yet"
+
+
+# --- the lifetime read ------------------------------------------------------------
+
+
+def _job(job_id: str) -> Job:
+    now = datetime.now(timezone.utc)
+    return Job(source="greenhouse", board_token="acme", job_id=job_id,
+               title="Engineer", location=Location(name="Remote"),
+               absolute_url=f"https://example.com/{job_id}",  # type: ignore[arg-type]
+               updated_at=now, scraped_at=now, content_text="text")
+
+
+def test_lifetime_progress_sums_tracked_sweeps_only(tmp_path):
+    db = _db(tmp_path)
+    for run, total, jobs in ((RUN, 100, 3), ("2026-09-20T10-00-00Z", 50, 2)):
+        db.start_progress(run, apply_enabled=False)
+        db.set_progress(run, companies_total=total)
+        db.bump_progress(run, companies_done=total, jobs_processed=jobs)
+        db.insert_jobs(run, [_job(f"{run}-{n}") for n in range(jobs)])
+    # A sweep from before tracking: its jobs must not hold the matcher bar short.
+    db.insert_jobs("2026-09-01T00-00-00Z", [_job("old-1"), _job("old-2")])
+
+    lp = db.lifetime_progress()
+    assert lp["sweeps"] == 2
+    assert (lp["companies_done"], lp["companies_total"]) == (150, 150)
+    assert (lp["jobs_processed"], lp["jobs_in_scope"]) == (5, 5)
+    # Unique jobs is not scoped to tracked sweeps: it is what the install has seen.
+    assert lp["unique_jobs"] == 7
+
+
+def test_unique_jobs_counts_a_resurfaced_posting_once(tmp_path):
+    db = _db(tmp_path)
+    db.insert_jobs(RUN, [_job("same"), _job("other")])
+    db.insert_jobs("2026-09-20T10-00-00Z", [_job("same")])
+    assert db.lifetime_progress()["unique_jobs"] == 2
+
+
+def test_the_lifetime_backlog_counts_each_representative_once(tmp_path):
+    """A job shortlisted in two sweeps is one job to apply to, a sibling is none,
+    and a shortlist from before tracking still counts."""
+    db = _db(tmp_path)
+    _match(db, "rep")
+    _match(db, "sib", rep="rep")
+    _match(db, "bad")
+    _match(db, "unlisted", shortlisted=False)
+    db.upsert_match("2026-09-20T10-00-00Z", "rep", "acme", "Engineer", 80, True,
+                    False, None, "x", "2026-09-20T10:05:00+00:00",
+                    json.dumps({"job_id": "rep", "cluster_representative": None},
+                               separators=(",", ":")))
+    for job_id, status in (("rep", "submitted"), ("sib", "submitted"), ("bad", "error")):
+        db.record_applied(job_id, "acme", "Engineer", "", "2026-09-19T11:00:00+00:00",
+                          status, None, None)
+
+    lp = db.lifetime_progress()
+    assert lp["sweeps"] == 0
+    assert lp["shortlisted"] == 2                 # rep and bad
+    assert (lp["submitted"], lp["attention"]) == (1, 1)
 
 
 def test_a_waiting_bar_prints_a_dash_not_zero_of_zero(tmp_path):

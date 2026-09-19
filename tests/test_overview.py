@@ -378,17 +378,17 @@ def test_both_scopes_carry_the_same_header(tmp_path):
     lifetime = overview.build(data.overview_snapshot(db, None), None)
 
     for html in (per_run, lifetime):
-        assert "<span>HireShire</span>" in html
-        assert "<h1>Control room</h1>" in html
+        assert "<h1>HireShire</h1>" in html
+        assert 'class="eyebrow"' not in html
         # One line of instruction, and it sits between the tiles and the first
         # section. This ordering is also why no filter chrome may be hoisted out of
         # `.acc-body`: the first `class="acc"` has to stay the first section's tag.
         assert html.count('<p class="hint">') == 1
         assert html.index('class="stats"') < html.index('class="hint"') < html.index('class="acc"')
 
-    # The scope is the eyebrow's second word, and it is what tells the two apart.
-    assert "<span>All sweeps</span>" in lifetime
-    assert f"<span>Run {RUN}</span>" in per_run
+    # The subtitle names the scope, and it is what tells the two apart.
+    assert "<span>Lifetime Control Room</span>" in lifetime
+    assert f"<span>{RUN} Control Room</span>" in per_run
 
 
 # --- the page itself ----------------------------------------------------------

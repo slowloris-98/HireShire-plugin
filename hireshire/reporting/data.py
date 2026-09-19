@@ -316,6 +316,65 @@ def progress_bars(progress: dict | None, run: dict[str, Any]) -> list[dict]:
     return bars
 
 
+def lifetime_progress_bars(lp: dict | None, live: bool) -> list[dict]:
+    """The lifetime page's bars, from `Database.lifetime_progress`. Shown always.
+
+    Same shape as `progress_bars`, so one renderer draws both. Scraper and matcher
+    are sums over every tracked sweep; while one is live its counters are inside
+    those sums, so the two bars read `running` then and `done` otherwise. The
+    applier is the all-time backlog of shortlisted jobs and has no running state of
+    its own: its segments already say what is applied and what needs the user, and
+    the empty rest of the track is what is still to do.
+
+    Returns `[]` only for an install with no tracked sweep and no shortlist, so a
+    fresh page carries no block of empty bars.
+    """
+    if not lp:
+        return []
+    sweeps = int(lp.get("sweeps") or 0)
+    shortlisted = int(lp.get("shortlisted") or 0)
+    if not sweeps and not shortlisted:
+        return []
+    stage = "running" if live else "done"
+    across = (f"across {sweeps:,} sweep{'s' if sweeps != 1 else ''}" if sweeps
+              else "No sweeps tracked yet")
+
+    c_total = int(lp.get("companies_total") or 0)
+    j_total = int(lp.get("jobs_in_scope") or 0)
+    submitted = min(int(lp.get("submitted") or 0), shortlisted)
+    attention = min(int(lp.get("attention") or 0), shortlisted - submitted)
+    pending = shortlisted - submitted - attention
+
+    parts = [f"{submitted:,} applied"]
+    if attention:
+        parts.append(f"{attention:,} need attention")
+    parts.append(f"{pending:,} not yet applied")
+
+    # The scraper bar prints unique jobs rather than companies: summed across
+    # sweeps, a company count (190,416) says nothing a user can use. Unique jobs has
+    # no "out of", so the fill still tracks companies checked — the only measure of
+    # how far a live scrape has got — and `count` replaces only the printed figure.
+    unique = int(lp.get("unique_jobs") or 0)
+    bars = [
+        {"key": "scraper", "label": "Scraper", "unit": "companies",
+         "done": min(int(lp.get("companies_done") or 0), c_total), "total": c_total,
+         "count": f"{unique:,} unique jobs",
+         "state": stage if c_total else "waiting", "note": across},
+        {"key": "matcher", "label": "Matcher", "unit": "jobs",
+         "done": min(int(lp.get("jobs_processed") or 0), j_total), "total": j_total,
+         "state": stage if j_total else "waiting", "note": across},
+        {"key": "applier", "label": "Applier", "unit": "shortlisted",
+         "done": submitted + attention, "total": shortlisted,
+         "state": "done" if shortlisted else "waiting",
+         "note": " · ".join(parts) if shortlisted else "Nothing shortlisted yet",
+         "segments": [("ok", _pct(submitted, shortlisted)),
+                      ("warn", _pct(attention, shortlisted))]},
+    ]
+    for bar in bars:
+        bar["pct"] = _pct(bar["done"], bar["total"])
+    return bars
+
+
 # Caps on what the overview page renders. A closed `<details>` still costs its full
 # DOM, so an uncapped lifetime page on a mature install would be tens of megabytes
 # reloading itself every fifteen seconds. The summaries print the true count either
@@ -331,7 +390,6 @@ def overview_snapshot(
     run: dict[str, Any] | None = None,
     records: list[dict] | None = None,
     progress: dict | None = None,
-    progress_label: str | None = None,
 ) -> dict[str, Any]:
     """Everything the overview page renders, at one scope or the other.
 
@@ -350,12 +408,11 @@ def overview_snapshot(
     always passes them: the reports rebuild on a clock for the whole length of a
     sweep, so re-deriving either here would double that work ~300 times a run.
 
-    `progress` is `Database.run_progress` for the sweep driving this refresh, and
-    `run` is that sweep's `run_snapshot` at *both* scopes. The run page always
-    carries the bars, finished or not, so it keeps a record of where each stage
-    ended. The lifetime page carries them only while that sweep is live, because
-    once it ends the bars describe one sweep on a page about all of them;
-    `progress_label` names the sweep there, since nothing else on that page does.
+    `progress` differs by scope. On the run page it is `Database.run_progress` and
+    the bars are that sweep's, kept after it finishes as a record of where each stage
+    ended. On the lifetime page it is `Database.lifetime_progress` and the bars are
+    lifetime totals, shown always — live or not, because they describe the install
+    rather than any one sweep.
     """
     counts = db.overview_counts(run_id)
     # The `applied` table feeds two sections. A submission goes under Jobs Applied;
@@ -404,7 +461,6 @@ def overview_snapshot(
         "finished_at": None,
         "usage": None,
         "progress": [],
-        "progress_label": None,
     }
 
     if run_id:
@@ -420,7 +476,5 @@ def overview_snapshot(
         # Its caller knows — `reporting.refresh` is always driven by a live run — so
         # it passes the answer in, and the default is the safe one.
         snapshot["live"] = bool(live)
-        if snapshot["live"] and run is not None:
-            snapshot["progress"] = progress_bars(progress, run)
-            snapshot["progress_label"] = progress_label
+        snapshot["progress"] = lifetime_progress_bars(progress, snapshot["live"])
     return snapshot

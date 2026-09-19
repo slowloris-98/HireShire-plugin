@@ -420,8 +420,8 @@ Three consequences that should not be re-derived:
 every sweep the install has done; `<stamp>_overview.html` in a run folder covers that
 sweep and adds how long it took and what it cost. Both are complete local documents.
 Four numbers — `Jobs in scope`, `Relevant jobs`, `Jobs shortlisted`, `Jobs applied` —
-over five `<details>` sections, under a `HireShire` /
-`Control room` header. It explains nothing: past one line naming the scope and telling
+over five `<details>` sections, under a `HireShire` heading and a `Lifetime Control
+Room` / `<stamp> Control Room` subtitle. It explains nothing: past one line naming the scope and telling
 the reader the sections open and filter, the judge's rationales inside an opened job
 are the only sentences on it. **Both scopes are the same markup fed different data**,
 and the two extra tiles are the single deliberate exception — how long it took and
@@ -549,9 +549,25 @@ Three rules to keep:
   sweeps' shortlists.
 - **The matcher bar counts the whole batch** once it is finished. Its total is the
   `Jobs in scope` tile.
-- **The run page keeps its bars after the sweep ends; the lifetime page drops them.**
-  Once the sweep is over, the bars describe one sweep on a page that covers every
-  sweep.
+- **Both pages show their bars all the time, but the lifetime page's are different
+  numbers.** The run page keeps that sweep's bars after it ends, as a record of where
+  each stage stopped. The lifetime page shows install-wide bars
+  (`Database.lifetime_progress`):
+  - Scraper and matcher are sums over every sweep that has a `run_progress` row, and
+    the matcher's total counts jobs from those sweeps only, so older runs cannot hold
+    it short.
+  - The lifetime scraper bar **prints unique jobs but fills by companies**. A company
+    count summed across sweeps means nothing to a user, and unique jobs
+    (`COUNT(DISTINCT job_id)` over every run) has no total to fill against. The
+    bar's `count` key is what lets a bar print a figure that is not its fill. The run
+    page keeps printing companies, because that is how far a live scrape has got.
+  - The applier is **not** a sum. It is every distinct shortlisted representative
+    ever, against how many have an `applied` row. A sum of per-sweep counters reads
+    ~100% whenever no sweep is running; the backlog keeps meaning something, and it
+    covers sweeps made before tracking began.
+
+  These queries group whole tables, so they ride `LIFETIME_INTERVAL_S` like the other
+  lifetime reads.
 
 The lifetime page carries its own throttle (`LIFETIME_INTERVAL_S`, 60 s) because its
 queries group a table that has no `run_id` filter to narrow them; everything else in
@@ -630,13 +646,22 @@ Four things about the applier that are easy to break:
   Playwright MCP uploads and writes only inside the client's roots, which Claude Code
   sets to the cwd. Running in `DATA/applied` refused 5 of 8 uploads on one sweep with
   nothing submitted. `worker.session_dirs` decides: cwd = workspace (else
-  `applied_dir`), screenshots in `<workspace>/hireshire_run_results/applied/` via
-  `--output-dir` plus an absolute `screenshot_path` — `--output-dir` only covers files
-  the server names itself, and an explicit filename resolves against the root — and a
-  resume outside cwd is copied in. Both output locations must stay *under* cwd, or the
+  `applied_dir`), screenshots in `<workspace>/hireshire_run_results/applied/` via an
+  absolute `screenshot_path`, and a resume outside cwd is copied in. An explicit
+  filename resolves against the root and ignores `--output-dir`, which only covers
+  files the server names itself. Both output locations must stay *under* cwd, or the
   server refuses them the same way. The scorer stays in ROOT: `--safe-mode --tools ""`
   touches no files. The interactive `/hireshire:apply` still depends on the user's
   own session cwd.
+
+  **`--output-dir` is a per-job scratch dir, `applied/.browser/<job_id>/`, never
+  `applied/` itself.** Playwright MCP writes a `page-*.yml` for every snapshot and a
+  `console-*.log` there unasked: one sweep left 204 and 20 of them beside 7 screenshots.
+  The session may read those files mid-form, so `run_apply_worker` deletes the scratch
+  dir in a `finally` only *after* the outcome is recorded, whatever the ending.
+  `session_dirs` clears whatever a killed sweep left behind. That is safe because only
+  one sweep runs at a time. Only `page-*.yml`, `console-*.log` and `.browser/` are
+  touched; screenshots are the user's record of each form.
 
 Each `main()` takes optional `in_queue` / `out_queue` / `quiet`. `quiet=True`
 suppresses Rich in favour of `logging` — required under the monitor.

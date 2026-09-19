@@ -99,7 +99,8 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
         # Only pay for the row load once there is something to load. `rows_total`
         # is a COUNT, so this check is free.
         records = db.load_all_matches(run_id) if snapshot["candidates"] else []
-        # One indexed read, shared by both pages like `snapshot` above.
+        # One indexed read. The lifetime page reads its own totals below, on its
+        # slower throttle, because those group whole tables.
         progress = db.run_progress(run_id)
 
         targets = report_paths(results_dir, stamp)
@@ -114,8 +115,7 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
             _last_lifetime = now
             overview.write(
                 data.overview_snapshot(db, None, live=snapshot.get("in_progress"),
-                                       run=snapshot, progress=progress,
-                                       progress_label=stamp),
+                                       progress=db.lifetime_progress()),
                 targets["overview"],
             )
     except Exception:  # noqa: BLE001

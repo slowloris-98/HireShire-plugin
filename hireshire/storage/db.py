@@ -740,6 +740,63 @@ class Database:
         out["attention"] = applied["bad"] or 0
         return out
 
+    def lifetime_progress(self) -> dict:
+        """The lifetime page's bars: two sums and one backlog.
+
+        The scraper and matcher figures are sums over every tracked sweep, because
+        nothing else can count them. `jobs_in_scope` is scoped to those same sweeps,
+        so jobs from runs that predate progress tracking cannot hold the matcher bar
+        short.
+
+        The applier is different on purpose: every distinct shortlisted
+        representative this install has ever had, against how many have an
+        application. A sum of per-sweep counters reads ~100% whenever no sweep is
+        running; the backlog keeps meaning something between sweeps, and it covers
+        runs made before tracking began. Siblings are out for the reason they are out
+        of `run_progress` — nothing ever applies to them.
+
+        Groups whole tables, so it belongs on the lifetime page's slower throttle.
+        """
+        sib = self._sibling_sql("m")
+        with self._lock:
+            sums = self._conn.execute(
+                "SELECT COUNT(*) AS sweeps, "
+                "       COALESCE(SUM(companies_total), 0) AS companies_total, "
+                "       COALESCE(SUM(companies_done), 0) AS companies_done, "
+                "       COALESCE(SUM(jobs_processed), 0) AS jobs_processed "
+                "FROM run_progress"
+            ).fetchone()
+            jobs = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM jobs "
+                "WHERE run_id IN (SELECT run_id FROM run_progress)"
+            ).fetchone()
+            # What the scraper bar prints. Every run, tracked or not, and each posting
+            # once however many sweeps found it — the lifetime `Jobs in scope` rule.
+            unique = self._conn.execute(
+                "SELECT COUNT(DISTINCT job_id) AS n FROM jobs"
+            ).fetchone()
+            shortlisted = self._conn.execute(
+                "SELECT COUNT(DISTINCT m.job_id) AS n FROM matches m "
+                f"WHERE m.shortlisted = 1 AND NOT ({sib})"
+            ).fetchone()
+            applied = self._conn.execute(
+                "SELECT SUM(CASE WHEN a.status = 'submitted' THEN 1 ELSE 0 END) AS ok, "
+                "       SUM(CASE WHEN a.status != 'submitted' THEN 1 ELSE 0 END) AS bad "
+                "FROM applied a WHERE EXISTS (SELECT 1 FROM matches m "
+                f"  WHERE m.job_id = a.job_id AND m.shortlisted = 1 AND NOT ({sib}))"
+            ).fetchone()
+        return {
+            "sweeps": sums["sweeps"] or 0,
+            "companies_total": sums["companies_total"],
+            "companies_done": sums["companies_done"],
+            "jobs_processed": sums["jobs_processed"],
+            "jobs_in_scope": jobs["n"] or 0,
+            "unique_jobs": unique["n"] or 0,
+            "shortlisted": shortlisted["n"] or 0,
+            "submitted": applied["ok"] or 0,
+            "attention": applied["bad"] or 0,
+        }
+
     def recent_runs(self, limit: int = 30) -> list[dict]:
         """Newest-first run index: run_id and its time span."""
         with self._lock:
