@@ -4,7 +4,7 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
-## [Unreleased]
+## [0.7.0] — 2026-09-19
 
 ### Added
 
