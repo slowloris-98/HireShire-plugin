@@ -4,7 +4,7 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
-## [Unreleased]
+## [0.8.0] — 2026-09-19
 
 ### Changed
 
@@ -25,6 +25,10 @@ All notable changes to this plugin are documented here. Versions follow
 
   `/hireshire:apply` records them the same way, and still prints its **Apply
   manually** list with the URLs.
+
+  If you already have shortlisted jobs at those employers, the ones from the last
+  three days move to Needs Attention on your next sweep. Anything shortlisted longer
+  ago than that stays under Jobs Shortlisted — apply to those by hand, or leave them.
 
 ## [0.7.1] — 2026-09-19
 
