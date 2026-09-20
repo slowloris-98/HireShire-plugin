@@ -130,31 +130,37 @@ class SessionDirs:
     resume_path: Path
 
 
-def session_dirs(settings: ApplierSettings, resume_path: Path) -> SessionDirs:
+def session_dirs(resume_path: Path, run_dir: Path) -> SessionDirs:
     """Pick the apply session's working directory, and a resume path it may upload.
 
-    Playwright MCP refuses to upload a file outside the client's roots, and Claude
-    Code's root is the session's cwd. The session used to run in `applied_dir`, under
-    DATA, while setup puts the resume in the workspace — so every form that required
-    a resume failed with nothing submitted. Running in the workspace puts the resume
-    inside the root.
+    `out_dir` is **this run's** `applied/` folder, beside the CSV, JSON and dashboard
+    the same sweep writes. It used to be one folder shared by every sweep, which left
+    the user's only record of each submitted form in a pile with no way to tell which
+    run it came from. `run_dir` is whatever `paths.make_run_dir` returned, so the
+    fallback when no workspace is usable — `DATA/results/<stamp>/applied` — follows
+    the same rule and there is only one layout.
 
-    `out_dir` must sit under `cwd` too, for the same reason: the server also refuses
-    to write outside the roots. A resume that is still outside `cwd` (an install
-    predating `workspace_dir`, or a `resume_path` pointed elsewhere) is copied in.
+    `cwd` is a different question. Playwright MCP refuses to upload a file outside the
+    client's roots, and Claude Code's root is the session's cwd; setup puts the resume
+    in the workspace, so a session that ran under DATA failed every form that required
+    a resume, with nothing submitted. So cwd is the workspace whenever it actually
+    contains `out_dir` — which is the real invariant, since the server also refuses to
+    *write* outside the roots. It can fail to hold with a workspace configured: if
+    `make_run_dir` fell back to DATA (the folder went missing, or is unwritable), the
+    run's own folder is not under the workspace any more, and then the session runs in
+    `out_dir` itself. A resume still outside `cwd` is copied in.
 
-    `out_dir` is meant to hold screenshots only. Browser-server output that an earlier
-    sweep left behind is cleared here: a `.browser/` a killed session never got to
-    delete, and the loose snapshots and console logs from before the scratch dir
-    existed. One sweep runs at a time, so none of it belongs to a live session.
+    `out_dir` is meant to hold screenshots only, so browser-server output is cleared
+    from it here: a `.browser/` a killed session never got to delete, and the loose
+    snapshots and console logs from before the scratch dir existed. That reaches only
+    this run's folder now — an earlier sweep's leftovers stay in that sweep's folder,
+    which is where its screenshots are anyway.
     """
-    ws = paths.workspace_dir()
-    if ws is not None and ws.is_dir():
-        cwd = ws
-        out_dir = ws / paths.RUN_RESULTS_DIRNAME / "applied"
-    else:
-        cwd = out_dir = paths.resolve_data(settings.applied_dir)
+    out_dir = run_dir / paths.APPLIED_DIRNAME
     out_dir.mkdir(parents=True, exist_ok=True)
+    ws = paths.workspace_dir()
+    cwd = ws if (ws is not None and ws.is_dir()
+                 and out_dir.resolve().is_relative_to(ws.resolve())) else out_dir
     _clear_browser_output(out_dir)
 
     upload = resume_path
@@ -355,6 +361,7 @@ async def run_apply_worker(
     settings: ApplierSettings,
     resume_text: str,
     *,
+    run_dir: Path,
     db: Database | None = None,
     include_backlog: bool = True,
     on_progress: Callable[[dict[str, int]], None] | None = None,
@@ -363,7 +370,9 @@ async def run_apply_worker(
     """Apply to each job put on `in_q` until the `None` sentinel. Returns the tallies.
 
     Jobs are pipeline records: `job_id`, `title`, `company`, `job_url`. The backlog of
-    recent shortlisted jobs that were never applied to is worked through first.
+    recent shortlisted jobs that were never applied to is worked through first — its
+    screenshots land in `run_dir` with the rest, because that is the sweep that applied
+    to them, whichever sweep first shortlisted them.
 
     Never raises for a single job, and always drains `in_q` to the sentinel — even
     once the breaker has tripped — so the producer is never left holding the queue
@@ -383,7 +392,7 @@ async def run_apply_worker(
         blocked = f"resume not found at {settings.resume_path or '(not set)'}"
     else:
         try:
-            dirs = session_dirs(settings, resume_path)
+            dirs = session_dirs(resume_path, run_dir)
         except OSError as exc:
             blocked = f"could not prepare the apply directory ({exc})"
     if blocked:

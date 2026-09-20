@@ -16,14 +16,16 @@ exactly one of them. The page is the user's only list of what is left to do, so 
 appearing twice would double it. `data.partition_jobs` owns that split.
 
 Both scopes render from the same code and differ only in the data they are handed,
-with one exception: how long it took and what it cost belong to a sweep, so those
-two tiles appear on the per-run page alone.
+with one exception: how long it took is a fact about a sweep, not about an install,
+so that tile appears on the per-run page alone. It used to have a companion, an
+``Est. cost`` tile, and ``render.SHOW_COST`` is what turned that one off — the figure
+was the Claude CLI's own list-price estimate and read on the page as a bill.
 
 Written at two scopes from one renderer:
 
-* ``overview.html`` at the results root — every sweep this install has done.
-* ``<stamp>_overview.html`` inside a run folder, beside that run's CSVs — one sweep,
-  plus how long it took and what it cost.
+* ``Dashboard_Lifetime.html`` at the results root — every sweep this install has done.
+* ``Dashboard_<stamp>.html`` inside a run folder, beside that run's CSVs — one sweep,
+  plus how long it took.
 
 Both are complete local documents opened over ``file://`` and never published, which
 is what licenses their meta refresh: a published page could not reload itself.
@@ -61,12 +63,11 @@ from hireshire.reporting.render import (
 logger = logging.getLogger(__name__)
 
 TITLE = "HireShire"
-OVERVIEW_NAME = "overview.html"
-RUN_SUFFIX = "_overview.html"
+LIFETIME_NAME = "Dashboard_Lifetime.html"
+RUN_PREFIX = "Dashboard_"
 
-# Matches the dashboard's cadence, for the same reason: long enough not to thrash a
-# browser, short enough to feel live against an engine that rewrites the file every
-# ten seconds.
+# Long enough not to thrash a browser, short enough to feel live against an engine
+# that rewrites the file every ten seconds.
 REFRESH_S = 15
 
 OVERVIEW_CSS = """
@@ -212,7 +213,7 @@ OVERVIEW_CSS = """
 
 
 def run_overview_name(stamp: str) -> str:
-    return f"{stamp}{RUN_SUFFIX}"
+    return f"{RUN_PREFIX}{stamp}.html"
 
 
 # The one column set, and the whole point of the layout: the same six labels over
@@ -723,8 +724,8 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
                 usd((snapshot.get("usage") or {}).get("cost_usd")), "Est. cost"
             ))
 
-    heading = (f"Control Room Run: {stamp}" if per_run and stamp
-               else "Lifetime Control Room")
+    heading = (f"Dashboard Run: {stamp}" if per_run and stamp
+               else "Lifetime Dashboard")
     live_chip = '<span class="chip live">running</span>' if snapshot["live"] else ""
 
     # The third accordion. Its rows are built by script rather than written out as

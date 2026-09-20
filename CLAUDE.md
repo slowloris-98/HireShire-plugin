@@ -416,16 +416,35 @@ Three consequences that should not be re-derived:
   finished run reloading itself forever, and skipping `finalise_run` on a crash
   leaves a dead one doing the same.
 
-**`overview.py` ships at two scopes.** `overview.html` at the results root covers
-every sweep the install has done; `<stamp>_overview.html` in a run folder covers that
-sweep and adds how long it took and what it cost. Both are complete local documents.
+**`overview.py` ships at two scopes.** `Dashboard_Lifetime.html` at the results root
+covers every sweep the install has done; `Dashboard_<stamp>.html` in a run folder
+covers that sweep and adds how long it took. Both are complete local documents.
 Four numbers — `Jobs in scope`, `Relevant jobs`, `Jobs shortlisted`, `Jobs applied` —
-over five `<details>` sections, under a `HireShire` heading and a `Lifetime Control
-Room` / `Control Room Run: <stamp>` subtitle. It explains nothing: past one line naming the scope and telling
+over five `<details>` sections, under a `HireShire` heading and a `Lifetime Dashboard`
+/ `Dashboard Run: <stamp>` subtitle. It explains nothing: past one line naming the scope and telling
 the reader the sections open and filter, the judge's rationales inside an opened job
 are the only sentences on it. **Both scopes are the same markup fed different data**,
-and the two extra tiles are the single deliberate exception — how long it took and
-what it cost are facts about a sweep, not about an install.
+and the `Took` tile is the single deliberate exception — how long it took is a fact
+about a sweep, not about an install.
+
+It had a second exception, an `Est. cost` tile, and `render.SHOW_COST` now ships
+**off**. The figure was the Claude CLI's own client-side estimate at list price, and a
+tile on a page whose question is *what have I got* reads as a bill. Nothing upstream
+changed: `UsageTally` still meters every judge call, `matcher._log_usage` still prints
+`~$X.XX at list price`, and `store.finalise` still writes `usage` into
+`runs.stats_json` — so "what did that sweep cost" stays answerable, just not from the
+page. The flag, `usd()` and the `if SHOW_COST:` block stay wired so flipping it back is
+one edit, and `tests/test_reporting.py::test_the_cost_display_is_one_switch` flips it
+**on** to prove the wiring behind it has not rotted.
+
+The filenames are the only place the word "overview" ever reached a user, which is why
+the module, the `report_paths` keys (`overview`, `run_overview`) and `last_run.json`'s
+pointer fields (`overview_html`, `run_overview_html`) all keep their old names: those
+are wiring, and renaming them would break consumers to no one's benefit. Note that
+`tests/test_reporting.py` asserts no `dashboard.html` exists (a guard against the
+deleted page) and `tests/test_plugin_shell.py` forbids that substring in any skill —
+both comparisons are case-sensitive, and `Dashboard_Lifetime.html` clears them.
+A bare `Dashboard.html` would not, since Windows paths are case-insensitive.
 
 **Needs Attention sits between Jobs Applied and Jobs Shortlisted, and the `applied`
 table feeds both.** `overview_snapshot` splits it on `status`: `submitted` goes to
@@ -655,26 +674,37 @@ Four things about the applier that are easy to break:
   that session the tools are `mcp__playwright__*`, while inside the skill they are
   `mcp__plugin_hireshire_playwright__*`; `apply_one.md` names both. Do not "fix" the
   worker to use the namespaced names.
-- **The session runs in the WORKSPACE, because that is where the resume is.**
-  Playwright MCP uploads and writes only inside the client's roots, which Claude Code
-  sets to the cwd. Running in `DATA/applied` refused 5 of 8 uploads on one sweep with
-  nothing submitted. `worker.session_dirs` decides: cwd = workspace (else
-  `applied_dir`), screenshots in `<workspace>/hireshire_run_results/applied/` via an
-  absolute `screenshot_path`, and a resume outside cwd is copied in. An explicit
-  filename resolves against the root and ignores `--output-dir`, which only covers
-  files the server names itself. Both output locations must stay *under* cwd, or the
-  server refuses them the same way. The scorer stays in ROOT: `--safe-mode --tools ""`
-  touches no files. The interactive `/hireshire:apply` still depends on the user's
-  own session cwd.
+- **Screenshots go to the run's own folder; the session runs in the WORKSPACE.** Those
+  are two different questions and `worker.session_dirs` answers them separately, from
+  the `run_dir` `orchestrate` hands the worker — the same `results_dir` the CSV, JSON
+  and dashboard are written to, so the applier's output cannot land somewhere the rest
+  of the sweep's did not. `out_dir` is `<run dir>/applied/`, reached through an absolute
+  `screenshot_path`. It was one folder shared by every sweep, which left the user's only
+  record of each submitted form in a pile with nothing saying which run it came from.
+  There is no setting for it: `applied_dir` is gone, and the fallback needs none because
+  `make_run_dir` already falls back to `DATA/results/<stamp>`.
 
-  **`--output-dir` is a per-job scratch dir, `applied/.browser/<job_id>/`, never
-  `applied/` itself.** Playwright MCP writes a `page-*.yml` for every snapshot and a
-  `console-*.log` there unasked: one sweep left 204 and 20 of them beside 7 screenshots.
-  The session may read those files mid-form, so `run_apply_worker` deletes the scratch
-  dir in a `finally` only *after* the outcome is recorded, whatever the ending.
-  `session_dirs` clears whatever a killed sweep left behind. That is safe because only
-  one sweep runs at a time. Only `page-*.yml`, `console-*.log` and `.browser/` are
-  touched; screenshots are the user's record of each form.
+  cwd is the other question. Playwright MCP uploads and writes only inside the client's
+  roots, which Claude Code sets to the cwd, and the resume is in the workspace — running
+  under DATA refused 5 of 8 uploads on one sweep with nothing submitted. So cwd is the
+  workspace **when it actually contains `out_dir`**, which is the real invariant, and
+  `out_dir` itself otherwise: with a workspace configured, `make_run_dir` can still fall
+  back to DATA (folder gone, unwritable), and a cwd that no longer contains the run
+  folder would lose every screenshot. A resume outside cwd is copied in. An explicit
+  filename resolves against the root and ignores `--output-dir`, which only covers files
+  the server names itself. The scorer stays in ROOT: `--safe-mode --tools ""` touches no
+  files. The interactive `/hireshire:apply` still depends on the user's own session cwd.
+
+  **`--output-dir` is a per-job scratch dir, `<run dir>/applied/.browser/<job_id>/`,
+  never the `applied/` folder itself.** Playwright MCP writes a `page-*.yml` for every
+  snapshot and a `console-*.log` there unasked: one sweep left 204 and 20 of them beside
+  7 screenshots. The session may read those files mid-form, so `run_apply_worker` deletes
+  the scratch dir in a `finally` only *after* the outcome is recorded, whatever the
+  ending. `session_dirs` clears the same things from `out_dir` on the way in, which now
+  reaches only this run's folder — a killed sweep's leftovers stay in that sweep's
+  folder, beside its screenshots, and nothing migrates the shared folder older installs
+  filled. Only `page-*.yml`, `console-*.log` and `.browser/` are touched; screenshots are
+  the user's record of each form.
 
 Each `main()` takes optional `in_queue` / `out_queue` / `quiet`. `quiet=True`
 suppresses Rich in favour of `logging` — required under the monitor.

@@ -60,6 +60,9 @@ LAST_RUN_PATH = DATA / "last_run.json"  # pointer to the newest run, read by /ap
 # the engine writes into them, and they must not drift apart.
 RUN_RESULTS_DIRNAME = "hireshire_run_results"
 RESUME_SUBDIR = Path("resume") / "original"
+# Inside one run's folder, beside its CSV, JSON and dashboard: the applier's
+# screenshots and the browser server's scratch. See `applier/worker.session_dirs`.
+APPLIED_DIRNAME = "applied"
 
 
 def resolve_data(value: str | Path) -> Path:

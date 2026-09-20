@@ -561,7 +561,7 @@ Three things that trip people up:
     ("why do you want to work here?") are written from their resume and the job
     description; a question about a tool the resume does not show is answered **yes**,
     citing the closest tool it does show. Anything it still cannot answer lands under
-    **Needs Attention** on the overview page, with the reason.
+    **Needs Attention** on the dashboard, with the reason.
 
     And say plainly, before writing the setting:
 

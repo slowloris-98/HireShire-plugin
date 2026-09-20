@@ -16,7 +16,6 @@ class ApplierSettings(BaseModel):
     # applier, which is what it turned out to be in practice.
     enable_applier: bool = False
     matches_dir: str = "matches"
-    applied_dir: str = "applied"
     runs_dir: str = "scraped"
     db_path: str = "hireshire.db"
     resume_path: str = ""  # the user's own resume PDF; set by /hireshire:setup

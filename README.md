@@ -39,14 +39,14 @@ The sweep's status and your shortlisted jobs are here:
 
 **Windows**
 ```
-All sweeps:  C:\Users\<you>\<job-search-folder>\hireshire_run_results\overview.html
-One sweep:   C:\Users\<you>\<job-search-folder>\hireshire_run_results\<YYYY-MM-DD_HHMMSS>\<YYYY-MM-DD_HHMMSS>_overview.html
+All sweeps:  C:\Users\<you>\<job-search-folder>\hireshire_run_results\Dashboard_Lifetime.html
+One sweep:   C:\Users\<you>\<job-search-folder>\hireshire_run_results\<YYYY-MM-DD_HHMMSS>\Dashboard_<YYYY-MM-DD_HHMMSS>.html
 ```
 
 **macOS**
 ```
-All sweeps:  ~/<job-search-folder>/hireshire_run_results/overview.html
-One sweep:   ~/<job-search-folder>/hireshire_run_results/<YYYY-MM-DD_HHMMSS>/<YYYY-MM-DD_HHMMSS>_overview.html
+All sweeps:  ~/<job-search-folder>/hireshire_run_results/Dashboard_Lifetime.html
+One sweep:   ~/<job-search-folder>/hireshire_run_results/<YYYY-MM-DD_HHMMSS>/Dashboard_<YYYY-MM-DD_HHMMSS>.html
 ```
 
 Full details: [docs/SPECS.md](docs/SPECS.md)

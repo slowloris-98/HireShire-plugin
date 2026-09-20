@@ -4,6 +4,39 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.9.0] — 2026-09-19
+
+### Changed
+
+- **Each sweep now keeps its application screenshots in its own folder.** They used to
+  pile up in one shared `hireshire_run_results/applied/`, with nothing to say which
+  sweep a screenshot came from. From now on they go to
+  `hireshire_run_results/<date>_<time>/applied/`, beside that run's results CSV, JSON
+  and dashboard. Your existing shared folder is left exactly as it is — nothing is
+  moved or deleted, so every screenshot you already have stays where you last saw it.
+  (The `applied_dir` setting in `applier.yaml` is gone with it; it is safe to leave the
+  line in your file, where it is now ignored.)
+
+- **The overview pages are now called dashboards, and are saved under new names.**
+  `overview.html` at your results root is now `Dashboard_Lifetime.html`, and each
+  sweep's own copy is `Dashboard_<date>_<time>.html` instead of
+  `<date>_<time>_overview.html`. The pages themselves are unchanged apart from the
+  subtitle, which now reads *Lifetime Dashboard* / *Dashboard Run: …* rather than
+  *Control Room*.
+
+  **Update your bookmark.** Nothing writes the old `overview.html` any more, so the
+  copy already in your results folder will sit there frozen at whatever your last
+  sweep left. It is safe to delete, along with any `*_overview.html` inside old run
+  folders — every one of those runs has its results CSV and JSON beside it either
+  way.
+
+- **The `Est. cost` tile is gone from the run dashboard.** The figure was the Claude
+  CLI's own estimate at list price, not a bill and not a reading of your actual
+  subscription usage, and on a page about which jobs you have it read as if it were
+  one. The number is still measured and still recorded for every sweep — it appears
+  in the matcher's console summary and in `logs/`, and it is kept in the database —
+  it is simply no longer shown as a headline. The `Took` tile stays.
+
 ## [0.8.0] — 2026-09-19
 
 ### Changed

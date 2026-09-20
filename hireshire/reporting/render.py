@@ -25,13 +25,15 @@ from __future__ import annotations
 import html
 from datetime import datetime, timezone
 
-# The one switch for every cost figure the reports print. Set it to False and the
-# `Est. cost` tile disappears, leaving the pages exactly as they were before scoring
-# cost was recorded — the number stays in `runs.stats_json` either way. It is a
-# constant rather than a setting because turning it off is an edit to this repo, not
-# a decision a user makes; `config_writer.py` deliberately whitelists what users may
-# change.
-SHOW_COST = True
+# The one switch for every cost figure the reports print, and it is deliberately off.
+# The number is the Claude CLI's own client-side estimate at list price, not a bill,
+# and on a page whose whole question is *what have I got* it read as authoritative.
+# Nothing upstream changed: the tally still reaches the console summary, the log and
+# `runs.stats_json`, so "what did that sweep cost" is still answerable — just not by
+# a tile. Set it back to True and the `Est. cost` tile returns. It is a constant
+# rather than a setting because that is an edit to this repo, not a decision a user
+# makes; `config_writer.py` deliberately whitelists what users may change.
+SHOW_COST = False
 
 # Every face names a real fallback stack. These pages are opened from disk and are
 # often read on a machine with no network, or with the fonts blocked, so the page has

@@ -71,7 +71,7 @@ shortlisted three jobs, all at an excluded employer, and the applier would have
 reported nothing to do without ever saying why. You report them in Step 4.
 
 Record each one as you set it aside, so it appears under **Needs Attention** on the
-overview page and stops coming back as pending on every sweep:
+dashboard and stops coming back as pending on every sweep:
 
 ```bash
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/applied_cli.py record \
@@ -128,7 +128,7 @@ Wait `inter_job_delay_s` seconds before the next job.
 ## Step 4 — Summary
 
 A table of Company / Title / Status / Screenshot, then totals for submitted and
-error. Every `error` job now appears under **Needs Attention** on the overview page,
+error. Every `error` job now appears under **Needs Attention** on the dashboard,
 with its one-line reason, so tell the user that is where to find them.
 
 Then, **always**, an **Apply manually** section listing the pending jobs you set
@@ -138,7 +138,7 @@ is empty; the whole point is that an excluded job never disappears without a tra
 
 Introduce it with one line of why: those employers require an account login before
 the form appears, so the applier cannot complete them and the user needs to apply
-themselves. Add that they are also on the overview page under **Needs Attention**, so
+themselves. Add that they are also on the dashboard under **Needs Attention**, so
 the list survives the end of this session.
 
 ## Errors

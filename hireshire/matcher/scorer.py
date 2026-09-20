@@ -98,9 +98,11 @@ class UsageTally:
     def as_dict(self) -> dict:
         """The tally as plain JSON, for `runs.stats_json`.
 
-        Written once per run by `MatchStore.finalise` so the reports and the
-        overview page can answer "what did that sweep cost" without reading a log
-        file — which, under the monitor's `quiet=True`, was the only copy.
+        Written once per run by `MatchStore.finalise`, so "what did that sweep
+        cost" survives outside the log file — which, under the monitor's
+        `quiet=True`, was the only copy. The dashboard no longer prints it
+        (`render.SHOW_COST`): a list-price estimate on that page read as a bill.
+        The row is kept regardless, because it is the only durable record.
         """
         return {
             "calls": self.calls,

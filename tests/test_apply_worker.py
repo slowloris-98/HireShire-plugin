@@ -83,7 +83,6 @@ def _settings(tmp_path, **over) -> ApplierSettings:
     resume.write_bytes(b"%PDF-1.4")
     base = dict(
         enable_applier=True, resume_path=str(resume), inter_job_delay_s=0,
-        applied_dir=str(tmp_path / "applied"),
         apply_timeout_s=5, exclude_companies=["Google"], first_name="Ada",
         last_name="Lovelace", email="ada@example.com", phone="555",
     )
@@ -96,9 +95,21 @@ def _job(job_id: str, company: str = "acme") -> dict:
             "job_url": f"https://example.com/jobs/{job_id}"}
 
 
-def _run(tmp_path, jobs, settings=None, db=None, backlog=False):
+def _run_dir(tmp_path, stamp: str = "2026-09-19_120000") -> Path:
+    """This sweep's results folder — what `paths.make_run_dir` hands the worker."""
+    d = tmp_path / "hireshire_run_results" / stamp
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _applied(tmp_path, stamp: str = "2026-09-19_120000") -> Path:
+    return _run_dir(tmp_path, stamp) / "applied"
+
+
+def _run(tmp_path, jobs, settings=None, db=None, backlog=False, run_dir=None):
     db = db or Database(tmp_path / "test.db")
     settings = settings or _settings(tmp_path)
+    run_dir = run_dir if run_dir is not None else _run_dir(tmp_path)
 
     async def go():
         q: asyncio.Queue = asyncio.Queue()
@@ -106,7 +117,7 @@ def _run(tmp_path, jobs, settings=None, db=None, backlog=False):
             await q.put(j)
         await q.put(None)
         return await worker.run_apply_worker(
-            q, settings, "RESUME TEXT", db=db, include_backlog=backlog
+            q, settings, "RESUME TEXT", run_dir=run_dir, db=db, include_backlog=backlog
         )
 
     return asyncio.run(go()), db
@@ -153,7 +164,7 @@ def test_the_session_brings_its_own_browser_server(tmp_path, launcher):
     args = server["args"]
     assert args[:len(shipped["mcpServers"]["playwright"]["args"])] == \
         shipped["mcpServers"]["playwright"]["args"]
-    assert args[args.index("--output-dir") + 1] == str(tmp_path / "applied" / ".browser" / "j1")
+    assert args[args.index("--output-dir") + 1] == str(_applied(tmp_path) / ".browser" / "j1")
     # The per-job rules must name the tools as that server exposes them.
     assert "mcp__playwright__browser_navigate" in worker.PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -166,24 +177,26 @@ def _inputs(call) -> dict:
 
 def test_the_session_runs_in_the_workspace_so_the_resume_can_be_uploaded(
         tmp_path, launcher, workspace):
-    """Playwright MCP refuses uploads outside the session's cwd. Running in
-    `applied_dir` while the resume sat in the workspace refused 5 of 8 forms on
-    2026-09-18, with nothing submitted."""
+    """Playwright MCP refuses uploads outside the session's cwd. Running under DATA
+    while the resume sat in the workspace refused 5 of 8 forms on 2026-09-18, with
+    nothing submitted."""
     ws = tmp_path / "ws"
     resume = ws / "resume" / "original" / "cv.pdf"
     resume.parent.mkdir(parents=True)
     resume.write_bytes(b"%PDF-1.4")
     workspace["dir"] = ws
+    run_dir = _run_dir(ws)
 
     calls, _, _ = launcher
-    _run(tmp_path, [_job("j1")], settings=_settings(tmp_path, resume_path=str(resume)))
+    _run(tmp_path, [_job("j1")], run_dir=run_dir,
+         settings=_settings(tmp_path, resume_path=str(resume)))
 
     (call,) = calls
     assert call["kwargs"]["cwd"] == str(ws)
     inputs = _inputs(call)
     assert inputs["resume_path"] == str(resume), "a resume already inside cwd is not copied"
     shot = Path(inputs["screenshot_path"])
-    assert shot.parent == ws / "hireshire_run_results" / "applied"
+    assert shot.parent == run_dir / "applied", "the screenshot belongs to this sweep"
     assert shot.parent.is_dir()
     argv = list(call["argv"])
     out_dir = json.loads(argv[argv.index("--mcp-config") + 1])[
@@ -239,7 +252,7 @@ def test_snapshots_and_console_logs_are_deleted_once_the_outcome_is_recorded(
     assert seen["existed"], "the session had nowhere to write its snapshots"
     assert order == ["recorded"], "output was deleted before the outcome was recorded"
     assert _statuses(db) == {"j1": "submitted"}
-    applied = tmp_path / "applied"
+    applied = _applied(tmp_path)
     assert not _output_dir(calls[0]).exists()
     assert not (applied / ".browser").exists()
     assert not list(applied.glob("*.yml")) and not list(applied.glob("*.log"))
@@ -254,14 +267,14 @@ def test_output_is_deleted_however_the_session_ends(tmp_path, launcher, ending):
     _run(tmp_path, [_job("j1")], settings=_settings(tmp_path, apply_timeout_s=0.05))
 
     assert seen["existed"]
-    assert not (tmp_path / "applied" / ".browser").exists()
+    assert not (_applied(tmp_path) / ".browser").exists()
 
 
 def test_leftover_output_is_cleared_and_screenshots_are_kept(tmp_path, launcher):
-    """What earlier sweeps left: loose snapshots and logs from before the scratch dir,
-    and a `.browser/` a killed session never deleted. Screenshots and the copied
-    resume beside them are the user's and must survive."""
-    applied = tmp_path / "applied"
+    """What a killed session left in this run's folder: loose snapshots and logs, and
+    a `.browser/` it never deleted. Screenshots and the copied resume beside them are
+    the user's and must survive."""
+    applied = _applied(tmp_path)
     (applied / ".browser" / "old").mkdir(parents=True)
     (applied / ".browser" / "old" / "page-x.yml").write_text("- main")
     (applied / "page-2026-09-19T19-11-50-406Z.yml").write_text("- main")
@@ -281,23 +294,61 @@ def test_a_resume_outside_the_workspace_is_copied_into_it(tmp_path, launcher, wo
     workspace["dir"] = ws
 
     calls, _, _ = launcher
-    _run(tmp_path, [_job("j1"), _job("j2")])  # resume at tmp_path/resume.pdf
+    # resume at tmp_path/resume.pdf, outside the workspace the session runs in
+    _run(tmp_path, [_job("j1"), _job("j2")], run_dir=_run_dir(ws))
 
     uploaded = Path(_inputs(calls[0])["resume_path"])
     assert uploaded.is_relative_to(ws) and uploaded.read_bytes() == b"%PDF-1.4"
     assert _inputs(calls[1])["resume_path"] == str(uploaded)
 
 
-def test_without_a_workspace_the_session_runs_in_applied_dir(tmp_path, launcher):
-    """Installs predating `workspace_dir`. The session must still stay out of ROOT,
-    which every plugin update replaces, and the resume is copied in."""
+def test_without_a_workspace_the_session_runs_in_the_runs_applied_folder(
+        tmp_path, launcher):
+    """Installs predating `workspace_dir`, where the run folder is under DATA. The
+    session must still stay out of ROOT, which every plugin update replaces, and the
+    resume is copied in so the upload is inside the session's roots."""
     calls, _, _ = launcher
     _run(tmp_path, [_job("j1")])
 
     (call,) = calls
-    assert call["kwargs"]["cwd"] == str(tmp_path / "applied")
+    assert call["kwargs"]["cwd"] == str(_applied(tmp_path))
     uploaded = Path(_inputs(call)["resume_path"])
-    assert uploaded == tmp_path / "applied" / "resume.pdf" and uploaded.is_file()
+    assert uploaded == _applied(tmp_path) / "resume.pdf" and uploaded.is_file()
+
+
+def test_a_run_folder_outside_the_workspace_moves_the_session_with_it(
+        tmp_path, launcher, workspace):
+    """`make_run_dir` falls back to DATA when the workspace folder has gone missing or
+    is unwritable, and the config still names one. The session must follow the run
+    folder: the browser server refuses to write outside cwd, so a cwd that no longer
+    contains `out_dir` would lose every screenshot."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    workspace["dir"] = ws
+
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1")])          # run dir under tmp_path, not under ws
+
+    (call,) = calls
+    assert call["kwargs"]["cwd"] == str(_applied(tmp_path))
+    assert Path(_inputs(call)["screenshot_path"]).parent == _applied(tmp_path)
+
+
+def test_each_run_keeps_its_own_applied_folder(tmp_path, launcher):
+    """The whole point: one shared folder left the user's only record of each form in
+    a pile with no way to tell which sweep it came from."""
+    calls, _, _ = launcher
+    first = _run_dir(tmp_path, "2026-09-19_120000")
+    second = _run_dir(tmp_path, "2026-09-19_160000")
+    db = Database(tmp_path / "test.db")
+    _run(tmp_path, [_job("j1")], db=db, run_dir=first)
+    # A screenshot the first sweep's session took, which the second must not disturb.
+    (first / "applied" / "acme-j1.png").write_bytes(b"\x89PNG")
+    _run(tmp_path, [_job("j2")], db=db, run_dir=second)
+
+    shots = [Path(_inputs(c)["screenshot_path"]).parent for c in calls]
+    assert shots == [first / "applied", second / "applied"]
+    assert (first / "applied" / "acme-j1.png").is_file()
 
 
 def test_the_session_keeps_the_tools_the_judge_strips(tmp_path, launcher):
@@ -458,7 +509,8 @@ def test_cancelling_the_worker_kills_the_session_in_flight(tmp_path, launcher):
         q: asyncio.Queue = asyncio.Queue()
         await q.put(_job("j1"))
         task = asyncio.create_task(
-            worker.run_apply_worker(q, settings, "r", db=db, include_backlog=False)
+            worker.run_apply_worker(q, settings, "r", run_dir=_run_dir(tmp_path),
+                                    db=db, include_backlog=False)
         )
         for _ in range(200):
             if calls:
@@ -539,8 +591,8 @@ def test_the_applier_bar_counts_every_streamed_job_but_not_the_backlog(
             await q.put(j)
         await q.put(None)
         return await worker.run_apply_worker(
-            q, _settings(tmp_path), "RESUME TEXT", db=db, include_backlog=True,
-            run_id="now",
+            q, _settings(tmp_path), "RESUME TEXT", run_dir=_run_dir(tmp_path),
+            db=db, include_backlog=True, run_id="now",
         )
 
     asyncio.run(go())
