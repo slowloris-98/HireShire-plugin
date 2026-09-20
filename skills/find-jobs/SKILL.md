@@ -54,11 +54,11 @@ This takes roughly 20 minutes on the default board set, most of it rate-limited
 waiting on the boards themselves. Tell the user that up front. If they enabled
 Workday and BambooHR at setup, expect considerably longer.
 
-**Give them the overview page in the same breath**, because it is what makes the
+**Give them the dashboard in the same breath**, because it is what makes the
 wait legible:
 
 ```
-<results root>/overview.html
+<results root>/Dashboard_Lifetime.html
 ```
 
 The engine rewrites it every few seconds and it reloads itself while a sweep is
@@ -90,7 +90,7 @@ as they are scraped.
 
 ## While it runs — relay the progress
 
-There is nothing to publish. Both overview pages are local files the engine
+There is nothing to publish. Both dashboards are local files the engine
 rewrites on a clock, and they reload themselves while a sweep is running — so the
 user watches them directly and you do not stand between them and their own data.
 
@@ -110,7 +110,7 @@ this.
 
 If the user asks when results start appearing: **throughout the run**. Each
 employer's jobs go through every stage as soon as they are scraped, so scored jobs
-and their reasoning land on the overview page from the first few minutes on. What
+and their reasoning land on the dashboard from the first few minutes on. What
 arrives at the end is the CSV.
 
 ## Report back
@@ -134,7 +134,7 @@ it was dropped by a free gate or ran out of the run's call budget — and is not
 score of zero. Read the file and show the shortlisted rows as a table sorted by
 score; give them the path too.
 
-Then point them at the run's own overview page (`run_overview_html` in
+Then point them at the run's own dashboard (`run_overview_html` in
 `<DATA>/last_run.json`). That is where the *reasoning* lives — the rationales
 behind every score, and the jobs that were never scored with the reason why. It
 answers "why didn't I see that job?", which the CSV cannot. Say so especially when
@@ -164,6 +164,6 @@ Two things worth surfacing if the numbers warrant it:
   their own past runs.
 
 If auto-apply is enabled, applications already went out during the sweep, each one as
-its job was shortlisted. Point them to the overview page's Applied section for what was
+its job was shortlisted. Point them to the dashboard's Applied section for what was
 submitted and what errored. `/hireshire:apply` is only for catching up on jobs still
 pending — for example, when an apply session could not start.

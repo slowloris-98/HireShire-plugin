@@ -165,8 +165,8 @@ def test_the_pointer_names_only_the_two_pages_that_exist(tmp_path, monkeypatch):
     _write_outputs(tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch)
 
     pointer = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
-    assert pointer["overview_html"].endswith("overview.html")
-    assert pointer["run_overview_html"].endswith(f"{stamp}_overview.html")
+    assert pointer["overview_html"].endswith("Dashboard_Lifetime.html")
+    assert pointer["run_overview_html"].endswith(f"Dashboard_{stamp}.html")
     for gone in ("matching_html", "latest_matching_html", "dashboard_html",
                  "all_jobs_csv"):
         assert gone not in pointer

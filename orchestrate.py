@@ -504,7 +504,7 @@ async def run_pipeline(
                             )
                         stages.append(run_apply_worker(
                             q4, applier_settings, resume_text, run_id=run_id,
-                            on_progress=on_apply_progress,
+                            run_dir=results_dir, on_progress=on_apply_progress,
                         ))
                     stages.append(_track_results(q3, results_dir, run_id, stamp, quiet, apply_q=q4))
                     # Before anything starts writing counters: every progress write

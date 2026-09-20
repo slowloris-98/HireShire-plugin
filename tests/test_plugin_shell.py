@@ -322,6 +322,10 @@ def test_no_skill_names_a_file_the_engine_stopped_writing(skill):
     still naming one would send the user at a path nothing writes — the same class
     of failure as a skill stating a runtime fact it never asked for, and just as
     quiet, because a missing local file produces no error until someone opens it.
+
+    Note the case: the live pages are `Dashboard_Lifetime.html` and
+    `Dashboard_<stamp>.html`, and the comparison below is deliberately
+    case-sensitive so those do not trip a guard aimed at the deleted `dashboard.html`.
     """
     text = (ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
     for gone in ("dashboard.html", "latest_matching.html", "_matching.html",

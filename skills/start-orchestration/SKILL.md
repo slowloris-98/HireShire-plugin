@@ -62,8 +62,8 @@ Tell the user, plainly:
   ```bash
   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --stop
   ```
-- **Where to watch it** without waiting on you: the overview page at
-  `<results root>/overview.html`. It is local, covers every sweep the install has
+- **Where to watch it** without waiting on you: the dashboard at
+  `<results root>/Dashboard_Lifetime.html`. It is local, covers every sweep the install has
   done, rewrites itself continuously while a sweep runs, and costs them nothing. Each
   sweep also leaves its own copy in its run folder. The results root is
   `<workspace_dir>/hireshire_run_results/`, or `<DATA>/results/` when `workspace_dir`
@@ -82,7 +82,7 @@ Each cycle emits one summary line: how many matches were found, the best score, 
 the next sweep is due. Relay those as they arrive; do not go looking for more detail
 unless the user asks.
 
-There is nothing to publish. The engine rewrites both overview pages on a clock and
+There is nothing to publish. The engine rewrites both dashboards on a clock and
 they reload themselves while a sweep is running, so the user watches them directly
 rather than waiting on a message from you. `<DATA>/last_run.json` carries the exact
 paths as `overview_html` and `run_overview_html` once a sweep has written them.

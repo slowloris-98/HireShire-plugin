@@ -61,7 +61,7 @@ def report_paths(results_dir: Path, stamp: str) -> dict[str, Path]:
     """
     root = paths.results_root()
     return {
-        "overview": root / overview.OVERVIEW_NAME,
+        "overview": root / overview.LIFETIME_NAME,
         "run_overview": results_dir / overview.run_overview_name(stamp),
     }
 

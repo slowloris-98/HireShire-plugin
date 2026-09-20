@@ -358,7 +358,7 @@ def test_the_lifetime_loader_keeps_a_jobs_best_showing(tmp_path):
     assert j2[0]["relevance_score"] == 91
 
 
-# --- the two extra tiles ------------------------------------------------------
+# --- the extra tile, and the one that was withdrawn ---------------------------
 
 
 def test_a_finished_sweep_shows_a_fixed_duration(tmp_path):
@@ -374,22 +374,25 @@ def test_a_live_sweep_counts_up_from_its_start(tmp_path):
     assert duration(started.isoformat(), None).startswith("5m")
 
 
-def test_an_unmeasured_sweep_shows_a_dash_not_zero_dollars(tmp_path):
-    """`usage` is written once, at the matcher's finalise. Printing $0.00 mid-sweep
-    would claim the run was free — the same rule the CSV's blank llm_score follows."""
-    snap = _snapshot(_populated(tmp_path), usage=None)
-    html = overview.build(snap, RUN)
-    assert "$0.00" not in html
-    assert "$1.87" in overview.build(_snapshot(_populated(tmp_path)), RUN)
+def test_no_scope_prints_what_the_sweep_cost(tmp_path):
+    """The `Est. cost` tile is off (`render.SHOW_COST`): the figure is a list-price
+    estimate, not a bill. The snapshot still carries it on the per-run scope, so this
+    checks the renderer and not just the absence of data. `tests/test_reporting.py`
+    owns the switch itself."""
+    per_run = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    lifetime = overview.build(data.overview_snapshot(_populated(tmp_path), None), None)
+    for html in (per_run, lifetime):
+        assert "Est. cost" not in html
+        assert "$1.87" not in html
+        assert "$0.00" not in html
 
 
-def test_the_lifetime_page_has_no_duration_or_cost(tmp_path):
-    """Neither is a fact about an install — the tiles belong to one sweep. They are
-    the *only* difference between the two scopes; everything else on the lifetime
-    page is the same markup fed different data."""
+def test_the_lifetime_page_has_no_duration(tmp_path):
+    """How long it took is a fact about a sweep, not about an install. It is the
+    *only* difference between the two scopes; everything else on the lifetime page is
+    the same markup fed different data."""
     html = overview.build(data.overview_snapshot(_populated(tmp_path), None), None)
     assert ">Took<" not in html
-    assert "Est. cost" not in html
 
 
 def test_both_scopes_carry_the_same_header(tmp_path):
@@ -407,8 +410,8 @@ def test_both_scopes_carry_the_same_header(tmp_path):
         assert html.index('class="stats"') < html.index('class="hint"') < html.index('class="acc"')
 
     # The subtitle names the scope, and it is what tells the two apart.
-    assert "<span>Lifetime Control Room</span>" in lifetime
-    assert f"<span>Control Room Run: {RUN}</span>" in per_run
+    assert "<span>Lifetime Dashboard</span>" in lifetime
+    assert f"<span>Dashboard Run: {RUN}</span>" in per_run
 
 
 # --- the page itself ----------------------------------------------------------
@@ -689,9 +692,9 @@ def test_the_two_scopes_land_in_the_two_places(tmp_path):
 
     targets = reporting.report_paths(tmp_path, RUN)
     assert targets["overview"].parent == paths.results_root()
-    assert targets["overview"].name == "overview.html"
+    assert targets["overview"].name == "Dashboard_Lifetime.html"
     assert targets["run_overview"].parent == tmp_path
-    assert targets["run_overview"].name == f"{RUN}_overview.html"
+    assert targets["run_overview"].name == f"Dashboard_{RUN}.html"
 
 
 def test_a_refresh_writes_both_scopes(tmp_path, monkeypatch):
@@ -710,8 +713,8 @@ def test_a_refresh_writes_both_scopes(tmp_path, monkeypatch):
 
     reporting.refresh(RUN, run_dir, RUN, final=True)
 
-    assert (root / "overview.html").exists()
-    assert (run_dir / f"{RUN}_overview.html").exists()
+    assert (root / "Dashboard_Lifetime.html").exists()
+    assert (run_dir / f"Dashboard_{RUN}.html").exists()
 
 
 # --- the failure contract -----------------------------------------------------
@@ -722,11 +725,13 @@ def test_losing_the_page_is_reported_as_none_not_raised(tmp_path):
     JSON and database rows are already safe."""
     blocked = tmp_path / "file.txt"
     blocked.write_text("not a directory", encoding="utf-8")
-    assert overview.write(_snapshot(_populated(tmp_path)), blocked / "overview.html") is None
+    assert overview.write(
+        _snapshot(_populated(tmp_path)), blocked / overview.LIFETIME_NAME
+    ) is None
 
 
 def test_a_broken_snapshot_never_takes_down_the_run(tmp_path):
-    assert overview.write({}, tmp_path / "overview.html") is None
+    assert overview.write({}, tmp_path / overview.LIFETIME_NAME) is None
 
 
 def test_an_empty_install_still_renders(tmp_path):

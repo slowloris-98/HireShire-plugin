@@ -127,12 +127,13 @@ def _overview_snapshot(**over) -> dict:
     return base
 
 
-def test_the_sweeps_cost_reaches_the_page():
-    """Until this, a monitor sweep's cost survived only in
-    logs/orchestration.log, because `quiet=True` suppresses the console summary."""
+def test_the_cost_estimate_stays_off_the_page():
+    """It is the Claude CLI's own list-price estimate, not a bill, and a tile on a
+    page whose question is *what have I got* read as one. The snapshot still carries
+    the figure — this pins that the renderer declines to print it."""
     html = overview.build(_overview_snapshot(usage=USAGE), "2026-08-25_153432")
-    assert "$1.87" in html
-    assert "Est. cost" in html
+    assert "Est. cost" not in html
+    assert "$1.87" not in html
 
 
 def test_a_run_that_was_never_measured_shows_no_cost_anywhere():
@@ -143,11 +144,12 @@ def test_a_run_that_was_never_measured_shows_no_cost_anywhere():
 
 
 def test_the_cost_display_is_one_switch(monkeypatch):
-    """Every cost fragment hangs off render.SHOW_COST, so the feature comes out of
-    the reports in one edit while the numbers stay in the database."""
-    monkeypatch.setattr(overview, "SHOW_COST", False)
+    """Every cost fragment hangs off render.SHOW_COST, which now ships off. Flipped
+    back on, the tile has to return from the same snapshot — otherwise the switch has
+    quietly rotted into a constant nobody can use and the wiring behind it is dead."""
+    monkeypatch.setattr(overview, "SHOW_COST", True)
     html = overview.build(_overview_snapshot(usage=USAGE), "2026-08-25_153432")
-    assert "Est. cost" not in html and "$1.87" not in html
+    assert "Est. cost" in html and "$1.87" in html
 
 
 # --- the one definition of "judged" -------------------------------------------
@@ -194,7 +196,9 @@ def test_a_broken_report_never_takes_down_the_run(tmp_path, monkeypatch):
 def test_a_write_failure_is_reported_as_none_not_raised(tmp_path):
     blocked = tmp_path / "nope"
     blocked.write_text("i am a file, not a directory", encoding="utf-8")
-    assert overview.write(_overview_snapshot(), blocked / "overview.html") is None
+    assert overview.write(
+        _overview_snapshot(), blocked / overview.LIFETIME_NAME
+    ) is None
 
 
 def test_the_throttle_lets_the_final_write_through(tmp_path, monkeypatch):
@@ -344,7 +348,7 @@ def test_finalising_a_run_writes_both_pages_and_the_csv(tmp_path, monkeypatch):
     _, results_dir = _finalise_with_reports(tmp_path, monkeypatch)
 
     assert (results_dir / overview.run_overview_name("2026-08-25_153432")).exists()
-    assert (tmp_path / overview.OVERVIEW_NAME).exists()
+    assert (tmp_path / overview.LIFETIME_NAME).exists()
     assert (results_dir / "2026-08-25_153432_results.csv").exists()
     # ...and nothing writes the two pages that were removed.
     assert not (tmp_path / "dashboard.html").exists()
@@ -367,7 +371,7 @@ def test_the_overview_survives_the_finalise_path(tmp_path, monkeypatch):
     # Both pages keep their bars once the sweep is over: the run page as a record
     # of where it ended, the lifetime page because its bars are lifetime totals.
     assert 'id="bar:scraper"' in html
-    lifetime = (tmp_path / overview.OVERVIEW_NAME).read_text(encoding="utf-8")
+    lifetime = (tmp_path / overview.LIFETIME_NAME).read_text(encoding="utf-8")
     assert 'id="bar:scraper"' in lifetime
     # The title-gate job reached the page, which it can only do via the jobs table.
     assert "Barista" in html
@@ -381,7 +385,7 @@ def test_the_pointer_file_names_the_pages_for_the_skills(tmp_path, monkeypatch):
     _, results_dir = _finalise_with_reports(tmp_path, monkeypatch)
     pointer = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
 
-    assert pointer["overview_html"] == str(tmp_path / overview.OVERVIEW_NAME)
+    assert pointer["overview_html"] == str(tmp_path / overview.LIFETIME_NAME)
     assert pointer["run_overview_html"] == str(
         results_dir / overview.run_overview_name("2026-08-25_153432")
     )
@@ -394,7 +398,7 @@ def test_a_finished_run_leaves_pages_that_stop_reloading(tmp_path, monkeypatch):
     and the pages know the sweep is over. Refreshing before it would leave a
     finished run reloading itself forever."""
     _, results_dir = _finalise_with_reports(tmp_path, monkeypatch)
-    for page in (tmp_path / overview.OVERVIEW_NAME,
+    for page in (tmp_path / overview.LIFETIME_NAME,
                  results_dir / overview.run_overview_name("2026-08-25_153432")):
         assert 'http-equiv="refresh"' not in page.read_text(encoding="utf-8")
 
@@ -406,7 +410,7 @@ def test_a_crashed_run_also_leaves_pages_that_stop_reloading(tmp_path, monkeypat
     db, results_dir = _finalise_with_reports(tmp_path, monkeypatch, complete=False)
 
     assert db.finalised == ["pipeline"]
-    for page in (tmp_path / overview.OVERVIEW_NAME,
+    for page in (tmp_path / overview.LIFETIME_NAME,
                  results_dir / overview.run_overview_name("2026-08-25_153432")):
         assert 'http-equiv="refresh"' not in page.read_text(encoding="utf-8")
 
