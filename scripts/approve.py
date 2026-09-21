@@ -84,6 +84,7 @@ _SUBCOMMANDS = {
     "scripts/setup_cli.py": frozenset({
         "install-config", "init-workspace", "find-resumes", "install-resume",
         "resume-text", "get", "field-docs", "set", "write-profile", "warm-models",
+        "codex-check",
     }),
 }
 

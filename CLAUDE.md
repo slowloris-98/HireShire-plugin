@@ -802,6 +802,25 @@ suppresses Rich in favour of `logging` — required under the monitor.
   sweep's apply worker runs each per-job session as `claude -p --permission-mode auto`
   and therefore bypasses it entirely: unattended auto-apply has no human checkpoint by
   design.
+- **The `codex` judge is `codex exec`, and five things about it were learned by
+  probing, not read.** `hireshire/codex_cli.py` holds the rules; `CodexBackend` in
+  `scorer.py` applies them. Each fails silently if undone:
+  - `--output-schema` takes a **path**, and the schema must be OpenAI's strict
+    dialect (`codex_cli.strict_schema`) or every call is an HTTP 400.
+  - The answer is the **last** `agent_message` (openai/codex#19816). An
+    `item.completed` of type `error` is routine and is not a failure.
+  - The judge is **not an agent**. Tools, skills, sub-agents and environment context
+    are stripped, which took one call from 11,207 input tokens to 1,769, and tools
+    left on can make Codex drop the schema (#15451). `--disable` names are filtered
+    through `codex features list`, since an unknown one fails the call.
+  - **No caching between calls, by design of the CLI.** `prompt_cache_key` comes
+    from the thread id and every exec is a new thread (#21796, open). Do not resume
+    one thread to "fix" it — the context would grow by a posting per job. The
+    tally's `caches=False` keeps the no-cache warning from blaming the prompt.
+  - OpenAI counts cached tokens *inside* `input_tokens`, and there is no price, so
+    `cost_usd` is None rather than 0.
+  `model` has no Codex default: setup pins one from `setup_cli.py codex-check`, and
+  the backend refuses a Claude name, because `provider` alone can be switched.
 - **`userConfig` is not used** for anything load-bearing — its enable-time prompt
   has open bugs. The `setup` skill is the source of truth.
 - **`.claude/settings.json` is gitignored, and must stay that way.** Same argument as

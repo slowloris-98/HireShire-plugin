@@ -27,6 +27,9 @@ class MatcherSettings(BaseModel):
     # shipping an `effort` knob that does nothing. Haiku's 4,096-token minimum
     # cacheable prefix is the second reason: the rubric-plus-resume prefix built in
     # scorer.score would likely fall under it and silently never cache.
+    #
+    # The `codex` provider has no default here: setup pins one of the models
+    # `codex debug models` lists, and CodexBackend refuses a Claude name outright.
     model: str = "sonnet"
     # Thinking level: low|medium|high|xhigh|max. Thinking tokens bill as output, and
     # once the resume prefix is cached they are the dominant cost of a sweep — which
@@ -48,7 +51,9 @@ class MatcherSettings(BaseModel):
     matches_dir: str = "matches"
     db_path: str = "hireshire.db"
     request_interval_s: float = 13.0  # min seconds between requests; 13s = ~4.6 RPM (safe for 5 RPM free tier)
-    claude_cli_timeout_s: float = 600.0  # per-call bound for the claude_code backend
+    # Per-call bound for both CLI backends, claude_code and codex. The name predates
+    # the second one and is kept because users' configs already carry it.
+    claude_cli_timeout_s: float = 600.0
     skip_llm: bool = False
 
     @field_validator("effort")

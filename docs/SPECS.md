@@ -35,8 +35,8 @@ writes every run's results back into it. You do not have to create the folders
 first — point setup at an empty folder and it builds the layout for you, copying
 in a resume from wherever you keep it.
 
-**Requirements:** Claude Code with a Pro or Max subscription (an OpenAI API key
-works as an alternative), Python 3.10+, and about 2 GB of disk — most of it PyTorch,
+**Requirements:** Claude Code with a Pro or Max subscription (a ChatGPT plan via
+the Codex CLI, or an OpenAI API key, can do the scoring instead), Python 3.10+, and about 2 GB of disk — most of it PyTorch,
 the rest the two small models the funnel uses. Node 18+ only if you want auto-apply.
 
 ### Platform support

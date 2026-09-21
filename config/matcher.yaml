@@ -6,13 +6,13 @@ settings:
   # against a real run.
   threshold: 75
   concurrency: 4             # parallel LLM calls
-  provider: claude_code      # claude_code (your Claude subscription) / openai / anthropic / gemini
+  provider: claude_code      # claude_code (your Claude subscription) / codex (your ChatGPT plan) / openai / anthropic / gemini
   # Sonnet, not Haiku, and the reason is not only accuracy: `effort` below is
   # unsupported on Haiku and degrades silently, falling back to the highest level the
   # model does support. Switching to Haiku would leave you with a thinking dial that
   # does nothing. It also has a much larger minimum cacheable prefix, which would
   # stop your resume being cached between jobs and make every call pay full price.
-  model: claude-sonnet-5     # model name for the chosen provider
+  model: claude-sonnet-5     # model name for the chosen provider; codex needs a Codex model
   # Thinking level: low / medium / high / xhigh / max. Thinking tokens bill as
   # output, and once your resume is cached they are most of what a sweep costs — so
   # this is the main dial on how much of your Claude allowance a run consumes.
@@ -22,7 +22,7 @@ settings:
   # matches look shallow, and measure a small run first (set top_k low).
   effort: low
   request_interval_s: 0      # seconds between requests; raise if you hit rate limits
-  claude_cli_timeout_s: 600  # per-call bound for the claude_code provider
+  claude_cli_timeout_s: 600  # per-call bound for the claude_code and codex providers
   max_content_chars: 8000    # truncate the job description to this length before sending
   skip_llm: false            # true = shortlist everything that passes the funnel, no scoring
 

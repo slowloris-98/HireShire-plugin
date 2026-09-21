@@ -9,7 +9,9 @@ file-level internals.
 
 Everything runs on your machine except scoring. The sweep and the funnel never send
 anything out; only the jobs that survive the funnel are sent to Claude, each with
-your resume so it can be judged against it, on your own subscription.
+your resume so it can be judged against it, on your own subscription. (With the
+`codex` provider the judge is an OpenAI model on your ChatGPT plan instead, called
+through the local Codex CLI the same way.)
 
 ```mermaid
 flowchart TD

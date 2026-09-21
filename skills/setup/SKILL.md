@@ -247,6 +247,8 @@ Three things that trip people up:
      their own Claude chat** — a rolling 5-hour window plus a weekly one. Say this
      plainly; a user who does not know it will be surprised when a sweep eats into
      their conversations.
+   - On a **ChatGPT plan through Codex** it is the same trade: the calls draw on
+     their plan's Codex usage limits, shared with their own Codex use.
    - On a **paid API key** it is a straight cost dial and can go higher.
 
    Jobs that arrive after the ceiling is reached stay eligible for the next run, so
@@ -577,12 +579,34 @@ Three things that trip people up:
 10. **Scoring backend** → `matcher.provider`.
    - **Their Claude subscription** (`claude_code`) — the default, and the reason
      this plugin exists. No API key, no per-job cost. Then ask for `model` and
-     `effort` (low / medium / high / xhigh / max; medium is a good default).
+     `effort` (low / medium / high / xhigh / max; low is the default and usually
+     enough).
 
      This model judges jobs during a sweep and nothing else. It has no bearing on the
      exclusions, targets or profile drafted in question 6 — those are written by
      whichever model is running this setup conversation, which is why that list gets
-     confirmed before it is written.
+     confirmed before it is written. The same holds for the Codex option below.
+   - **Their ChatGPT plan, through the Codex CLI** (`codex`). No API key either.
+     First check it can work:
+
+     ```bash
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py codex-check
+     ```
+
+     It prints JSON with `installed`, `logged_in` and `models`. If `installed` is
+     false, tell them to install Codex; if `logged_in` is false, tell them to run
+     `codex login` in their own terminal and sign in with ChatGPT. Do not run either
+     for them — the sign-in opens a browser and is theirs to do. Re-run the check
+     once they say it is done, and offer the other options if they would rather not.
+
+     When both are true, ask which model to use, offering only the `models` entries
+     it printed (by `name`), and then `effort`, offering only that model's
+     `efforts` list, with low as the default. Pin both — never leave `model` as a
+     Claude name, the engine refuses it for this provider:
+
+     ```bash
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "codex", "model": "<model>", "effort": "low"}'
+     ```
    - **An API key** (`openai` etc.) — tell them to put the key in their
      environment and install `requirements-byo-key.txt` into the plugin venv.
 

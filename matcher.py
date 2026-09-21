@@ -136,7 +136,7 @@ class _ScoringBreaker:
         self._consecutive = 0
         self.tripped = False
         self.last_error: str | None = None
-        # Set when `last_error` was the host refusing to start `claude` at all
+        # Set when `last_error` was the host refusing to start the CLI at all
         # (scorer.CLILaunchError). The generic summary blames the backend, which then
         # sends the user looking at their login instead of their machine.
         self.launch_failed = False
@@ -160,7 +160,7 @@ class _ScoringBreaker:
         if self.launch_failed:
             return (
                 f"Scoring aborted after {self._limit} consecutive failures to start the "
-                f"claude CLI. Last error: {self.last_error or 'unknown'}. This is the "
+                f"scoring CLI. Last error: {self.last_error or 'unknown'}. This is the "
                 "machine, not the scoring backend: usually the terminal or session "
                 "running the sweep was closed, or the PC was locked or asleep. "
                 "No jobs were retired — they will be rescored on the next run."
@@ -250,10 +250,11 @@ def _yoe_required(job: Job) -> float | None:
 
 
 def _log_usage(scorer, quiet: bool) -> None:
-    """Report what the run drew on the user's Claude allowance.
+    """Report what the run drew on the user's Claude or ChatGPT allowance.
 
-    Scoring shares a rolling 5-hour window and a weekly one with the user's own
-    Claude chat, so "what did that sweep cost me" is a fair question that had no
+    Scoring shares its plan's usage windows with the user's own chat (Claude's
+    rolling 5-hour and weekly ones, or ChatGPT's Codex limits for the `codex`
+    provider), so "what did that sweep cost me" is a fair question that had no
     answer anywhere in the product. Only backends that can read their own meters
     expose a tally; the rest report nothing rather than print zeros as if they were
     measurements.
@@ -266,7 +267,7 @@ def _log_usage(scorer, quiet: bool) -> None:
     logger.info(usage.summary())
     if not quiet:
         console.print(f"[dim]{usage.summary()}[/dim]")
-    if usage.calls > 1 and usage.cache_read == 0:
+    if usage.calls > 1 and usage.cache_read == 0 and usage.caches:
         # The resume and rubric are identical on every call, so this should never
         # happen. When it does, the run is paying full price to re-read the same
         # resume once per job — which is invisible without saying so.

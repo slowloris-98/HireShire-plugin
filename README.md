@@ -4,7 +4,8 @@ Automated job search on your own Claude subscription.
 
 ## 1. Prerequisites
 
-- A Claude subscription
+- A Claude subscription (to score jobs on a ChatGPT plan instead, also install the
+  Codex CLI and run `codex login`; setup offers it)
 - An optimized, refined resume, in a new folder
 - ~3 GB of free disk space
 

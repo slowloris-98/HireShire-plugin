@@ -4,6 +4,19 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.12.0] — 2026-09-21
+
+### Added
+
+- **Score jobs on a ChatGPT plan.** `/hireshire:setup` now offers a third scoring
+  backend, `codex`, which judges each job through your local Codex CLI signed in
+  with ChatGPT — no API key, like the Claude option. Setup checks that Codex is
+  installed and signed in, lists the models your plan offers, and pins the one you
+  choose. The calls count against your plan's Codex usage limits.
+- Unlike the Claude backend, Codex cannot reuse your resume from cache between
+  jobs, so each scoring call reads it in full. The log's usage line says what a
+  sweep used; it shows no price, because Codex reports none.
+
 ## [0.11.0] — 2026-09-21
 
 ### Removed

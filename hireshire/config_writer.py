@@ -35,8 +35,9 @@ from hireshire.funnel.config import FunnelConfig
 from hireshire.matcher.config import MatcherSettings, TitleFilterConfig
 
 # Scoring providers. `claude_code` runs through the local Claude CLI on the user's
-# subscription and is the default; the rest need an API key in the environment.
-PROVIDERS = ["claude_code", "openai", "anthropic", "gemini"]
+# subscription and is the default; `codex` does the same through the Codex CLI on a
+# ChatGPT plan; the rest need an API key in the environment.
+PROVIDERS = ["claude_code", "codex", "openai", "anthropic", "gemini"]
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 
 
@@ -151,7 +152,7 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
             "model": FieldSpec(("settings", "model"), "str", "Model name for the chosen provider."),
             "effort": FieldSpec(
                 ("settings", "effort"), "enum",
-                "Thinking level for the claude_code provider.", options=EFFORTS,
+                "Thinking level for the claude_code and codex providers.", options=EFFORTS,
             ),
             "resume_path": FieldSpec(
                 ("settings", "resume_path"), "str", "Path to the resume PDF.",

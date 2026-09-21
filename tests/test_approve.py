@@ -41,6 +41,7 @@ APPROVED = [
     "orchestrate.py --once",
     "scripts/setup_cli.py install-config",
     "scripts/setup_cli.py warm-models",
+    "scripts/setup_cli.py codex-check",
     'scripts/setup_cli.py set matcher --json \'{"threshold": 75}\'',
     'scripts/setup_cli.py write-profile --text "Senior account manager, SaaS renewals"',
     "scripts/verify_bad_slugs.py --prune",
