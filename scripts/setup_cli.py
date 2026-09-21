@@ -17,6 +17,7 @@ setup asks are the *only* thing the user has to answer.
     python scripts/setup_cli.py set matcher --json '{"threshold": 75}'
     python scripts/setup_cli.py write-profile --text "Senior account manager ..."
     python scripts/setup_cli.py warm-models
+    python scripts/setup_cli.py codex-check
 
 Payloads travel on argv rather than stdin or a temp file, deliberately: heredocs
 and redirection are exactly what the approval guard has to refuse, so neither can
@@ -55,6 +56,7 @@ SUBCOMMANDS = (
     "set",
     "write-profile",
     "warm-models",
+    "codex-check",
 )
 
 
@@ -203,6 +205,19 @@ def cmd_warm_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_codex_check(args: argparse.Namespace) -> int:
+    """Whether the `codex` scoring provider can be offered, and with which models.
+
+    Read-only and unbilled: `--version`, `login status` and the model catalog. Setup
+    pins one of the listed models rather than a default, because the catalog is the
+    only place that knows what this user's ChatGPT plan can run today.
+    """
+    from hireshire import codex_cli
+
+    _print_json(codex_cli.check())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Actions performed by /hireshire:setup")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -237,6 +252,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--text", required=True)
 
     sub.add_parser("warm-models", help="Download the funnel's bi-encoder and cross-encoder")
+
+    sub.add_parser("codex-check", help="Is the Codex CLI installed and signed in; its models")
     return parser
 
 
@@ -251,6 +268,7 @@ HANDLERS = {
     "set": cmd_set,
     "write-profile": cmd_write_profile,
     "warm-models": cmd_warm_models,
+    "codex-check": cmd_codex_check,
 }
 
 

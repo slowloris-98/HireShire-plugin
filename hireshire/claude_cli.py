@@ -17,9 +17,10 @@ _API_AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 # nothing was billed. Observed: every scoring call of a monitor cycle exited 0xC0000142
 # at once — the first with no other call in flight and no apply session running — two
 # hours after the same process had scored 31 jobs. That is the host refusing to start a
-# console child, not the backend failing, and the log needs to say so.
+# console child, not the backend failing, and the log needs to say so. The codex
+# backend shares these: it is the same host refusing the same kind of child.
 LAUNCH_FAILURE_CODES = {
-    0xC0000142: "STATUS_DLL_INIT_FAILED: Windows could not start claude.exe",
+    0xC0000142: "STATUS_DLL_INIT_FAILED: Windows could not start the CLI process",
 }
 
 

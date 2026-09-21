@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -12,7 +13,7 @@ from typing import Literal, Optional, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, field_validator
 from tenacity import retry, retry_if_exception, stop_never
 
-from hireshire import claude_cli
+from hireshire import claude_cli, codex_cli, paths
 from hireshire.matcher.config import MatcherSettings
 from hireshire.models.job import Job
 from hireshire.matcher.prompts import SCORER_SYSTEM_PROMPT
@@ -44,15 +45,20 @@ class UsageTally:
     `cost_usd` is the CLI's own client-side estimate, computed from token counts at
     list price. On a subscription it is not a bill — it is a relative measure, useful
     for comparing effort levels or model choices, and it must be presented that way.
+    It is None for a backend that reports no price at all (`codex`), so the summary
+    says nothing rather than "$0.00", which would read as a measurement.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, priced: bool = True, caches: bool = True) -> None:
+        # False for a backend whose calls cannot share a cache at all (`codex`), so
+        # an empty `cache_read` is expected there rather than a sign of a leak.
+        self.caches = caches
         self.calls = 0
         self.input = 0
         self.output = 0
         self.cache_read = 0
         self.cache_write = 0
-        self.cost_usd = 0.0
+        self.cost_usd: float | None = 0.0 if priced else None
 
     def record(self, envelope) -> None:
         """Add one call's usage. Silent on anything unexpected.
@@ -91,6 +97,28 @@ class UsageTally:
         else:
             self.cache_write += _n("cache_creation_input_tokens", "cache_creation")
 
+    def record_codex(self, usage) -> None:
+        """Add one `codex exec` call, from its `turn.completed` usage block.
+
+        OpenAI counts cached tokens *inside* `input_tokens`, where Anthropic counts
+        them beside it, so the cached part is subtracted to keep `input` meaning the
+        same thing for both backends. `reasoning_output_tokens` is a breakdown of
+        `output_tokens`, not an addition to it. Same no-raise rule as `record`.
+        """
+        self.calls += 1
+        if not isinstance(usage, dict):
+            return
+
+        def _n(key: str) -> int:
+            v = usage.get(key)
+            return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+        cached = _n("cached_input_tokens")
+        self.input += max(0, _n("input_tokens") - cached)
+        self.cache_read += cached
+        self.cache_write += _n("cache_write_input_tokens")
+        self.output += _n("output_tokens")
+
     @property
     def empty(self) -> bool:
         return self.calls == 0
@@ -114,11 +142,14 @@ class UsageTally:
         }
 
     def summary(self) -> str:
+        price = (
+            f" (~${self.cost_usd:.2f} at list price, an estimate, not a bill)"
+            if self.cost_usd is not None else ""
+        )
         return (
             f"Scoring usage: {self.calls} calls, {self.input:,} input + "
             f"{self.output:,} output tokens, {self.cache_read:,} read from cache, "
-            f"{self.cache_write:,} written to it (~${self.cost_usd:.2f} at list price, "
-            f"an estimate, not a bill)"
+            f"{self.cache_write:,} written to it{price}"
         )
 
 
@@ -596,6 +627,30 @@ class CLILaunchError(RuntimeError):
 _LAUNCH_RETRY_DELAYS_S = (5.0, 20.0, 60.0)
 
 
+def _exit_detail(out: str, stderr: bytes) -> str:
+    """Both streams of a failed CLI call, each truncated on its own, stdout first.
+
+    This used to be `stderr or stdout`, on the theory that stderr is empty when the
+    CLI reports a failure (a bad --model, for one) on stdout. That does not hold:
+    stderr carries routine warnings on every call — an untrusted workspace alone is
+    645 characters — so the fallback never fired, and one real failure was logged as
+    a trust warning while five more read "(no output)".
+
+    Truncating the two together would not fix it either: a joined string cut at 500
+    is still all stderr, because the warning outruns that cap by itself. Hence a
+    budget per stream, and stdout first. `out` is text because the Codex backend
+    passes the error it parsed out of the event stream rather than the raw JSONL.
+    """
+    out = out.strip()
+    err = stderr.decode(errors="replace").strip()
+    return " | ".join(
+        part for part in (
+            f"stdout: {out[:300]}" if out else "",
+            f"stderr: {err[:300]}" if err else "",
+        ) if part
+    ) or "(no output)"
+
+
 class ClaudeCodeBackend:
     """Score through the local `claude` CLI so the user's Pro/Max subscription
     pays for it instead of a metered API key.
@@ -720,28 +775,9 @@ class ClaudeCodeBackend:
                     f"claude CLI exited {claude_cli.describe_exit(proc.returncode)}"
                 )
             if proc.returncode != 0:
-                # Report BOTH streams, each truncated on its own, stdout first.
-                #
-                # This used to be `stderr or stdout`, on the theory that stderr is empty
-                # when the CLI reports a failure (a bad --model, for one) on stdout. That
-                # does not hold: stderr carries routine warnings on every call — an
-                # untrusted workspace alone is 645 characters — so the fallback never
-                # fired, and one real failure was logged as a trust warning while five
-                # more read "(no output)".
-                #
-                # Truncating the two together would not fix it either: a joined string cut
-                # at 500 is still all stderr, because the warning outruns that cap by
-                # itself. Hence a budget per stream, and stdout first.
-                out = stdout.decode(errors="replace").strip()
-                err = stderr.decode(errors="replace").strip()
-                detail = " | ".join(
-                    part for part in (
-                        f"stdout: {out[:300]}" if out else "",
-                        f"stderr: {err[:300]}" if err else "",
-                    ) if part
-                ) or "(no output)"
                 raise RuntimeError(
-                    f"claude CLI exited {proc.returncode}: {detail}"
+                    f"claude CLI exited {proc.returncode}: "
+                    f"{_exit_detail(stdout.decode(errors='replace'), stderr)}"
                 )
             if self._settings.request_interval_s > 0:
                 await asyncio.sleep(self._settings.request_interval_s)
@@ -754,6 +790,176 @@ class ClaudeCodeBackend:
 
 
 # ---------------------------------------------------------------------------
+# Codex backend — scores on the user's ChatGPT plan through `codex exec`
+# ---------------------------------------------------------------------------
+
+# Model names that belong to the claude_code provider. The shipped default is
+# `sonnet`, so switching `provider` alone would otherwise send it to OpenAI and fail
+# on the first call with an error that does not say why.
+_CLAUDE_MODEL_RE = re.compile(r"^(claude|sonnet|opus|haiku|fable)\b", re.IGNORECASE)
+
+
+class CodexBackend:
+    """Score through the local `codex` CLI so the user's ChatGPT plan pays for it.
+
+    The same contract as `ClaudeCodeBackend` — one headless call per job, the resume
+    in the system prompt, a schema-validated answer, launch failures retried and
+    everything else recorded as `api_error` — reached through a CLI that differs in
+    every mechanism. `codex_cli` explains the three that broke something, and
+    `_instructions_file` the one it costs: no caching across calls.
+
+    The judge must not be an agent. `codex exec` ships a shell, sub-agents, a browser,
+    image tools, a skills catalog and a description of the working directory, all of
+    which are sent on every call and none of which a judge uses; see
+    `codex_cli.JUDGE_DISABLED_FEATURES` for what stripping them saves. The sandbox is
+    `read-only` besides, so a tool that survives a future CLI release still cannot
+    write anything.
+    """
+
+    def __init__(self, settings: MatcherSettings, sem: asyncio.Semaphore) -> None:
+        self._exe = shutil.which("codex")
+        if not self._exe:
+            raise EnvironmentError(
+                "codex CLI not found on PATH. Install Codex and run `codex login`."
+            )
+        if not settings.model or _CLAUDE_MODEL_RE.match(settings.model):
+            raise ValueError(
+                f"matcher.model is {settings.model!r}, which is not a Codex model. "
+                "Run /hireshire:setup and choose a model for the codex provider."
+            )
+        self._settings = settings
+        self._sem = sem
+        self._timeout = settings.claude_cli_timeout_s
+        paths.CODEX_DIR.mkdir(parents=True, exist_ok=True)
+        self._schema_path = paths.CODEX_DIR / "scoring_schema.json"
+        self._schema_path.write_text(
+            json.dumps(codex_cli.strict_schema(ScoringSchema.model_json_schema())),
+            encoding="utf-8",
+        )
+        known = codex_cli.available_features()
+        self._disabled = [
+            f for f in codex_cli.JUDGE_DISABLED_FEATURES if known is None or f in known
+        ]
+        self._instructions: dict[str, str] = {}
+        self.usage = UsageTally(priced=False, caches=False)
+
+    def _instructions_file(self, system_prompt: str) -> str:
+        """The system prompt as a file, written once per distinct text.
+
+        `model_instructions_file` *replaces* Codex's built-in agent instructions (the
+        `developer_instructions` key only appends to them), which makes it the
+        equivalent of `claude -p --system-prompt`. Within a sweep the resume is fixed,
+        so this is one file per resume.
+
+        Unlike the Claude backend, that shared prefix is NOT cached between calls:
+        Codex derives `prompt_cache_key` from the thread id, each `codex exec` is a
+        new thread, and nothing lets a caller set the key (openai/codex#21796, open;
+        measured 0 cached tokens on back-to-back calls sharing ~3,000). Resuming one
+        thread instead would cache, but every posting and verdict would then pile up
+        in its context. Hence `caches=False` on the tally, which keeps the matcher's
+        "prefix is not byte-identical" warning from blaming the prompt for it.
+        """
+        path = self._instructions.get(system_prompt)
+        if path is None:
+            digest = hashlib.sha1(system_prompt.encode()).hexdigest()[:12]
+            target = paths.CODEX_DIR / f"instructions-{digest}.md"
+            target.write_text(system_prompt, encoding="utf-8")
+            path = self._instructions[system_prompt] = str(target)
+        return path
+
+    def _argv(self, system_prompt: str) -> list[str]:
+        disable: list[str] = []
+        for feature in self._disabled:
+            disable += ["--disable", feature]
+        return [
+            self._exe, "exec",
+            "--json",
+            # No session file on disk, the analogue of `--no-session-persistence`.
+            "--ephemeral",
+            "--skip-git-repo-check",
+            # The user's config.toml can add MCP servers, a default model and profile
+            # settings; none of it belongs in a judge call. Auth is unaffected.
+            "--ignore-user-config",
+            "--ignore-rules",
+            "-s", "read-only",
+            "-C", str(paths.CODEX_DIR),
+            "-m", self._settings.model,
+            "-c", f'model_reasoning_effort="{self._settings.effort}"',
+            "-c", f"model_instructions_file={codex_cli.toml_path(self._instructions_file(system_prompt))}",
+            "-c", "project_doc_max_bytes=0",
+            "-c", "include_environment_context=false",
+            "-c", "skills.max_context_tokens=1",
+            "-c", "agents.enabled=false",
+            "-c", 'web_search="disabled"',
+            *disable,
+            "--output-schema", str(self._schema_path),
+            "-",
+        ]
+
+    async def call(self, prompt: str, system_prompt: str) -> ScoringSchema:
+        for delay in (*_LAUNCH_RETRY_DELAYS_S, None):
+            try:
+                stdout = await self._invoke(prompt, system_prompt)
+                break
+            except CLILaunchError as exc:
+                if delay is None:
+                    raise
+                logger.warning("%s — retrying in %gs", exc, delay)
+                await asyncio.sleep(delay)
+
+        answer, usage, error = codex_cli.parse_events(stdout)
+        # Recorded before validation, as in ClaudeCodeBackend: a call whose answer
+        # fails to parse was still billed.
+        self.usage.record_codex(usage)
+        if error and answer is None:
+            raise RuntimeError(f"codex CLI failed: {error[:300]}")
+        if answer is None:
+            raise RuntimeError(
+                f"codex CLI returned no answer: {stdout.decode(errors='replace')[:300]}"
+            )
+        try:
+            payload = json.loads(answer)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"codex CLI answer was not JSON: {answer[:300]}") from exc
+        return ScoringSchema.model_validate(payload)
+
+    async def _invoke(self, prompt: str, system_prompt: str) -> bytes:
+        """One `codex exec` run. Returns its stdout; raises on a non-zero exit."""
+        async with self._sem:
+            proc = await asyncio.create_subprocess_exec(
+                *self._argv(system_prompt),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=codex_cli.subscription_env(),
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode()),
+                    timeout=self._timeout,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                raise RuntimeError(f"codex CLI timed out after {self._timeout}s")
+            if claude_cli.is_launch_failure(proc.returncode):
+                raise CLILaunchError(
+                    f"codex CLI exited {claude_cli.describe_exit(proc.returncode)}"
+                )
+            if proc.returncode != 0:
+                # The failure is an `error`/`turn.failed` event in the JSONL, so it is
+                # reported in place of the raw stream it came from.
+                _, _, error = codex_cli.parse_events(stdout)
+                out = error or stdout.decode(errors="replace")
+                raise RuntimeError(
+                    f"codex CLI exited {proc.returncode}: {_exit_detail(out, stderr)}"
+                )
+            if self._settings.request_interval_s > 0:
+                await asyncio.sleep(self._settings.request_interval_s)
+        return stdout
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -762,6 +968,7 @@ _BACKENDS: dict[str, type] = {
     "openai": OpenAIBackend,
     "anthropic": AnthropicBackend,
     "claude_code": ClaudeCodeBackend,
+    "codex": CodexBackend,
 }
 
 

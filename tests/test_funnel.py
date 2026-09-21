@@ -133,6 +133,41 @@ def test_funnel_stages(patched_funnel):
     assert hydrated_job.content_text == "hydrated desc"
 
 
+def test_title_keywords_match_whole_words_not_substrings(patched_funnel):
+    """Excluding "intern" must not retire Internal Tools Developer.
+
+    A `title_excluded` drop is a verdict, not a skip — it is absent from
+    `_RETRYABLE_SKIP_REASONS`, so the job lands in `seen_jobs` and is never
+    reconsidered. Under the old substring test one over-broad term silently deleted a
+    slice of the user's market for the life of the install, and the terms that did it
+    were ordinary: "ios" matched Kiosk, "mobile" matched Automobile."""
+    title_cfg = TitleFilterConfig(include_keywords=[], exclude_keywords=["intern", "ios"])
+    cfg = FunnelConfig(enabled=True, encoder={"targets": []})  # isolate the keyword gate
+    jobs = [
+        make_job("Intern", content_text="x"),
+        make_job("Data Intern (Summer)", content_text="x"),
+        make_job("iOS Engineer", content_text="x"),
+        make_job("Internal Tools Developer", content_text="x"),
+        make_job("Internship Program Coordinator", content_text="x"),
+        make_job("Kiosk Manager", content_text="x"),
+    ]
+
+    async def go():
+        async with Funnel(cfg, title_cfg, RUN_ID) as f:
+            return await f.process(jobs)
+
+    to_score, filtered, _ = _run(go())
+
+    assert {r.title for r in filtered} == {"Intern", "Data Intern (Summer)", "iOS Engineer"}
+    assert {r.skip_reason for r in filtered} == {"title_excluded"}
+    # Nothing is stemmed: the plural and the -ship noun are different words.
+    assert {j.title for j in to_score} == {
+        "Internal Tools Developer",
+        "Internship Program Coordinator",
+        "Kiosk Manager",
+    }
+
+
 def test_funnel_no_targets_falls_back_to_include_rule(patched_funnel):
     title_cfg = TitleFilterConfig(include_keywords=["engineer"], exclude_keywords=[])
     cfg = FunnelConfig(enabled=True, encoder={"targets": []})  # encoder disabled

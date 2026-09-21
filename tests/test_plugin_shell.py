@@ -18,7 +18,7 @@ from hireshire import paths
 
 ROOT = paths.ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
-SKILLS = ("setup", "find-jobs", "start-orchestration", "apply")
+SKILLS = ("setup", "start-orchestration")
 
 
 def _json(rel: str):
@@ -143,28 +143,8 @@ def test_the_launcher_exposes_its_read_only_modes_separately():
     # The permission guard runs before the venv exists, so it is a launcher mode
     # rather than an engine entrypoint. See tests/test_approve.py.
     assert "--approve)" in sh
-    # --sweep is one cycle of --monitor, and it is what find-jobs runs.
+    # --sweep is one cycle of --monitor, and it is what the OS scheduler entry runs.
     assert "--sweep)" in sh
-
-
-def test_find_jobs_runs_the_registered_sweep_not_the_bare_engine():
-    """`/hireshire:find-jobs` must go through `--sweep`, not `orchestrate.py --once`.
-
-    Both run the same pipeline, but only `--sweep` records its pid, so through
-    `orchestrate.py` a find-jobs sweep was unreachable by `--stop` and invisible to the
-    guard that stops a second writer starting alongside it. One program for both paths
-    also means a fix to the recurring sweep reaches the one-shot one — which mattered
-    when the session teardown was killing every sweep, `--once` included.
-    """
-    skill = (ROOT / "skills" / "find-jobs" / "SKILL.md").read_text(encoding="utf-8")
-    run_lines = [
-        ln for ln in skill.splitlines()
-        if "hireshire.sh" in ln and not ln.lstrip().startswith(("#", ">", "*", "-"))
-    ]
-    assert any("--sweep" in ln for ln in run_lines), run_lines
-    # Prose may still name the old form to explain why it is wrong; a command line
-    # may not use it.
-    assert not any("orchestrate.py" in ln for ln in run_lines), run_lines
 
 
 @pytest.mark.parametrize("mode", ["paths", "stop"])
@@ -287,8 +267,28 @@ def test_setup_drafts_seniority_exclusions_and_makes_the_user_confirm_them():
     assert re.search(r"never auto-add|never add[^.]{0,80}junior", step), (
         "the exclude-upward-only rule is gone; junior terms must never be auto-added"
     )
-    # Substring matching is the whole reason a term can be over-broad.
-    assert "substring" in step, "the substring-safety pass is gone"
+    # Matching is whole-word, but a rung word is still a whole word in another field's
+    # ladder — `manager` still deletes Account Manager — so the over-reach pass stays.
+    assert "whole-word" in step or "whole word" in step, (
+        "the skill no longer states the matching rule; it must not imply substring"
+    )
+    assert re.search(r"over-reach|too broad|over-broad", step), (
+        "the over-reach safety pass is gone"
+    )
+    # Nothing is stemmed, so one drafted word covers exactly one string. Excluding
+    # "intern" without also writing interns/internship/internships leaves Summer
+    # Internship Program in the sweep — the rule has to draft them, not warn about them.
+    assert "internships" in step and "interns" in step, (
+        "the spelling-expansion rule is gone; a term now covers only itself"
+    )
+    # Bare rung words beat phrases: "staff engineer" misses Staff ML Engineer. What
+    # keeps that safe is the profession check, not a qualifying noun.
+    assert re.search(r"bare word|draft the bare", step), (
+        "the bare-word rule is gone — setup is back to drafting phrases"
+    )
+    assert re.search(r"in their field|their profession|their own field", step), (
+        "the profession check is gone, which is the only thing making bare words safe"
+    )
     # And the confirmation turn, which is what makes a permanent write survivable.
     assert "askuserquestion" in step, "the exclusions must be confirmed, not assumed"
     assert re.search(r"permanent|does not come back|never comes back", step), (
@@ -386,23 +386,25 @@ def test_the_permission_guard_is_wired_to_pretooluse():
     matchers = [e.get("matcher", "") for e in entries]
 
     assert "Bash" in matchers
-    assert any("playwright" in m for m in matchers)
     for entry in entries:
         cmd = entry["hooks"][0]["command"]
         assert "approve.sh" in cmd
         assert "python" not in cmd, "interpreter choice belongs in the launcher"
 
 
-def test_the_guard_never_covers_a_browser_action_that_submits():
-    """`/hireshire:apply` fills real forms. With `dry_run` gone, the permission
-    prompt is the last human checkpoint before an application reaches an employer,
-    so only the tools that look are auto-approved."""
-    matcher = next(
-        e["matcher"] for e in _json("hooks/hooks.json")["hooks"]["PreToolUse"]
-        if "playwright" in e.get("matcher", "")
-    )
-    for submitting in ("click", "type", "fill_form", "select_option", "file_upload"):
-        assert submitting not in matcher
+def test_no_browser_tool_is_routed_to_the_guard():
+    """The Playwright matcher served `/hireshire:apply`, which is gone. Every browser
+    action a user's own session takes now prompts; the sweep's apply sessions run
+    under `--permission-mode auto` and never consult this hook."""
+    for entry in _json("hooks/hooks.json")["hooks"]["PreToolUse"]:
+        assert "playwright" not in entry.get("matcher", "")
+
+
+def test_start_orchestration_is_the_only_command_besides_setup():
+    """`/hireshire:find-jobs` and `/hireshire:apply` were removed: a recurring sweep
+    scrapes, matches and applies, and setup is the one-time step before it."""
+    shipped = sorted(p.name for p in (ROOT / "skills").iterdir() if p.is_dir())
+    assert shipped == sorted(SKILLS)
 
 
 @pytest.mark.parametrize("skill", SKILLS)
@@ -432,16 +434,6 @@ def test_every_skill_has_frontmatter_with_a_matching_name(skill):
     front = text.split("---", 2)[1]
     assert f"name: {skill}" in front, "frontmatter name drives the command name"
     assert "description:" in front
-
-
-def test_apply_skill_uses_plugin_namespaced_playwright_tools():
-    """A plugin-bundled MCP server's tools are `mcp__plugin_<plugin>_<server>__*`.
-    A rule written against the bare server key never fires."""
-    text = (ROOT / "skills" / "apply" / "SKILL.md").read_text(encoding="utf-8")
-    assert "mcp__plugin_hireshire_playwright__browser_navigate" in text
-    # The legacy names from the source repo were never real tools.
-    for stale in ("playwright_navigate", "playwright_upload_file", "playwright_fill"):
-        assert stale not in text
 
 
 def test_no_mutable_state_is_written_into_the_install_dir():

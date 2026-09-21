@@ -15,7 +15,7 @@
 payload=$(cat)
 
 case "$payload" in
-    *hireshire.sh*|*plugin_hireshire_playwright*) ;;
+    *hireshire.sh*) ;;
     *) exit 0 ;;
 esac
 

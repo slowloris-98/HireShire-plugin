@@ -7,14 +7,8 @@ anywhere else, and do not apply to any other job.
 
 The browser tools you need are `browser_navigate`, `browser_snapshot`, `browser_type`,
 `browser_click`, `browser_select_option`, `browser_file_upload` and
-`browser_take_screenshot`. Their full names depend on who started you:
-
-- inside the `/hireshire:apply` skill they are namespaced by the plugin —
-  `mcp__plugin_hireshire_playwright__browser_navigate` and so on;
-- in a session a sweep started for one job they are `mcp__playwright__browser_navigate`
-  and so on, because that session loads the plugin's browser server directly.
-
-Use whichever set you have.
+`browser_take_screenshot`, named `mcp__playwright__browser_navigate` and so on: the
+sweep that started you loads the plugin's browser server directly.
 
 The resume is the ground truth for every question about the applicant, followed by the
 screening answers in the applicant's details. The job description may shape how an

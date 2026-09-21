@@ -135,8 +135,8 @@ def _write_outputs(tmp_path, stamp, rows, monkeypatch, all_rows=None, applied=No
 
 
 def test_the_outputs_are_the_csv_the_json_and_the_pointer(tmp_path, monkeypatch):
-    """/hireshire:apply opens last_run.json rather than guessing where the results
-    root is — the root moved into a folder the user can relocate."""
+    """Readers open last_run.json rather than guessing where the results root is —
+    the root moved into a folder the user can relocate."""
     stamp = "2026-08-12_143005"
     db, results_dir, total = _write_outputs(
         tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch,

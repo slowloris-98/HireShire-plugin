@@ -36,16 +36,14 @@ APPROVED = [
     # The only deliberate way to end a sweep now that nothing reaps one automatically.
     # It must not be the single command that prompts.
     "--stop",
-    # The command `/hireshire:find-jobs` runs. Without it the plugin's most common
-    # action prompts on every use, which is the friction this guard exists to remove.
+    # The OS scheduler entry's command, which setup shows the user running.
     "--sweep",
     "orchestrate.py --once",
     "scripts/setup_cli.py install-config",
     "scripts/setup_cli.py warm-models",
+    "scripts/setup_cli.py codex-check",
     'scripts/setup_cli.py set matcher --json \'{"threshold": 75}\'',
     'scripts/setup_cli.py write-profile --text "Senior account manager, SaaS renewals"',
-    "scripts/applied_cli.py list",
-    "scripts/applied_cli.py pending",
     "scripts/verify_bad_slugs.py --prune",
 ]
 
@@ -77,7 +75,9 @@ REFUSED = [
     # Real entrypoints, arguments that are not the ones we vouched for.
     "orchestrate.py --interval 1",
     "scripts/setup_cli.py rm-rf",
-    "scripts/applied_cli.py delete-everything",
+    # The manual-apply CLI was removed with `/hireshire:apply`; a file of that name
+    # must not inherit its old approval.
+    "scripts/applied_cli.py list",
     "scripts/verify_bad_slugs.py --wipe",
     # A mode that takes no arguments, given some.
     "--paths extra",
@@ -121,12 +121,6 @@ def test_an_unbalanced_quote_is_not_guessed_at():
     "mcp__plugin_hireshire_playwright__browser_navigate",
     "mcp__plugin_hireshire_playwright__browser_snapshot",
     "mcp__plugin_hireshire_playwright__browser_take_screenshot",
-])
-def test_read_only_browser_tools_are_approved(tool):
-    assert approve.decide({"tool_name": tool, "tool_input": {}})
-
-
-@pytest.mark.parametrize("tool", [
     "mcp__plugin_hireshire_playwright__browser_click",
     "mcp__plugin_hireshire_playwright__browser_type",
     "mcp__plugin_hireshire_playwright__browser_fill_form",
@@ -134,9 +128,10 @@ def test_read_only_browser_tools_are_approved(tool):
     "mcp__plugin_hireshire_playwright__browser_file_upload",
     "mcp__plugin_hireshire_playwright__browser_run_code_unsafe",
 ])
-def test_browser_tools_that_change_state_still_prompt(tool):
-    """These submit a real application to a real employer. With `dry_run` gone the
-    permission prompt is the last human checkpoint before that, so it stays."""
+def test_the_guard_approves_no_browser_tool(tool):
+    """The read-only three were approved for `/hireshire:apply`, which is gone. The
+    sweep's apply sessions run under `--permission-mode auto` and never reach this
+    guard, so an approval here would only ever fire in a session the user is driving."""
     assert approve.decide({"tool_name": tool, "tool_input": {}}) is None
 
 
@@ -200,7 +195,7 @@ def _skill_commands(skill: str) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("skill", ["setup", "find-jobs", "start-orchestration", "apply"])
+@pytest.mark.parametrize("skill", ["setup", "start-orchestration"])
 def test_every_command_the_skills_run_is_one_the_guard_approves(skill):
     """The end the whole change is for: a user who installs this plugin and runs
     setup should not be asked to approve anything.

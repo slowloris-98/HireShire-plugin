@@ -25,6 +25,10 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --paths
 
 It prints `ROOT=<path>` and `DATA=<path>`.
 
+Check that `<DATA>/config/matcher.yaml` exists and has a `resume_path`. If it does
+not, the user has not run `/hireshire:setup` — say so and stop rather than sweeping
+with defaults that will match nothing.
+
 ## Step 2 — start it
 
 Run exactly this, as a **background** task:
@@ -42,6 +46,12 @@ Two rules, both learned from a session that improvised its own command:
   entrypoint that reads `poll_interval_hours` from the user's config.
   `orchestrate.py --now` takes `--interval` with a **4-hour default** and never looks
   at their setting, so a user who chose 12 hours would silently get 4.
+
+The first sweep starts immediately; the interval only governs the ones after it. The
+first one is the slowest, since every posting is new, and takes roughly 20 minutes on
+the default board set — considerably longer if they enabled Workday and BambooHR. If
+the plugin venv is not ready, the launcher installs it first: a one-time ~2 GB download
+and 10-15 minutes before the sweep starts. Say so before you launch.
 
 `--monitor` prints one line on startup naming the interval, and refuses to start if a
 sweep is already running. **Relay that line rather than composing your own** — it is the
@@ -68,6 +78,10 @@ Tell the user, plainly:
   sweep also leaves its own copy in its run folder. The results root is
   `<workspace_dir>/hireshire_run_results/`, or `<DATA>/results/` when `workspace_dir`
   is empty.
+- **Where each sweep's results land:**
+  `<results root>/<date>_<time>/<date>_<time>_results.csv` — every job that reached the
+  funnel, best first. A blank `llm_score` means no judge read that job, not a score of
+  zero. `<DATA>/last_run.json` names the latest one.
 
 If auto-apply is enabled in their config, say plainly that each sweep will also open a
 browser **as soon as a job is shortlisted** — mid-sweep, not at the end — and **submit

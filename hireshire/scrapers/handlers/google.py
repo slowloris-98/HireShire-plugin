@@ -54,7 +54,8 @@ def _title_from_slug(slug: str) -> str:
     """'software-engineer-iii-performance' -> 'Software Engineer Iii Performance'.
 
     Only used until the detail fetch supplies the real title. Good enough for the
-    matcher's substring title gate, which is what runs before hydration.
+    matcher's keyword title gate, which is what runs before hydration — the slug's
+    hyphens become spaces, so whole-word keywords still match.
     """
     return " ".join(w.capitalize() for w in slug.split("-") if w)
 

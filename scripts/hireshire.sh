@@ -21,7 +21,7 @@
 #   hireshire.sh --approve                PreToolUse guard; reads a hook payload on stdin
 #   hireshire.sh --bootstrap              create/refresh the venv
 #   hireshire.sh --monitor                run the recurring sweep (start in background)
-#   hireshire.sh --sweep                  run ONE sweep, then exit (find-jobs, scheduler)
+#   hireshire.sh --sweep                  run ONE sweep, then exit (OS scheduler)
 #   hireshire.sh <script.py> [args...]    run an engine entrypoint in the venv
 #
 # --paths exists because skills must not name the data directory themselves.
@@ -89,12 +89,10 @@ case "$1" in
     # teardown it fed reaped every sweep on the machine. The sweep is now uncoupled
     # from sessions entirely and bounds its own runtime — see run_orchestration.py.
     --monitor)   exec "$PY" "$ROOT/scripts/run_orchestration.py" ;;
-    # --sweep is one cycle of exactly the same program, and it is what
-    # /hireshire:find-jobs and the OS scheduler entry run. It replaces
-    # `hireshire.sh orchestrate.py --once`, which went through run_engine.py — a second
-    # launcher with no status registration and no session watchdog, so a find-jobs sweep
-    # registered nothing, so it was unreachable by --stop and invisible to the
-    # duplicate-sweeper guard.
+    # --sweep is one cycle of exactly the same program, and it is what the OS
+    # scheduler entry runs. It replaces `hireshire.sh orchestrate.py --once`, which went
+    # through run_engine.py — a second launcher that registered nothing, so a one-shot
+    # sweep was unreachable by --stop and invisible to the duplicate-sweeper guard.
     --sweep)     exec "$PY" "$ROOT/scripts/run_orchestration.py" --once ;;
     "")          echo "usage: hireshire.sh [--check|--paths|--stop|--approve|--bootstrap|--monitor|--sweep|<script.py> [args]]" >&2; exit 2 ;;
     *)           exec "$PY" "$ROOT/scripts/run_engine.py" "$@" ;;

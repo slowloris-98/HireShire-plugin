@@ -275,9 +275,8 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str,
     await asyncio.to_thread(reporting.refresh, run_id, results_dir, stamp, True)
 
 
-# Quarters, not a percentage every company. The find-jobs skill tails the log for
-# these to relay progress, and every line it matches becomes a message in the user's
-# session — so there are four of them for a sweep that visits ~10,000 employers, and
+# Quarters, not a percentage every company. Anyone tailing the log for progress
+# gets a readable line per quarter rather than a flood — so there are four of them for a sweep that visits ~10,000 employers, and
 # they are worded to be readable on their own.
 _SCRAPE_MILESTONES = (25, 50, 75)
 REPORT_MILESTONE_PREFIX = "Sweep progress:"
@@ -555,7 +554,7 @@ async def run_pipeline(
                     logger.exception("Could not write the run's outputs — run %s", run_id)
 
         logger.info("Pipeline complete — run %s", run_id)
-        # The find-jobs skill reads this line rather than reconstructing the path.
+        # A reader of the console output gets the path here rather than reconstructing it.
         # Never under quiet: each monitor stdout line becomes a notification, and
         # the monitor emits exactly one summary line per cycle.
         if not quiet:

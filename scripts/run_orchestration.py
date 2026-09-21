@@ -2,7 +2,7 @@
 
 Started by `/hireshire:start-orchestration` as a background task —
 `hireshire.sh --monitor`. `--once` is the same program with the loop stopped after one
-cycle, and is what `/hireshire:find-jobs` and the OS scheduler entry run.
+cycle, and is what the OS scheduler entry runs.
 
 Four things shape this file:
 
@@ -168,10 +168,9 @@ def _loop(once: bool = False) -> int:
 
 
 if __name__ == "__main__":
-    # `--once` is what `/hireshire:find-jobs` and the OS scheduler use. It is the same
-    # program as the recurring sweep with the loop stopped after one cycle, which is the
-    # point: find-jobs used to run `orchestrate.py --once` through `run_engine.py`, a
-    # second program that registered nothing, so a find-jobs sweep was unreachable by
+    # `--once` is what the OS scheduler uses. It is the same program as the recurring
+    # sweep with the loop stopped after one cycle, which is the point: a one-shot sweep
+    # through `orchestrate.py --once` registers nothing, so it is unreachable by
     # `--stop` and invisible to the duplicate guard. One leaf, one pid file.
     _once = "--once" in sys.argv[1:]
     sys.exit(_loop(_once) if os.environ.get(_CHILD_FLAG) else _reexec_in_venv())

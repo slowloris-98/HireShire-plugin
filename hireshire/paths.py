@@ -55,6 +55,9 @@ RESULTS_DIR = DATA / "results"     # fallback results root; see results_root()
 LOGS_DIR = DATA / "logs"
 DB_PATH = DATA / "hireshire.db"
 LAST_RUN_PATH = DATA / "last_run.json"  # pointer to the newest run, read by /apply
+# The `codex` judge's files — its output schema and instructions — and its working
+# root. Deliberately otherwise empty: Codex reads AGENTS.md and git state from cwd.
+CODEX_DIR = DATA / "codex"
 
 # Layout inside the user's workspace. Named here because setup creates these and
 # the engine writes into them, and they must not drift apart.

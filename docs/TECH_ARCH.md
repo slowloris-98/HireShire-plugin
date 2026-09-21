@@ -9,7 +9,9 @@ file-level internals.
 
 Everything runs on your machine except scoring. The sweep and the funnel never send
 anything out; only the jobs that survive the funnel are sent to Claude, each with
-your resume so it can be judged against it, on your own subscription.
+your resume so it can be judged against it, on your own subscription. (With the
+`codex` provider the judge is an OpenAI model on your ChatGPT plan instead, called
+through the local Codex CLI the same way.)
 
 ```mermaid
 flowchart TD
@@ -17,7 +19,7 @@ flowchart TD
         direction TB
         R["Your resume"]
         SET["/hireshire:setup<br/>writes your profile and settings"]
-        SWEEP["Sweep<br/>one-off, or every few hours"]
+        SWEEP["Sweep<br/>now, then every few hours"]
         B1["Greenhouse, Lever, Ashby, direct<br/>15,868 employers"]
         B2["Workday, BambooHR<br/>24,200 more, off by default"]
         FUN["Relevance funnel<br/>free, see below"]

@@ -24,7 +24,7 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 521 tests, no network, no model weights
+pytest                                # 588 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_only_jobs_reaching_the_cutoff_are_judged
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
@@ -88,8 +88,10 @@ Consequences already worked out, which should not be re-derived:
   delta rather than editing a file that is about to be replaced.
 - **The recurring sweep is NOT session-scoped, and nothing may make it so again.**
   `scripts/run_orchestration.py` is an ordinary sleep/sweep loop. `--monitor` runs it
-  recurring, `--sweep` runs one cycle (`--once`) and is what `/hireshire:find-jobs` and
-  the OS scheduler entry use — one program, so a fix to either reaches both. Three
+  recurring, `--sweep` runs one cycle (`--once`) and is what the OS scheduler entry
+  uses — one program, so a fix to either reaches both. `/hireshire:start-orchestration`
+  is the only sweep command; the one-shot `/hireshire:find-jobs` and the manual
+  `/hireshire:apply` were removed in 0.11.0, so do not bring either back. Three
   rules survive from the old design: it reads `poll_interval_hours` from the user's
   config itself (`orchestrate.py --interval` defaults to 4 and never looks); every
   stdout line reaches the agent, so it emits one summary line per cycle and logs the
@@ -110,8 +112,8 @@ Consequences already worked out, which should not be re-derived:
   fallback answered "stop it" for every ending session, and the sweep manufactured its
   own killers. Observed: `session_pid: null`, `heartbeat - started_at` of **60.34 s**
   (one beat, then nothing), exit code 1, no traceback, no `ERROR` line — because
-  `taskkill /T /F` unwinds nothing. It hit `--once` too, so find-jobs and the scheduled
-  route died the same way.
+  `taskkill /T /F` unwinds nothing. It hit `--once` too, so the one-shot and scheduled
+  routes died the same way.
 
   The lesson is not "find a better session signal". It is that a sweep must not act on
   host-specific identity it cannot verify, because the absence of that identity is
@@ -180,6 +182,34 @@ time. Applying stays a separate phase; see the note in `orchestrate.py`.
 
 Five things follow that are easy to break:
 
+- **Title keywords match whole words, and the boundaries are conditional.** This
+  reverses a plain `kw in title_lower` and must not be restored: a `title_excluded`
+  drop is a verdict, so `intern` retired Internal Tools Developer *permanently*, `ios`
+  retired Kiosk Manager and `mobile` retired Automobile Design Engineer. The rule lives
+  once in `title_filter.title_matches`; `funnel.py` and `apply_title_filter` both call
+  it. Two things it is easy to get wrong. Keywords are **phrases with punctuation**
+  (`"manager, engineering"`, `"sr. "`, `"full-stack"`), so it escapes the keyword
+  rather than tokenising — a `\b\w+\b` splitter cannot express them. And the boundary
+  is a lookaround applied **only on a side whose character is a word char**: `\b`
+  asserts a *transition*, so a trailing one on `"sr."` would demand the very word
+  character the keyword stops at, and the match would never fire. Leading/trailing
+  whitespace is stripped for the same reason. Nothing is stemmed, in either direction
+  — `intern` misses Interns, `internship` misses Intern — which was chosen over a
+  suffix allowance because the gate is permanent and a morphology guess is not
+  reviewable. A blank keyword matches nothing; unguarded it would empty the sweep.
+
+  Setup's drafting rules were reversed to match, and the reversal should not be undone.
+  It now writes **bare single words scoped to the user's profession** — `staff`, not
+  `staff engineer` — because a phrase catches the one specialisation the model thought
+  of and misses Staff ML Engineer, Staff Data Scientist and the rest. The old rule
+  qualified every rung word with a field noun; that was substring damage control, and
+  restoring it as a safety measure costs recall and buys nothing. What keeps a bare
+  word safe is the **profession check**, not the noun: `staff` is a promotion in
+  software and the job itself for a Staff Nurse, so the field decides whether the word
+  is drafted at all. Because nothing is stemmed, setup also **expands each term into
+  every spelling employers write** (`intern, interns, internship, internships`;
+  `senior, sr`; `vice president, vp`) — and `sr.` is never drafted, since bare `sr`
+  already covers `Sr.` through the non-word-character rule above.
 - **Only the cutoff costs money.** Both gates before it run locally. Tightening the
   bi-encoder buys CPU seconds and skipped detail fetches, never LLM calls, and pays
   for them in recall at the *title-only* stage. This is the single most common wrong
@@ -616,8 +646,7 @@ Applying is **not** a third engine phase with a `main()`, but it is on the queue
 work is driving a browser, and that stays on the Claude side of the line: forms differ
 per employer and the questions need a model that has read the resume.
 `hireshire/applier/worker.py` is only the consumer — for each shortlisted job it
-launches one `claude -p` session over `apply_one.md` (the per-job rules, shared with
-the `apply` skill), which uses the plugin's Playwright MCP and returns an
+launches one `claude -p` session over `apply_one.md` (the per-job rules), which uses the plugin's Playwright MCP and returns an
 `ApplyOutcome` via `--json-schema`; the engine records it. `orchestrate.py` wires the
 phases over asyncio queues with exactly one `None` sentinel per queue, always sent in
 a `finally`:
@@ -649,9 +678,7 @@ Four things about the applier that are easy to break:
   sweep for `backlog_hours`, leaving only a log line an unattended user never reads.
   Recording it retires the job, so lifting an exclusion later does **not** bring it
   back — the same open half of known issue A4, accepted for the same reason the
-  ambiguous-ending rule accepts it. `/hireshire:apply` records the same row through
-  `applied_cli.py record --status excluded`, so the two paths agree; both still print
-  the **Apply manually** list, because the user needs the URLs in front of them.
+  ambiguous-ending rule accepts it.
 - **Ambiguous endings are recorded, deliberately.** A timeout or an unreadable result
   may come after the submit click, so it is written as an `error` telling the user to
   check. Retrying it would risk a second application to the same employer, which is
@@ -666,14 +693,13 @@ Four things about the applier that are easy to break:
   `willing_to_relocate`) come from setup, and `null` means never asked, which is
   different from "no". Essays are written from the resume and the job description,
   never from the search profile, for the same reason the scorer never sees it.
-- **`applied_ids` is re-read before every launch**, because `/hireshire:apply` can run
-  alongside a sweep and both work from the same pending list.
+- **`applied_ids` is re-read before every launch**, so a job recorded since the queue
+  was built is never applied to twice.
 - **The session loads the browser server itself** (`--mcp-config <ROOT>/.mcp.json
   --strict-mcp-config`). A `claude -p` the engine starts is not guaranteed to load the
   plugin — measured, it did not, and the namespaced tools were simply absent. So in
-  that session the tools are `mcp__playwright__*`, while inside the skill they are
-  `mcp__plugin_hireshire_playwright__*`; `apply_one.md` names both. Do not "fix" the
-  worker to use the namespaced names.
+  that session the tools are `mcp__playwright__*`, and `apply_one.md` names them that
+  way. Do not "fix" the worker to use the namespaced names.
 - **Screenshots go to the run's own folder; the session runs in the WORKSPACE.** Those
   are two different questions and `worker.session_dirs` answers them separately, from
   the `run_dir` `orchestrate` hands the worker — the same `results_dir` the CSV, JSON
@@ -693,7 +719,7 @@ Four things about the applier that are easy to break:
   folder would lose every screenshot. A resume outside cwd is copied in. An explicit
   filename resolves against the root and ignores `--output-dir`, which only covers files
   the server names itself. The scorer stays in ROOT: `--safe-mode --tools ""` touches no
-  files. The interactive `/hireshire:apply` still depends on the user's own session cwd.
+  files.
 
   **`--output-dir` is a per-job scratch dir, `<run dir>/applied/.browser/<job_id>/`,
   never the `applied/` folder itself.** Playwright MCP writes a `page-*.yml` for every
@@ -725,7 +751,7 @@ suppresses Rich in favour of `logging` — required under the monitor.
   *exists on PATH*, prints an ad and exits 49, so `command -v python3` selects the
   broken one while the real `python` sits beside it. The launcher therefore
   **runs** each candidate and keeps the first reporting Python ≥ 3.10. Hooks,
-  monitors and all three shell-using skills go through it; nothing else may name
+  monitors and both skills go through it; nothing else may name
   an interpreter. Windows needs Git Bash so `sh` exists.
 - Downstream of the launcher, `scripts/run_engine.py` re-execs into the venv and
   addresses its interpreter by absolute path — hook exec form cannot spawn the
@@ -770,14 +796,31 @@ suppresses Rich in favour of `logging` — required under the monitor.
   `approve.sh` wraps it with a substring pre-filter so unrelated Bash calls do not pay
   for the interpreter probe. Note that Windows needs three path spellings compared
   (`/d/...` from Git Bash, `C:/...`, `C:\...`) or the guard silently never matches.
-  On the `apply` side only `browser_navigate`, `browser_snapshot` and
-  `browser_take_screenshot` are approved: the prompt on a click or an upload is the
-  last checkpoint before a real application reaches an employer. That became load-
-  bearing when `dry_run` was removed — `enable_applier` and `exclude_companies` are
-  now the only other things in the way, so this set must not be widened. Note the
+  It approves **no** browser tool. The read-only three it used to approve served
+  `/hireshire:apply`, removed with that skill along with its Playwright hook matcher;
+  `tests/test_plugin_shell.py` fails if the matcher reappears. Note the
   sweep's apply worker runs each per-job session as `claude -p --permission-mode auto`
   and therefore bypasses it entirely: unattended auto-apply has no human checkpoint by
   design.
+- **The `codex` judge is `codex exec`, and five things about it were learned by
+  probing, not read.** `hireshire/codex_cli.py` holds the rules; `CodexBackend` in
+  `scorer.py` applies them. Each fails silently if undone:
+  - `--output-schema` takes a **path**, and the schema must be OpenAI's strict
+    dialect (`codex_cli.strict_schema`) or every call is an HTTP 400.
+  - The answer is the **last** `agent_message` (openai/codex#19816). An
+    `item.completed` of type `error` is routine and is not a failure.
+  - The judge is **not an agent**. Tools, skills, sub-agents and environment context
+    are stripped, which took one call from 11,207 input tokens to 1,769, and tools
+    left on can make Codex drop the schema (#15451). `--disable` names are filtered
+    through `codex features list`, since an unknown one fails the call.
+  - **No caching between calls, by design of the CLI.** `prompt_cache_key` comes
+    from the thread id and every exec is a new thread (#21796, open). Do not resume
+    one thread to "fix" it — the context would grow by a posting per job. The
+    tally's `caches=False` keeps the no-cache warning from blaming the prompt.
+  - OpenAI counts cached tokens *inside* `input_tokens`, and there is no price, so
+    `cost_usd` is None rather than 0.
+  `model` has no Codex default: setup pins one from `setup_cli.py codex-check`, and
+  the backend refuses a Claude name, because `provider` alone can be switched.
 - **`userConfig` is not used** for anything load-bearing — its enable-time prompt
   has open bugs. The `setup` skill is the source of truth.
 - **`.claude/settings.json` is gitignored, and must stay that way.** Same argument as
@@ -792,5 +835,5 @@ suppresses Rich in favour of `logging` — required under the monitor.
 - **Set an explicit `version` in `plugin.json`.** Omitting it pushes every commit at
   users. Semver + `CHANGELOG.md`.
 - **The clean-machine test is the real acceptance test**: fresh user dir,
-  marketplace add → install → setup → find-jobs. Anything needing a terminal, a
+  marketplace add → install → setup → start-orchestration. Anything needing a terminal, a
   `git clone`, or a YAML file is a bug.

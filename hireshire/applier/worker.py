@@ -30,8 +30,8 @@ Three rules shape this file:
   come *after* the submit click, so those are recorded as `error` with a message
   telling the user to check — the one case where the job is retired on something other
   than a verdict, because the alternative is a second application to the same
-  employer. `applied_ids` is re-read before every launch, so a manual
-  `/hireshire:apply` running alongside a sweep cannot double up either.
+  employer. `applied_ids` is re-read before every launch, so a job recorded by
+  anything else since the queue was built is not applied to twice either.
 """
 
 from __future__ import annotations
@@ -56,8 +56,7 @@ from hireshire.storage.db import Database, get_db
 
 logger = logging.getLogger(__name__)
 
-#: The per-job instructions, shared with the manual `/hireshire:apply` skill so the
-#: form-filling rules exist once.
+#: The per-job instructions each apply session follows.
 PROMPT_PATH = Path(__file__).resolve().parent / "apply_one.md"
 
 #: Consecutive launch failures before the worker stops launching for the rest of the

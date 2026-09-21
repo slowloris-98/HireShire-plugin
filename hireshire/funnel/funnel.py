@@ -7,7 +7,7 @@ from hireshire.funnel.detail_fetcher import DetailFetcher
 from hireshire.funnel.relevance import EncoderRelevance
 from hireshire.matcher.config import TitleFilterConfig
 from hireshire.matcher.scorer import MatchResult
-from hireshire.matcher.title_filter import filtered_result
+from hireshire.matcher.title_filter import filtered_result, title_matches
 from hireshire.models.job import Job
 
 logger = logging.getLogger(__name__)
@@ -20,14 +20,16 @@ class Funnel:
     survives into the results export instead of being discarded at the gate.
 
     Stages, in order:
-      1. code exclude filter        → drop as "title_excluded"
+      1. code exclude filter        → drop as "title_excluded" (whole-word keywords)
       2. code include fast-pass     → keep (cheap, and immune to encoder mistuning)
       3. encoder relevance          → keep if cos-sim >= threshold, else "title_low_relevance"
       4. detail hydration           → fetch content_text for surviving list-only
                                       Workday/BambooHR jobs
 
     Everything here operates on the TITLE, which is all that exists for list-only
-    boards before hydration. That makes it a cheap recall net, not a verdict: the
+    boards before hydration. Both keyword lists match whole words, not substrings, so
+    excluding "intern" leaves Internal Tools Developer alone — see `title_matches`.
+    That makes it a cheap recall net, not a verdict: the
     real precision decision is the cross-encoder rerank the matcher runs over the
     hydrated descriptions once the whole sweep is in (see funnel/rerank.py). Keep
     the encoder threshold low accordingly.
@@ -52,8 +54,8 @@ class Funnel:
     async def process(
         self, jobs: list[Job]
     ) -> tuple[list[Job], list[MatchResult], dict[str, float]]:
-        excludes = [kw.lower() for kw in self._title_cfg.exclude_keywords]
-        includes = [kw.lower() for kw in self._title_cfg.include_keywords]
+        excludes = self._title_cfg.exclude_keywords
+        includes = self._title_cfg.include_keywords
 
         filtered: list[MatchResult] = []
         passed: list[Job] = []       # kept so far (include fast-pass + encoder survivors)
@@ -63,9 +65,9 @@ class Funnel:
 
         for job in jobs:
             title_lower = job.title.lower()
-            if any(kw in title_lower for kw in excludes):
+            if title_matches(title_lower, excludes):
                 filtered.append(filtered_result(job, "title_excluded", self._run_id))
-            elif includes and any(kw in title_lower for kw in includes):
+            elif includes and title_matches(title_lower, includes):
                 fast_passed.append(job)
                 passed.append(job)
             else:

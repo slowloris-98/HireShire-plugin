@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time guided setup for HireShire — points it at your resume, works out what roles to look for, and does the first-run downloads. Run this before find-jobs.
+description: One-time guided setup for HireShire — points it at your resume, works out what roles to look for, and does the first-run downloads. Run this before start-orchestration.
 ---
 
 # HireShire setup
@@ -247,6 +247,8 @@ Three things that trip people up:
      their own Claude chat** — a rolling 5-hour window plus a weekly one. Say this
      plainly; a user who does not know it will be surprised when a sweep eats into
      their conversations.
+   - On a **ChatGPT plan through Codex** it is the same trade: the calls draw on
+     their plan's Codex usage limits, shared with their own Codex use.
    - On a **paid API key** it is a straight cost dial and can go higher.
 
    Jobs that arrive after the ceiling is reached stay eligible for the next run, so
@@ -308,10 +310,12 @@ Three things that trip people up:
 
    `include_keywords` is optional: leave it empty unless the user wants a hard
    keyword requirement. An empty include list means the semantic gate decides, which
-   is usually what they want. If they do want one, **check it against the exclusions
-   first — exclude wins.** The title is tested against the exclusions *before* the
-   include fast-pass is considered, so `include: ["senior engineer"]` alongside
-   `exclude: ["senior"]` does not fast-pass anything; it drops everything.
+   is usually what they want. It matches whole words on the same rule as the
+   exclusions, so `include: ["engineer"]` does not admit Engineering Manager. If they
+   do want one, **check it against the exclusions first — exclude wins.** The title is
+   tested against the exclusions *before* the include fast-pass is considered, so
+   `include: ["senior engineer"]` alongside `exclude: ["senior"]` does not fast-pass
+   anything; it drops everything.
 
    **The seniority ladder.** The recall net cannot do this part for you: "Senior
    Software Engineer" and "Software Engineer" are nearly the same string, so the
@@ -340,17 +344,22 @@ Three things that trip people up:
    Below-band terms go in only when the user names them.
 
    *Worked example — software, ~4 years, titles "Software Engineer" then "Software
-   Engineer II":* rung 1. Above them: `"senior"`, `"staff engineer"`, `"principal
-   engineer"`, `"engineering manager"`, `"director of engineering"`, `"head of
-   engineering"`, `"vice president"`.
+   Engineer II":* rung 1. Above them: `"senior"`, `"sr"`, `"staff"`, `"principal"`,
+   `"director"`, `"vice president"`, `"vp"`, `"head of"`. Every rung word stands
+   alone here because in software each one genuinely *is* a promotion — Staff Engineer
+   sits above Senior — and the bare form is what catches Staff ML Engineer and Staff
+   Data Scientist without anyone having to enumerate the specialisations.
 
    *Worked example — registered nurse, 5 years, med-surg floor:* also rung 1, and the
-   words are completely different. Above them: `"nurse manager"`, `"director of
-   nursing"`, `"chief nursing"`, `"assistant director of nursing"`. Note what is
-   **not** there: `"staff"` is this user's own rung (Staff Nurse), `"charge nurse"` is
-   a shift role rather than a rung, and Nurse Practitioner is a different licence
-   rather than a promotion — a credential the user does not hold is not a seniority
-   exclusion, and it only goes in if they ask.
+   list comes out completely different from the same rule. Above them: `"nurse
+   manager"`, `"director of nursing"`, `"chief nursing"`. Note what is **not** there:
+   `"staff"` is this user's own rung — Staff Nurse *is* the job — so unlike the
+   software case it is not a seniority word at all and is left out entirely rather
+   than qualified. `"manager"` is bare in software and phrased here for the same
+   reason, since Case Manager and Office Manager are not nursing promotions.
+   `"charge nurse"` is a shift role rather than a rung, and Nurse Practitioner is a
+   different licence rather than a promotion — a credential the user does not hold is
+   not a seniority exclusion, and it only goes in if they ask.
 
    **When the band is ambiguous, resolve it upward.** A career change, a long contract
    stretch, or a two-person startup where they were "Head of Growth" at three years
@@ -365,28 +374,67 @@ Three things that trip people up:
    extra scoring call. A term that is too broad silently deletes a slice of their
    market for the life of the install: a title-excluded posting is dropped before it
    is scored, is kept out of the results table on purpose, and is never reconsidered
-   on a later sweep even if the keyword is removed. When in doubt, spell it longer.
+   on a later sweep even if the keyword is removed. When in doubt, leave the term out —
+   the cost of omitting one is a few scoring calls, and it is recoverable.
 
-   **So check every term for substring damage.** The filter is a plain
-   case-insensitive substring test over the job **title** and nothing else — no word
-   boundaries, no stemming, no description. `"lead"` is not the rule "no lead roles";
-   it is the rule "drop any title containing l-e-a-d", which is Lead Generation
-   Specialist, Team Leader and Leadership Development Partner.
+   **So check every term for over-reach.** The filter is a case-insensitive
+   **whole-word** test over the job **title** and nothing else — no stemming, no
+   description. `"intern"` drops Intern and leaves Internal Tools Developer alone.
+   Phrases work too and are matched literally, punctuation and all — `"head of"`,
+   `"manager, engineering"` — though the rules below say to prefer a single word.
 
-   The test to run on each drafted term before it goes in the list: **say it inside
-   three other titles from the user's own field.** If any of the three is a job they
-   would want, the term is too short. Two rules fall out of that and cover most cases:
+   **A word is still a word in another field's title.** `"lead"` no longer matches
+   Lead Generation Specialist or Leadership Development Partner, but it does still
+   match **Team Lead** and **Tech Lead** — and `"manager"` still deletes Account
+   Manager, Product Manager and Case Manager. The rung words below are dangerous
+   because they are *genuinely those words* in someone else's ladder, and whole-word
+   matching does nothing about that.
 
-   - **Qualify the rung word with the field noun.** `"staff engineer"`, not `"staff"`.
-     `"nurse manager"`, not `"manager"`. `"director of engineering"`, not
-     `"director"`. A two-word term is nearly always right; a bare rung word is nearly
-     always wrong.
-   - **An abbreviation must carry its punctuation or the word after it.** `"sr. "`,
-     not `"sr"` — which matches SRE. `"vice president"` or `"vp of"`, not `"vp"` —
-     which matches AVP, a *mid-level* title in banking.
+   Three rules follow, and together they cover almost every case.
 
-   The traps worth naming, because in some field each of these words means the
-   opposite of a promotion:
+   - **Draft the bare word.** `"staff"`, not `"staff engineer"`. `"principal"`, not
+     `"principal engineer"`. One word catches every specialisation at that rung —
+     Staff Engineer, Staff ML Engineer, Staff Software Engineer, Staff Data Scientist
+     — where a phrase catches the one you thought of and silently misses the rest.
+     Reach for a phrase only when no single word carries the rung on its own: `"head
+     of"`, because a bare `"head"` means nothing by itself.
+
+   - **The word has to mean a rung *in their field*.** This is the test that makes the
+     bare word safe, and it is where the whole danger now sits. Before drafting a
+     word, ask what it means at *this user's* level in *their* profession. If it is
+     their base rung rather than a promotion, it is not a seniority word for them at
+     all and does not belong in the list in any form — draft their field's real rung
+     words instead. `"staff"` is two rungs up for a software engineer and is the job
+     itself for a Staff Nurse, and the traps below are all this same shape.
+
+   - **Expand every term to every spelling a posting would actually use.** Nothing is
+     stemmed and nothing is expanded for you, so each spelling is a separate keyword
+     and a term you write once covers exactly one string. `"intern"` becomes
+     `"intern"`, `"interns"`, `"internship"`, `"internships"`. `"vice president"`
+     becomes `"vice president"` and `"vp"`. `"senior"` becomes `"senior"` and `"sr"`.
+
+     Bound it by what employers write, or the list fills with strings no posting
+     contains. Job titles are overwhelmingly singular, so `"staff"` needs no
+     `"staffs"` and `"director"` needs no `"directors"`. The forms that really do
+     appear are abbreviations, and the nouns naming a *programme or cohort* —
+     internship, apprenticeship, residency, fellowship — which is exactly the
+     `"intern"` family above.
+
+     Two abbreviations are worth knowing exactly, because both used to need defensive
+     spellings and no longer do. `"sr"` is safe: it misses SRE, and it already covers
+     **both** `Sr Engineer` and `Sr. Engineer`, since the period is not a word
+     character — so **never draft `"sr."` as a separate term**. `"vp"` is safe too and
+     misses AVP, a *mid-level* title in banking. But an abbreviation never replaces
+     the spelled-out form: postings write both, so both go in.
+
+   The same expansion applies to `include_keywords` on the rare occasion the user asks
+   for one — an include list that omits a spelling drops jobs rather than admitting
+   them, which is the more expensive direction to get wrong.
+
+   **The traps, which are the evidence for that second rule.** Each of these is a
+   perfectly good bare exclusion in one field and deletes the user's own job in
+   another, so it is the profession — never the word — that decides whether it goes
+   in:
 
    - `staff` is the junior IC rung in accounting, nursing, law and journalism — Staff
      Accountant, Staff Nurse, Staff Attorney, Staff Writer. Excluding it bare deletes
@@ -402,24 +450,34 @@ Three things that trip people up:
      Manager, Product Manager, Case Manager.
    - `partner` is an IC in HR and marketing: HR Business Partner, Partner Marketing
      Manager.
-   - `head` matches Headhunter and Head of Household. `"head of"` is the spelling that
-     means the rung.
-   - `intern` matches Internal Auditor, International Sales and Internal Comms; there
-     is no safe short spelling, so use `"internship"` and accept that a bare "Intern"
-     posting gets through. The ladder never adds this on its own — it only comes up if
-     the user asks for it.
-   - `lead` matches Lead Generation, Leader and Leadership. If what they mean is "no
-     people management", exclude the management nouns instead.
+   - `head` still matches Head of Household, though no longer Headhunter. `"head of"`
+     is the spelling that means the rung.
+   - `lead` still matches Team Lead, Tech Lead and Lead Engineer — which may be the
+     rung they mean — but no longer Lead Generation or Leadership. If what they mean is
+     "no people management", exclude the management nouns instead.
+
+   `intern` is the clearest worked example of the expansion rule. It is now safe to
+   write plainly — it drops Intern without touching Internal Auditor or International
+   Sales — but it covers **only** that one string. A user who says "no internships"
+   gets all four terms, `"intern"`, `"interns"`, `"internship"`, `"internships"`,
+   because a posting titled *Summer Internship Program* contains none of the other
+   three. The ladder never adds any of them on its own: those rungs are below the
+   user's, and they go in only if the user asks for it.
 
    **Last check before the list reaches the user: run the exclusions against your own
-   `targets`.** Lowercase both. If any exclusion is a substring of any target title,
-   one of the two is wrong, and you have written a filter that deletes the recall net
-   you built in the same breath. Fix it first.
+   `targets`.** Lowercase both. If any exclusion appears as a whole word inside any
+   target title, one of the two is wrong, and you have written a filter that deletes
+   the recall net you built in the same breath. Fix it first.
 
    **Then confirm the list with `AskUserQuestion`** — not a rhetorical "sound good?".
    Show the drafted terms in full, on one line, say which model drafted them — you
    are whatever model this session is running, and a user on a small one should know
-   to read the list twice — and state the consequence in one sentence:
+   to read the list twice — and state the consequence in one sentence.
+
+   **Group the spelling variants** so expansion does not turn that line into a wall:
+   write `senior (+ sr)` and `intern (+ interns, internship, internships)` rather than
+   six loose words. Grouping is presentation only — every string shown is written, and
+   none is hidden, which is what the permanence warning below depends on.
 
    > Drafted by <the model you are running as> from your resume. These are permanent:
    > a posting whose title contains one of these words is dropped before it is scored,
@@ -428,9 +486,8 @@ Three things that trip people up:
 
    Offer four outcomes, with the drafted terms named in the first:
 
-   - **Use these** (recommended) — name the actual terms: "Skip senior, staff
-     engineer, principal engineer, engineering manager, director of engineering, vice
-     president."
+   - **Use these** (recommended) — name the actual terms: "Skip senior (+ sr), staff,
+     principal, director, vice president (+ vp), head of."
    - **Keep the next rung up** — "Drop `senior` from the list so Senior <role>
      postings still get scored." Offer this whenever they are not already on the top
      rung: the rung immediately above them is the one they may be promoted into, and
@@ -443,8 +500,11 @@ Three things that trip people up:
    rather than padding; "Other" is for the user who wants to hand you an edited list
    in their own words.
 
-   If they edit, their answer is a request and not a keyword list. Re-run the
-   substring test and the `targets` check over whatever they say — "no lead roles"
+   If they edit, their answer is a request and not a keyword list. Run all three rules
+   over whatever they say, expansion included — this is the path that matters most for
+   it, since below-band terms only ever arrive here. "No internships" becomes
+   `"intern"`, `"interns"`, `"internship"`, `"internships"`, not the one word they
+   said. Then re-run the over-reach test and the `targets` check — "no lead roles"
    becomes `"tech lead"` and `"team lead"`, never `"lead"` — then state the final list
    back in one line and write it. **Do not ask a second time**; one confirmation is
    the deal and a second is an interrogation. If the answer leaves the list empty,
@@ -519,12 +579,34 @@ Three things that trip people up:
 10. **Scoring backend** → `matcher.provider`.
    - **Their Claude subscription** (`claude_code`) — the default, and the reason
      this plugin exists. No API key, no per-job cost. Then ask for `model` and
-     `effort` (low / medium / high / xhigh / max; medium is a good default).
+     `effort` (low / medium / high / xhigh / max; low is the default and usually
+     enough).
 
      This model judges jobs during a sweep and nothing else. It has no bearing on the
      exclusions, targets or profile drafted in question 6 — those are written by
      whichever model is running this setup conversation, which is why that list gets
-     confirmed before it is written.
+     confirmed before it is written. The same holds for the Codex option below.
+   - **Their ChatGPT plan, through the Codex CLI** (`codex`). No API key either.
+     First check it can work:
+
+     ```bash
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py codex-check
+     ```
+
+     It prints JSON with `installed`, `logged_in` and `models`. If `installed` is
+     false, tell them to install Codex; if `logged_in` is false, tell them to run
+     `codex login` in their own terminal and sign in with ChatGPT. Do not run either
+     for them — the sign-in opens a browser and is theirs to do. Re-run the check
+     once they say it is done, and offer the other options if they would rather not.
+
+     When both are true, ask which model to use, offering only the `models` entries
+     it printed (by `name`), and then `effort`, offering only that model's
+     `efforts` list, with low as the default. Pin both — never leave `model` as a
+     Claude name, the engine refuses it for this provider:
+
+     ```bash
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "codex", "model": "<model>", "effort": "low"}'
+     ```
    - **An API key** (`openai` etc.) — tell them to put the key in their
      environment and install `requirements-byo-key.txt` into the plugin venv.
 
@@ -584,15 +666,16 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py warm-models
 ```
 
 Both are imported lazily by the engine, so without this the first
-`/hireshire:find-jobs` would stall mid-run while they download. The bi-encoder gates
+sweep would stall mid-run while they download. The bi-encoder gates
 job titles; the cross-encoder reads each survivor's full description and decides
 which are worth scoring. The cross-encoder is loaded partway through a sweep, which
 is the worst possible moment to discover it is missing — hence warming it now.
 
 ## Step 4 — offer a recurring schedule (optional, opt-in)
 
-`/hireshire:start-orchestration` only runs while the Claude Code session is open.
-If the user wants sweeps to continue after they close it, offer an OS scheduler
+`/hireshire:start-orchestration` runs as a shell task of a Claude Code session, and
+closing Claude Code does not reliably keep it going or reliably stop it. If the user
+wants sweeps that do not depend on a session at all, offer an OS scheduler
 entry running:
 
 ```bash
@@ -618,7 +701,8 @@ Never register it silently.
 
 Summarise what you configured in plain language — locations, how selective, how
 many jobs per run, which boards, what happens next — and tell them to run
-`/hireshire:find-jobs`. Warn that the first sweep is the slowest, because the job
+`/hireshire:start-orchestration`, which sweeps straight away and then on their poll
+interval. Warn that the first sweep is the slowest, because the job
 database starts empty and every posting is new.
 
 Name the workspace and show them where the first CSV will appear:
