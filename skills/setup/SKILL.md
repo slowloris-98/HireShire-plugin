@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time guided setup for HireShire — points it at your resume, works out what roles to look for, and does the first-run downloads. Run this before find-jobs.
+description: One-time guided setup for HireShire — points it at your resume, works out what roles to look for, and does the first-run downloads. Run this before start-orchestration.
 ---
 
 # HireShire setup
@@ -642,15 +642,16 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py warm-models
 ```
 
 Both are imported lazily by the engine, so without this the first
-`/hireshire:find-jobs` would stall mid-run while they download. The bi-encoder gates
+sweep would stall mid-run while they download. The bi-encoder gates
 job titles; the cross-encoder reads each survivor's full description and decides
 which are worth scoring. The cross-encoder is loaded partway through a sweep, which
 is the worst possible moment to discover it is missing — hence warming it now.
 
 ## Step 4 — offer a recurring schedule (optional, opt-in)
 
-`/hireshire:start-orchestration` only runs while the Claude Code session is open.
-If the user wants sweeps to continue after they close it, offer an OS scheduler
+`/hireshire:start-orchestration` runs as a shell task of a Claude Code session, and
+closing Claude Code does not reliably keep it going or reliably stop it. If the user
+wants sweeps that do not depend on a session at all, offer an OS scheduler
 entry running:
 
 ```bash
@@ -676,7 +677,8 @@ Never register it silently.
 
 Summarise what you configured in plain language — locations, how selective, how
 many jobs per run, which boards, what happens next — and tell them to run
-`/hireshire:find-jobs`. Warn that the first sweep is the slowest, because the job
+`/hireshire:start-orchestration`, which sweeps straight away and then on their poll
+interval. Warn that the first sweep is the slowest, because the job
 database starts empty and every posting is new.
 
 Name the workspace and show them where the first CSV will appear:

@@ -57,14 +57,12 @@ and the recurring sweep are POSIX shell one-liners that probe for
 `python3`, then `python`, then `py`. That probe is what makes the same command
 work on a Mac, where there is no bare `python` at all.
 
-## The four commands
+## The two commands
 
 | | |
 |---|---|
 | `/hireshire:setup` | One-time guided setup. Asks about ten questions in plain English and does the first-run downloads. |
-| `/hireshire:find-jobs` | One sweep, scored and ranked, written to a CSV. |
-| `/hireshire:start-orchestration` | Keeps sweeping on a schedule while the session is open. |
-| `/hireshire:apply` | Fills out and **submits** application forms for shortlisted jobs not yet applied to. Sweeps already do this as each job is shortlisted; this is the manual catch-up. Off until you turn it on — see [Safety](#safety). |
+| `/hireshire:start-orchestration` | Sweeps now and then on a schedule until you stop it: scrapes, scores and ranks, writes a CSV per sweep, and — only if you turned auto-apply on — submits applications as jobs are shortlisted. See [Safety](#safety). |
 
 ## How it decides what to score
 

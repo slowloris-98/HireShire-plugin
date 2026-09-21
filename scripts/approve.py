@@ -54,10 +54,10 @@ _SUBSTITUTION = ("`", "$")
 # command that installs nothing surprising: --bootstrap and --monitor do the work
 # the user has just been told about, in the skill that told them.
 _FLAG_MODES = frozenset({"--check", "--paths", "--bootstrap", "--monitor",
-                         # --sweep is one cycle of --monitor and is what find-jobs runs.
-                         # It has to be here or the plugin's most common command starts
-                         # prompting on every use — which is the friction `setup_cli.py`
-                         # and this guard exist to remove.
+                         # --sweep is one cycle of --monitor and is what the OS
+                         # scheduler entry setup offers runs. It has to be here or that
+                         # command prompts when setup shows it working — which is the
+                         # friction `setup_cli.py` and this guard exist to remove.
                          "--sweep",
                          # --stop is the only way to end a sweep on purpose now that
                          # nothing reaps one automatically, so it must not be the one
@@ -79,26 +79,13 @@ _SCRIPTS: dict[str, frozenset[str] | None] = {
     # narrowing the calibration to one run can answer one prompt.
     "scripts/calibrate_cutoffs.py": frozenset(),
     "scripts/setup_cli.py": None,
-    "scripts/applied_cli.py": None,
 }
 _SUBCOMMANDS = {
     "scripts/setup_cli.py": frozenset({
         "install-config", "init-workspace", "find-resumes", "install-resume",
         "resume-text", "get", "field-docs", "set", "write-profile", "warm-models",
     }),
-    "scripts/applied_cli.py": frozenset({"list", "pending", "record"}),
 }
-
-# Browser tools that only look. Everything that changes state on an employer's
-# page — click, type, fill_form, select_option, file_upload — is deliberately
-# absent: those actions submit a real application, and the prompt is the last human
-# checkpoint before that happens. That mattered more once `dry_run` was removed:
-# `enable_applier` is now the only other thing in the way, so do not widen this set.
-_READ_ONLY_BROWSER_TOOLS = frozenset({
-    "mcp__plugin_hireshire_playwright__browser_navigate",
-    "mcp__plugin_hireshire_playwright__browser_snapshot",
-    "mcp__plugin_hireshire_playwright__browser_take_screenshot",
-})
 
 _SHELLS = frozenset({"sh", "bash", "sh.exe", "bash.exe"})
 
@@ -215,9 +202,6 @@ def decide(payload: dict) -> str | None:
         if _bash_is_allowed(str(tool_input.get("command") or "")):
             return "HireShire launcher command, checked by scripts/approve.py"
         return None
-
-    if tool in _READ_ONLY_BROWSER_TOOLS:
-        return "read-only browser inspection for /hireshire:apply"
 
     return None
 

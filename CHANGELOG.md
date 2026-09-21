@@ -4,6 +4,21 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.11.0] — 2026-09-21
+
+### Removed
+
+- **`/hireshire:find-jobs` and `/hireshire:apply`.** The plugin now has two commands:
+  `/hireshire:setup`, once, and `/hireshire:start-orchestration`, which sweeps straight
+  away and then on your poll interval — scraping, scoring, writing each sweep's CSV and
+  dashboard, and applying to shortlisted jobs if you turned auto-apply on. Auto-apply
+  itself is unchanged: sweeps still submit each application as its job is shortlisted.
+  A job whose apply session could not start is retried on the next sweep, which is what
+  the manual catch-up was for.
+- `scripts/applied_cli.py`, which only `/hireshire:apply` used, and the permission hook
+  that auto-approved read-only browser tools for it. Browser actions in your own
+  session now always ask.
+
 ## [0.10.0] — 2026-09-21
 
 ### Changed

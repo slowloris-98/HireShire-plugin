@@ -1129,8 +1129,7 @@ class Database:
     def load_pending_applications(self, since_iso: str) -> list[dict]:
         """Shortlisted jobs scored since `since_iso` with no `applied` row, best first.
 
-        The apply worker's backlog, and what `applied_cli.py pending` prints for the
-        manual skill. It exists because the matcher retires a job once it is judged:
+        The apply worker's backlog. It exists because the matcher retires a job once it is judged:
         a job whose apply session failed to launch is never streamed again, so this
         is the only road back to it.
 
