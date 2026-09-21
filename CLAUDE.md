@@ -180,6 +180,34 @@ time. Applying stays a separate phase; see the note in `orchestrate.py`.
 
 Five things follow that are easy to break:
 
+- **Title keywords match whole words, and the boundaries are conditional.** This
+  reverses a plain `kw in title_lower` and must not be restored: a `title_excluded`
+  drop is a verdict, so `intern` retired Internal Tools Developer *permanently*, `ios`
+  retired Kiosk Manager and `mobile` retired Automobile Design Engineer. The rule lives
+  once in `title_filter.title_matches`; `funnel.py` and `apply_title_filter` both call
+  it. Two things it is easy to get wrong. Keywords are **phrases with punctuation**
+  (`"manager, engineering"`, `"sr. "`, `"full-stack"`), so it escapes the keyword
+  rather than tokenising — a `\b\w+\b` splitter cannot express them. And the boundary
+  is a lookaround applied **only on a side whose character is a word char**: `\b`
+  asserts a *transition*, so a trailing one on `"sr."` would demand the very word
+  character the keyword stops at, and the match would never fire. Leading/trailing
+  whitespace is stripped for the same reason. Nothing is stemmed, in either direction
+  — `intern` misses Interns, `internship` misses Intern — which was chosen over a
+  suffix allowance because the gate is permanent and a morphology guess is not
+  reviewable. A blank keyword matches nothing; unguarded it would empty the sweep.
+
+  Setup's drafting rules were reversed to match, and the reversal should not be undone.
+  It now writes **bare single words scoped to the user's profession** — `staff`, not
+  `staff engineer` — because a phrase catches the one specialisation the model thought
+  of and misses Staff ML Engineer, Staff Data Scientist and the rest. The old rule
+  qualified every rung word with a field noun; that was substring damage control, and
+  restoring it as a safety measure costs recall and buys nothing. What keeps a bare
+  word safe is the **profession check**, not the noun: `staff` is a promotion in
+  software and the job itself for a Staff Nurse, so the field decides whether the word
+  is drafted at all. Because nothing is stemmed, setup also **expands each term into
+  every spelling employers write** (`intern, interns, internship, internships`;
+  `senior, sr`; `vice president, vp`) — and `sr.` is never drafted, since bare `sr`
+  already covers `Sr.` through the non-word-character rule above.
 - **Only the cutoff costs money.** Both gates before it run locally. Tightening the
   bi-encoder buys CPU seconds and skipped detail fetches, never LLM calls, and pays
   for them in recall at the *title-only* stage. This is the single most common wrong

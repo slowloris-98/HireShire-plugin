@@ -287,8 +287,28 @@ def test_setup_drafts_seniority_exclusions_and_makes_the_user_confirm_them():
     assert re.search(r"never auto-add|never add[^.]{0,80}junior", step), (
         "the exclude-upward-only rule is gone; junior terms must never be auto-added"
     )
-    # Substring matching is the whole reason a term can be over-broad.
-    assert "substring" in step, "the substring-safety pass is gone"
+    # Matching is whole-word, but a rung word is still a whole word in another field's
+    # ladder — `manager` still deletes Account Manager — so the over-reach pass stays.
+    assert "whole-word" in step or "whole word" in step, (
+        "the skill no longer states the matching rule; it must not imply substring"
+    )
+    assert re.search(r"over-reach|too broad|over-broad", step), (
+        "the over-reach safety pass is gone"
+    )
+    # Nothing is stemmed, so one drafted word covers exactly one string. Excluding
+    # "intern" without also writing interns/internship/internships leaves Summer
+    # Internship Program in the sweep — the rule has to draft them, not warn about them.
+    assert "internships" in step and "interns" in step, (
+        "the spelling-expansion rule is gone; a term now covers only itself"
+    )
+    # Bare rung words beat phrases: "staff engineer" misses Staff ML Engineer. What
+    # keeps that safe is the profession check, not a qualifying noun.
+    assert re.search(r"bare word|draft the bare", step), (
+        "the bare-word rule is gone — setup is back to drafting phrases"
+    )
+    assert re.search(r"in their field|their profession|their own field", step), (
+        "the profession check is gone, which is the only thing making bare words safe"
+    )
     # And the confirmation turn, which is what makes a permanent write survivable.
     assert "askuserquestion" in step, "the exclusions must be confirmed, not assumed"
     assert re.search(r"permanent|does not come back|never comes back", step), (

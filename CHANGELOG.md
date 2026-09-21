@@ -4,6 +4,48 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.10.0] — 2026-09-21
+
+### Changed
+
+- **Title keywords now match whole words instead of any run of letters.** Excluding
+  `intern` used to drop **Internal Tools Developer**, **International Sales** and
+  **Internal Auditor** as well, because the filter only asked whether those letters
+  appeared anywhere in the title. It now asks whether the word is there. `ios` no
+  longer drops **Kiosk Manager** or **Biosciences Analyst**; `mobile` no longer drops
+  **Automobile Design Engineer**; `senior` no longer drops **Seniority Programs Lead**.
+  Phrases still work exactly as before, punctuation included — `manager, engineering`
+  and `head of` match the same titles they always did.
+
+  **Your existing keywords keep working and you do not need to change anything.** Some
+  are now longer than they need to be: `sr` on its own is safe (it does not match SRE)
+  and already covers both `Sr Engineer` and `Sr. Engineer`, so a list containing
+  `sr. `, `sr software`, `sr engineer`, `sr ml` and `sr ai` can become a single `sr`
+  whenever you feel like tidying it.
+
+  **Two things to know before you rely on it.** First, nothing is stemmed, in either
+  direction: `intern` does not catch **Interns** or **Internship**, and `internship`
+  does not catch a bare **Intern**. If you were leaning on the old behaviour to cover a
+  plural, add the other spellings — `intern`, `interns`, `internship`, `internships`.
+  Second, this does not undo the past. Jobs already dropped by an over-broad keyword
+  were recorded as decided and are not reconsidered, so the fix applies to postings
+  found from here on rather than retrieving what an earlier sweep discarded.
+
+- **Setup drafts exclusion keywords differently.** It now writes single words —
+  `staff` rather than `staff engineer` — because one word covers every specialisation
+  at that rung, catching **Staff ML Engineer** and **Staff Data Scientist** without
+  anyone having to list them. It also writes out every spelling a posting might use
+  rather than assuming one covers the others, so asking it to rule out internships
+  produces all four of `intern`, `interns`, `internship`, `internships`, and ruling out
+  vice presidents produces both `vice president` and `vp`.
+
+  Which words it considers still depends on your profession, and that has become more
+  important rather than less: `staff` means a promotion in software and means the job
+  itself for a Staff Nurse, so it is drafted for one and never for the other. The
+  confirmation step is unchanged — it still shows you the full list and still tells you
+  the drops are permanent — but it now groups the spellings, as `senior (+ sr)`, so the
+  line stays readable.
+
 ## [0.9.0] — 2026-09-19
 
 ### Changed

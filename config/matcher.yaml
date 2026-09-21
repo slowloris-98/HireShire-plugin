@@ -35,10 +35,15 @@ settings:
 # Title keywords, generated from your resume by /hireshire:setup.
 # Shipped empty on purpose: inheriting someone else's keywords would quietly
 # restrict your search to their field.
+# Keywords match WHOLE WORDS, case-insensitively: "intern" drops Intern but leaves
+# Internal Tools Developer alone. Multi-word phrases work ("staff engineer"), and so
+# does punctuation ("manager, engineering"). Nothing is stemmed, so "intern" does not
+# catch Interns or Internship — list those yourself if you want them.
 title_filter:
-  # Title must contain at least one of these (case-insensitive). Empty = no include check.
+  # Title must contain at least one of these. Empty = no include check.
   include_keywords: []
-  # Title must contain none of these.
+  # Title must contain none of these. A drop here is permanent: the job is never
+  # scored, never appears in your results, and does not come back if you edit this.
   exclude_keywords: []
 
 # The funnel decides which jobs are worth an LLM call.
