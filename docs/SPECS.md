@@ -37,7 +37,10 @@ in a resume from wherever you keep it.
 
 **Requirements:** Claude Code with a Pro or Max subscription (a ChatGPT plan via
 the Codex CLI, or an OpenAI API key, can do the scoring instead), Python 3.10+, and about 2 GB of disk — most of it PyTorch,
-the rest the two small models the funnel uses. Node 18+ only if you want auto-apply.
+the rest the two small models the funnel uses. On a machine with an NVIDIA (or AMD)
+GPU the install picks PyTorch's GPU build, which runs the funnel's models far faster
+and needs about 4-5 GB instead; without one, or on a Mac, you get the standard build.
+Node 18+ only if you want auto-apply.
 
 ### Platform support
 

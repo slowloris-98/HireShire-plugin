@@ -1,4 +1,5 @@
-2. introduce codex for judging.
+1. increase scoring count to 300
+
 3. introduce resume tuning.
 4. fix shell monitor bug.
 
