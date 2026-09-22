@@ -455,6 +455,35 @@ def test_a_windows_launch_failure_is_named_and_deferred(tmp_path, launcher, capl
     assert "0xC0000142 STATUS_DLL_INIT_FAILED" in caplog.text
 
 
+def test_a_failed_session_logs_the_reason_the_cli_gave(tmp_path, launcher, caplog):
+    """Nine `exited 1` deferrals in one night logged their token counts and no reason:
+    the envelope's bookkeeping outran the clip before `result`, which is the only part
+    that says anything. Those fields are read by name now."""
+    _, script, _ = launcher
+    envelope = json.dumps({
+        "type": "result",
+        "subtype": "error_during_execution",
+        "duration_api_ms": 0,
+        "session_id": "8229e809-b3c5-4ab5-a69d-46f18f79f231",
+        "total_cost_usd": 0,
+        "usage": {
+            "input_tokens": 0, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0, "output_tokens": 0,
+            "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+            "service_tier": "standard", "iterations": [], "speed": "standard",
+        },
+        "is_error": True,
+        "result": "Claude AI usage limit reached|1758598800",
+    }).encode()
+    script.append(_Proc(envelope, rc=1))
+    with caplog.at_level("WARNING", logger=worker.logger.name):
+        stats, db = _run(tmp_path, [_job("j1")])
+
+    assert "Claude AI usage limit reached" in caplog.text
+    assert "api_ms=0" in caplog.text, "the tell that the session never reached the model"
+    assert _statuses(db) == {} and stats["deferred"] == 1, "a failed launch retired a job"
+
+
 def test_a_timeout_is_recorded_as_an_unconfirmed_error_and_kills_the_session(
         tmp_path, launcher):
     _, script, killed = launcher

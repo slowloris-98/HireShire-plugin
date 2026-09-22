@@ -337,10 +337,14 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
         _apply_proc = None
 
     if proc.returncode != 0:
-        detail = (stderr.decode(errors="replace").strip()
-                  or stdout.decode(errors="replace").strip() or "(no output)")
+        # The reason lives in the envelope's `is_error`/`result`, and it is reported in
+        # place of the raw stream it came from. Reading those by name is what fixed the
+        # night of nine `exited 1` deferrals that logged their token counts and nothing
+        # else — `envelope_failure` carries the argument.
+        out = stdout.decode(errors="replace")
         raise ApplyLaunchError(
-            f"claude CLI exited {claude_cli.describe_exit(proc.returncode)}: {detail[:500]}"
+            f"claude CLI exited {claude_cli.describe_exit(proc.returncode)}: "
+            f"{claude_cli.exit_detail(claude_cli.envelope_failure(out) or out, stderr)}"
         )
 
     raw = stdout.decode(errors="replace")

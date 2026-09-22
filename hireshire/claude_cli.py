@@ -3,6 +3,10 @@
 The scorer and the apply worker both shell out to the local CLI on the user's
 subscription. Two copies of these rules is how the one that matters most — stripping
 the API key — gets dropped from the second copy.
+
+The Codex backend shares what is not about `claude` itself: the exit-code readers and
+`exit_detail`. It is the same host starting the same kind of console child, and a
+failure has to read the same way in the log whichever CLI produced it.
 """
 
 from __future__ import annotations
@@ -38,6 +42,77 @@ def describe_exit(returncode: int | None) -> str:
         return str(returncode)
     code = returncode & 0xFFFFFFFF
     return f"{returncode} (0x{code:08X} {LAUNCH_FAILURE_CODES[code]})"
+
+
+def exit_detail(out: str, stderr: bytes) -> str:
+    """Both streams of a failed CLI call, each truncated on its own, stdout first.
+
+    This used to be `stderr or stdout`, on the theory that stderr is empty when the
+    CLI reports a failure (a bad --model, for one) on stdout. That does not hold:
+    stderr carries routine warnings on every call — an untrusted workspace alone is
+    645 characters — so the fallback never fired, and one real failure was logged as
+    a trust warning while five more read "(no output)".
+
+    Truncating the two together would not fix it either: a joined string cut at 500
+    is still all stderr, because the warning outruns that cap by itself. Hence a
+    budget per stream, and stdout first. `out` is text because every caller passes
+    the failure it parsed — `envelope_failure` here, `codex_cli.parse_events` there —
+    in place of the raw stream it came from.
+    """
+    out = out.strip()
+    err = stderr.decode(errors="replace").strip()
+    return " | ".join(
+        part for part in (
+            f"stdout: {out[:300]}" if out else "",
+            f"stderr: {err[:300]}" if err else "",
+        ) if part
+    ) or "(no output)"
+
+
+def envelope_failure(raw: str) -> str | None:
+    """Why a `--output-format json` call failed, in the CLI's own words.
+
+    Nine apply sessions failed `exited 1` across one night and not one logged a
+    reason: the envelope opens with `duration_api_ms`, `session_id`, `total_cost_usd`
+    and a `usage` block, so clipping its raw text for the log spent the whole budget
+    on token counts and stopped short of `result`. Reading the fields by name is what
+    makes the next failure name itself.
+
+    `api_ms=0` is reported only when it is zero, because that is the one value worth
+    a word: a session reporting no API time never reached the model, which is what
+    separates "ran, then failed" from "was refused at the door" — the distinction the
+    night's bursts had to be diagnosed by hand.
+
+    Returns None when there is nothing to say, so the caller falls back to the raw
+    streams. Never raises: every caller is already reporting a failure.
+    """
+    try:
+        envelope = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+
+    parts: list[str] = []
+    if "is_error" in envelope:
+        parts.append(f"is_error={str(envelope['is_error']).lower()}")
+    subtype = envelope.get("subtype")
+    if isinstance(subtype, str) and subtype.strip():
+        parts.append(f"subtype={subtype.strip()}")
+    if envelope.get("duration_api_ms") == 0:
+        parts.append("api_ms=0")
+
+    # `result` is the CLI's prose on a failed call; older versions said `error`, and
+    # some spell it as an object with a message inside.
+    reason = envelope.get("result")
+    if not isinstance(reason, str) or not reason.strip():
+        error = envelope.get("error")
+        reason = error.get("message") if isinstance(error, dict) else error
+    if isinstance(reason, str) and reason.strip():
+        # One log line, whatever the CLI wrapped.
+        parts.append(f"result: {' '.join(reason.split())[:300]}")
+
+    return " | ".join(parts) or None
 
 
 def subscription_env() -> dict[str, str]:

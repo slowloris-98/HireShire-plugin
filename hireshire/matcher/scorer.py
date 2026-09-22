@@ -627,30 +627,6 @@ class CLILaunchError(RuntimeError):
 _LAUNCH_RETRY_DELAYS_S = (5.0, 20.0, 60.0)
 
 
-def _exit_detail(out: str, stderr: bytes) -> str:
-    """Both streams of a failed CLI call, each truncated on its own, stdout first.
-
-    This used to be `stderr or stdout`, on the theory that stderr is empty when the
-    CLI reports a failure (a bad --model, for one) on stdout. That does not hold:
-    stderr carries routine warnings on every call — an untrusted workspace alone is
-    645 characters — so the fallback never fired, and one real failure was logged as
-    a trust warning while five more read "(no output)".
-
-    Truncating the two together would not fix it either: a joined string cut at 500
-    is still all stderr, because the warning outruns that cap by itself. Hence a
-    budget per stream, and stdout first. `out` is text because the Codex backend
-    passes the error it parsed out of the event stream rather than the raw JSONL.
-    """
-    out = out.strip()
-    err = stderr.decode(errors="replace").strip()
-    return " | ".join(
-        part for part in (
-            f"stdout: {out[:300]}" if out else "",
-            f"stderr: {err[:300]}" if err else "",
-        ) if part
-    ) or "(no output)"
-
-
 class ClaudeCodeBackend:
     """Score through the local `claude` CLI so the user's Pro/Max subscription
     pays for it instead of a metered API key.
@@ -775,9 +751,13 @@ class ClaudeCodeBackend:
                     f"claude CLI exited {claude_cli.describe_exit(proc.returncode)}"
                 )
             if proc.returncode != 0:
+                # The failure is `is_error`/`result` inside the JSON envelope, so it
+                # is reported in place of the raw stream it came from — the same shape
+                # as the codex branch below.
+                out = stdout.decode(errors="replace")
                 raise RuntimeError(
                     f"claude CLI exited {proc.returncode}: "
-                    f"{_exit_detail(stdout.decode(errors='replace'), stderr)}"
+                    f"{claude_cli.exit_detail(claude_cli.envelope_failure(out) or out, stderr)}"
                 )
             if self._settings.request_interval_s > 0:
                 await asyncio.sleep(self._settings.request_interval_s)
@@ -952,7 +932,8 @@ class CodexBackend:
                 _, _, error = codex_cli.parse_events(stdout)
                 out = error or stdout.decode(errors="replace")
                 raise RuntimeError(
-                    f"codex CLI exited {proc.returncode}: {_exit_detail(out, stderr)}"
+                    f"codex CLI exited {proc.returncode}: "
+                    f"{claude_cli.exit_detail(out, stderr)}"
                 )
             if self._settings.request_interval_s > 0:
                 await asyncio.sleep(self._settings.request_interval_s)

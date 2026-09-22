@@ -4,6 +4,14 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.13.1] — 2026-09-22
+
+### Fixed
+
+- When an application or a scoring call fails, the log now says what Claude or Codex
+  actually reported — a usage limit, for instance — instead of the call's token counts.
+  Nine applications were deferred over one night without the log naming a single reason.
+
 ## [0.13.0] — 2026-09-21
 
 ### Added
