@@ -495,7 +495,7 @@ _SANITY = [
 ]
 
 def load_model(name: str) -> tuple[object, float]:
-    key = (name, MAX_LENGTH)
+    key = (name, MAX_LENGTH, None)   # None: the default-device slot production reads
     if key in rerank_mod._MODEL_CACHE:
         return rerank_mod._MODEL_CACHE[key], 0.0
     t0 = time.perf_counter()

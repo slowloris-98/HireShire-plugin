@@ -16,6 +16,8 @@ _MODEL_LOCK = threading.Lock()
 
 
 def _get_model(name: str):
+    """sentence-transformers picks the device itself (cuda, then mps, then cpu); a
+    GPU that is present but fails to load falls back to CPU rather than the sweep."""
     with _MODEL_LOCK:
         model = _MODEL_CACHE.get(name)
         if model is None:
@@ -23,8 +25,17 @@ def _get_model(name: str):
             # is actually enabled.
             from sentence_transformers import SentenceTransformer
 
-            logger.info("Loading encoder model %s", name)
-            model = SentenceTransformer(name)
+            from hireshire.funnel.rerank import describe_device
+
+            try:
+                model = SentenceTransformer(name)
+            except Exception:
+                logger.warning(
+                    "Could not load encoder %s on the default device; using CPU",
+                    name, exc_info=True,
+                )
+                model = SentenceTransformer(name, device="cpu")
+            logger.info("Loading encoder model %s on %s", name, describe_device(model))
             _MODEL_CACHE[name] = model
         return model
 

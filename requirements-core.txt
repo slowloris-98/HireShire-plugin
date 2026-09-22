@@ -7,6 +7,11 @@
 # powers both funnel stages: the MiniLM bi-encoder that gates titles and the
 # cross-encoder that reads descriptions before the LLM budget is spent. Neither
 # model is downloaded until first use.
+#
+# Off macOS, bootstrap installs this file with `uv pip install --torch-backend auto`,
+# so torch comes from the PyTorch index matching the machine's GPU driver (a CUDA
+# build runs ~2-3 GB on its own) and everything else from PyPI. Do not pin a torch
+# variant or add a PyTorch index here — see `_install_with_uv` in scripts/bootstrap.py.
 
 httpx>=0.27
 pydantic>=2.7

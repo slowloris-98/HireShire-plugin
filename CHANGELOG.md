@@ -4,6 +4,27 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.13.0] — 2026-09-21
+
+### Added
+
+- **Uses your GPU when you have one.** On a machine with an NVIDIA (or AMD) graphics
+  card, HireShire now installs the GPU build of PyTorch, and the two models that read
+  every job before anything is scored run on the card instead of the processor. Large
+  employers that took most of an hour on the processor should finish in minutes.
+  Without a supported GPU, or on a Mac, nothing changes. Your first sweep after the
+  update spends a few extra minutes upgrading.
+- The sweep log names the device the models run on, for example
+  `on cuda:0 (NVIDIA GeForce RTX 3060 Laptop GPU)`.
+
+### Fixed
+
+- An update never pulls PyTorch out from under a sweep that is already running; it
+  waits for the next start. If the GPU download fails (offline, for instance), the
+  sweep carries on with the build it already had and tries again next time.
+- If the graphics card runs out of memory, the reranker uses smaller batches, and
+  moves to the processor if even that fails. Jobs are scored the same either way.
+
 ## [0.12.0] — 2026-09-21
 
 ### Added

@@ -753,6 +753,36 @@ suppresses Rich in favour of `logging` — required under the monitor.
   **runs** each candidate and keeps the first reporting Python ≥ 3.10. Hooks,
   monitors and both skills go through it; nothing else may name
   an interpreter. Windows needs Git Bash so `sh` exists.
+- **PyTorch comes from `uv pip install --torch-backend auto`, never a hand-kept tag
+  list.** Off macOS, `bootstrap._install_with_uv` pip-installs uv (unpinned, so it
+  knows the current PyTorch index tags, which change every release) and installs the
+  whole requirements file through it. sentence-transformers then picks cuda → mps →
+  cpu on its own; there is no `device` setting. Four rules keep a GPU upgrade from
+  costing a working venv:
+  - **Only an architecture mismatch downgrades to CPU.** uv reads the driver version,
+    not compute capability (astral-sh/uv#14742), so the smoke test runs a matmul on the
+    device. `bad_kernels` reinstalls CPU and writes the `_ARCH_FALLBACK` marker to
+    `DATA/torch_variant`, which pins `cpu` from then on. `no_gpu` (a CUDA build, CUDA
+    unavailable) is **kept**: it runs on CPU anyway, and treating a transient fault as a
+    verdict would pin the install to CPU for good. The marker is only cleared by hand
+    or by `HIRESHIRE_TORCH`.
+  - **Never swap torch under a live sweep.** Bootstrap runs *before*
+    `run_orchestration`'s duplicate guard and before every `run_engine` call, and on
+    Windows replacing torch's DLLs under a running process half-removes it. So
+    `main()` checks `sweep_pid` + `is_alive` first and defers.
+  - **A failed download removes nothing, and only-the-torch-line-changed soft-fails.**
+    uv downloads before replacing. If the requirements are otherwise unchanged and
+    torch still imports, `main()` returns 0 with the lock unwritten, so an offline
+    machine keeps sweeping and retries next start.
+  - **The lock records the backend *requested*, not what uv resolved**, so
+    `is_current()` never probes a GPU on SessionStart. A CPU `torch` is named for
+    `--reinstall-package` only when `nvidia-smi`/`rocm-smi` exists, or every GPU-less
+    install would re-download it once.
+
+  Precision stays fp32 on every device, and that is load-bearing: `min_score` is a raw
+  logit, and half precision would shift it. Out of memory in `Reranker._score` halves
+  the batch (and keeps it halved), then swaps to a separately cached CPU copy — never
+  `model.to()` on the shared one.
 - Downstream of the launcher, `scripts/run_engine.py` re-execs into the venv and
   addresses its interpreter by absolute path — hook exec form cannot spawn the
   `.cmd`/`.bat` shims Windows installs.
