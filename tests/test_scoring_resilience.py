@@ -86,7 +86,29 @@ def test_the_cli_receives_the_schema_itself_not_a_path(monkeypatch):
 _DLL_INIT_FAILED = 3221225794  # 0xC0000142, as Windows reports it
 
 
-def _scripted_backend(monkeypatch, exit_codes: list[int]):
+# A real failure envelope, as the CLI wrote it on 2026-09-22. The shape is the point:
+# `usage` and the session bookkeeping come first and outrun any clip on the raw text,
+# so `result` — the only part that says anything — was what got cut off.
+_FAILURE_ENVELOPE = json.dumps({
+    "type": "result",
+    "subtype": "error_during_execution",
+    "duration_api_ms": 0,
+    "stop_reason": "stop_sequence",
+    "session_id": "8229e809-b3c5-4ab5-a69d-46f18f79f231",
+    "total_cost_usd": 0,
+    "usage": {
+        "input_tokens": 0, "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0, "output_tokens": 0,
+        "output_tokens_details": {"thinking_tokens": 0},
+        "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+        "service_tier": "standard", "iterations": [], "speed": "standard",
+    },
+    "is_error": True,
+    "result": "Claude AI usage limit reached|1758598800",
+}).encode()
+
+
+def _scripted_backend(monkeypatch, exit_codes: list[int], fail_stdout: bytes = b""):
     """A backend whose CLI exits with each code in turn, then succeeds."""
     calls: list[int] = []
 
@@ -99,7 +121,7 @@ def _scripted_backend(monkeypatch, exit_codes: list[int]):
 
             async def communicate(self, input=None):
                 if rc:
-                    return b"", b""
+                    return fail_stdout, b""
                 payload = ScoringSchema(
                     requirements=[],
                     core_skills_rationale="ok", core_skills_band=5,
@@ -140,6 +162,54 @@ def test_an_ordinary_exit_is_never_retried(monkeypatch):
         asyncio.run(backend.call("prompt", "system"))
     assert not isinstance(info.value, CLILaunchError)
     assert len(calls) == 1
+
+
+def test_a_failed_call_reports_the_reason_the_cli_gave(monkeypatch):
+    """The envelope says why. Raw text clipped for the log never reached that far."""
+    backend, _ = _scripted_backend(monkeypatch, [1], fail_stdout=_FAILURE_ENVELOPE)
+    with pytest.raises(RuntimeError, match="usage limit reached") as info:
+        asyncio.run(backend.call("prompt", "system"))
+    assert "api_ms=0" in str(info.value), "the tell that the call never reached the model"
+
+
+def test_a_failure_envelope_is_read_field_by_field():
+    detail = claude_cli.envelope_failure(_FAILURE_ENVELOPE.decode())
+    assert "is_error=true" in detail
+    assert "subtype=error_during_execution" in detail
+    assert "api_ms=0" in detail
+    assert "result: Claude AI usage limit reached|1758598800" in detail
+
+
+def test_api_time_is_named_only_when_there_was_none():
+    """Zero says the call never reached the model; any other value says nothing."""
+    ran = json.dumps({"is_error": True, "duration_api_ms": 77652, "result": "boom"})
+    assert "api_ms" not in claude_cli.envelope_failure(ran)
+
+
+def test_an_older_envelope_keeps_its_error_key():
+    nested = json.dumps({"is_error": True, "error": {"message": "credit balance too low"}})
+    assert "result: credit balance too low" in claude_cli.envelope_failure(nested)
+
+
+def test_the_reason_is_one_line_and_bounded():
+    """It goes in a log line, beside a job title, whatever the CLI wrapped."""
+    detail = claude_cli.envelope_failure(
+        json.dumps({"is_error": True, "result": "line one\n\n  line two " + "x" * 500})
+    )
+    assert "\n" not in detail
+    assert "line one line two" in detail
+    assert len(detail) < 350
+
+
+@pytest.mark.parametrize("raw", [
+    "not json at all",
+    "[]",
+    json.dumps({"type": "result", "duration_api_ms": 12, "session_id": "abc"}),
+])
+def test_an_envelope_with_nothing_to_say_defers_to_the_raw_streams(raw):
+    """None is what makes the caller fall back, so a silent envelope must not
+    answer with an empty string."""
+    assert claude_cli.envelope_failure(raw) is None
 
 
 @pytest.mark.parametrize("rc", [3221225794, -1073741502])
