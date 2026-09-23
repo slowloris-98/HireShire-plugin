@@ -8,6 +8,23 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Fixed
 
+- **The lifetime dashboard now shows each job once, as it stands today.** A job the
+  sweep could not get to — the call budget ran out, or the scorer failed — comes back
+  on a later sweep, and the record of that later sweep was being added beside the old
+  one rather than replacing it. So a job could appear twice: once with the score it
+  eventually got, and again, further down, still described as waiting for a call it had
+  already had. 381 jobs on a real install were listed under two contradicting labels.
+  Where a job had several unfinished attempts, the page picked between them arbitrarily,
+  which could show a job as still in the running after the relevance check had ruled it
+  out. Every part of the page — the four tiles, the five lists and the progress bars —
+  now reads the same, most recent record of each job, so the tiles and the lists beneath
+  them can no longer tell you different things.
+
+  The page also stopped cutting off scored jobs. It loaded at most ~650 of them, so on a
+  mature install several hundred judged jobs were missing from the lists entirely; on the
+  install this was measured against, 1,233 now appear where 755 did. Per-sweep dashboards
+  were never affected, and no score, verdict or database row changes — only which one the
+  page reads.
 - **A job the applier never managed to start on no longer disappears quietly.** When a
   browser session fails to launch — the Claude CLI missing, or the machine refusing to
   start it — the job is left alone and retried on later sweeps, for three days. After

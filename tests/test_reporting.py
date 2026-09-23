@@ -292,10 +292,14 @@ class _ReportDB:
     def load_applied_matches(self, run_id=None):
         return []
 
-    def load_lifetime_matches(self, judged, limit):
-        return [r for r in self._all_rows
-                if bool(r.get("relevance_score") is not None
-                        and not r.get("skipped")) is judged]
+    def load_lifetime_matches(self, limit):
+        # One row per job, judged first — the shape the real loader returns now that
+        # the page reads each job's canonical row rather than two overlapping halves.
+        return sorted(
+            self._all_rows,
+            key=lambda r: r.get("relevance_score") is not None and not r.get("skipped"),
+            reverse=True,
+        )[:limit]
 
     def load_unmatched_jobs(self, run_id, limit):
         return [{"job_id": "direct:google:99", "board_token": "google",

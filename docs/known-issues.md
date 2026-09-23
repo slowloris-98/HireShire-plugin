@@ -7,8 +7,8 @@ Only *outstanding* issues are listed. A fully resolved one is deleted rather tha
 marked fixed — the fix is in `CHANGELOG.md` and the git history, and a table of
 things that are no longer true is a table nobody rereads. **IDs are stable and are
 never reused**, so gaps are expected (A2, A3 and S1 were resolved and removed on
-2026-09-22, A5 on 2026-09-22) and `CLAUDE.md`'s references to an issue by number stay
-valid.
+2026-09-22, A5 and R1 on 2026-09-22) and `CLAUDE.md`'s references to an issue by number
+stay valid.
 
 ## Applier
 
@@ -24,12 +24,6 @@ valid.
 | S2 | `claude CLI exited 3221225794: (no output)`; circuit breaker aborted scoring after 5 failures | `0xC0000142` (`STATUS_DLL_INIT_FAILED`): Windows could not start `claude.exe`. Not an API or auth error; no jobs were retired. **Not caused by concurrency:** the first failure (15:10:54, a 1-job batch) had no other call in flight, no apply session ran that cycle (all 10 pending jobs were at excluded companies), and the same monitor process had scored 31 jobs two hours earlier. Every call failed, and the log stops at 15:16:35 with no matcher summary. This points to the host: the sweep process lost the ability to start console children. | Mitigated in 0.5.1: launch failures are retried after 5/20/60 s (`scorer._LAUNCH_RETRY_DELAYS_S`, on both the Claude and Codex paths) before they count towards the breaker, and a breaker tripped by them blames the machine, not the backend. They **still count** towards the breaker once the retries are spent: in the observed sweep every call failed, and not counting them would have burned the whole call budget ×4 against a host that could start nothing. **The underlying host condition is not fixed.** 2026-09-21 (codex judge): it recurred at 20:29 and 21:35, with scoring and applying failing at the same moment while scraping carried on. **A locked screen is ruled out** — the 21:05 sweep ran almost entirely locked and launched ~30 apply sessions and 166 codex calls before failing. Sleep is ruled out too (no power events), and no leftover processes were found afterwards. Leading suspect: desktop heap exhaustion from everything running at once (VS Code Claude sessions, each with its own Playwright browser, plus the sweep's codex calls and apply sessions). Unproven: nothing records what else was running at the time. |
 | S3 | Results CSV shows `llm_score` 0 for jobs never scored (10 rows, sweep `2026-09-21_202917`) | These are duplicates of a job whose scoring call failed (S2), so they copied its placeholder 0. `results_export._never_scored` returns `False` for **any** row carrying a `cluster_representative`, without asking whether that representative actually returned a verdict. The overview page is right for a different reason: `overview._job_entry` reads `skip_reason` directly rather than calling `_never_scored`. | Open. Note `reporting.data._never_scored` carries the identical bug — it is simply not on the path that renders the score — and `tests/test_reporting.py` pins the two copies together, so a fix has to change both. |
 
-## Reporting
-
-| # | Issue | Reason | Status |
-|---|-------|--------|--------|
-| R1 | Lifetime page lists a job twice once an earlier sweep failed to score it (381 jobs, 2026-09-22) | `matches` is keyed `(run_id, job_id)`, so a retried scoring writes a **new row** and the stale one survives. `overview_snapshot` calls `load_lifetime_matches` twice, `judged=True` and `judged=False`, and each half dedupes by `job_id` **within itself**; a job with both kinds of row satisfies both predicates and `partition_jobs` does not dedupe across them. The stale copy renders under Jobs Filtered with its old label, contradicting the real verdict beside it — e.g. rogo *Software Engineer: Backend* shows 68 under Shortlisted and again as "Reached the run's call cap — still eligible next sweep". Masked only when the job has an `applied` row, which `applied_ids` filters out. Tiles are unaffected (`overview_counts` is `COUNT(DISTINCT job_id)`); the per-run page is unaffected (one row per run). | Open. The concatenation is at `reporting/data.py:435-439`. |
-
 ## Proposed fixes
 
 - **A1:** pin the `@playwright/mcp` version, and bump it deliberately.
@@ -42,5 +36,3 @@ valid.
 - **S3:** in `_never_scored`, a duplicate should count as scored only if its
   representative actually got a verdict — the same check `overview._job_entry` makes.
   Both copies of the rule change together.
-- **R1:** dedupe by `job_id` across the two `load_lifetime_matches` halves in
-  `overview_snapshot`, judged half winning, before `partition_jobs`.

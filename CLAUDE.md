@@ -526,6 +526,35 @@ siblings (grouped after the rerank, never competed for a slot) while the section
 a sibling follow its verdict, since it carries a real score copied from its
 representative.
 
+**What they must agree on is which row per job they read, and lifetime scope is where
+that has teeth.** `matches` is keyed `(run_id, job_id)`, so a job dropped on a
+*deferral* — the call cap, a scoring failure — comes back and its later sweep writes a
+**second row** beside the first. `Database._canonical_matches_sql` is the one place
+that chooses between them: `MAX(m.scored_at)` with bare columns, the same trick and the
+same rule `_unapplied` uses for the backlog window. The lifetime sections, the
+`Relevant jobs` and `Jobs shortlisted` tiles and the lifetime applier bar all go
+through it, so a tile can no longer count a job on a reading the list below has
+dropped. Run scope needs none of this — `(run_id, job_id)` is the primary key — and its
+queries are deliberately left alone.
+
+Three things about that rule which should not be re-derived:
+
+- **It is "newest", not "the row that has a verdict".** Preferring a judged row looks
+  safer and is not: `_judged_sql` is also true of a cluster sibling whose representative
+  **failed**, which carries a placeholder 0 and nothing behind it, so the preference
+  would bury a genuine `rerank_below_cutoff` written weeks later. Measured on a real
+  install, no job's newest row loses a real verdict — the matcher retires a judged job,
+  so a verdict is always the last word — and both rules produce identical tiles.
+- **The predicates go on the outer select.** `_judged_sql()`, `_relevant_sql()` and
+  `_sibling_sql()` read the row the aggregate has already chosen. Inside the aggregate
+  they would be answered by rows the group is discarding.
+- **The sections used to load in two halves and must not again.** One query for rows
+  with a standing verdict and one for the rest, each deduping only *within* itself, put
+  381 jobs on the page twice under contradicting labels — and its judged half carried
+  its own limit, which silently truncated the scored jobs the user most wants (755 of
+  1,233 on the same install). `partition_jobs` keeps a `placed` set anyway: the page's
+  one real promise should not rest on the shape of whichever query fed it.
+
 The last section, `Total Jobs Seen`, is the only one that reads the **`jobs` table**
 rather than `matches` (`Database.load_unmatched_jobs`). That is what finally puts the
 title-gate rejections on a page — `matcher.py` keeps them out of `matches` on purpose,
@@ -688,8 +717,9 @@ Four things about the applier that are easy to break:
   abandoned.
 
   Two consequences. `Database._unapplied` tests the age with `HAVING MAX(scored_at)`,
-  not a `WHERE` on the row, because a rescored job keeps its stale row (known issue R1)
-  and a row-level test would expire a job the backlog was still retrying — the two
+  not a `WHERE` on the row, because a rescored job keeps its stale row — the same fact
+  `_canonical_matches_sql` exists for, and the same aggregate rule — and a row-level
+  test would expire a job the backlog was still retrying; the two
   halves have to partition the set exactly. And the pass writes **no** `bump_progress`
   and does **not** clear `shortlisted`: these jobs belong to earlier sweeps, so the
   applier bar (total `apply_queued`) must not count them, and the shortlist tile keeps
