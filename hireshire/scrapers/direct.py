@@ -21,6 +21,7 @@ from typing import Optional
 
 import httpx
 
+from hireshire.direct.scope import Scope
 from hireshire.http_client import make_retry_decorator
 from hireshire.models.job import Job
 from hireshire.rate_limit import RateLimiter
@@ -58,12 +59,30 @@ class DirectScraper(AbstractScraper):
         retry_attempts: int = 3,
         max_pages: int = 5,
         cutoff: Optional[datetime] = None,
+        scope: Optional[Scope] = None,
     ):
         self._client = client
         self._limiter = limiter
         self._retry = make_retry_decorator(retry_attempts)
         self.max_pages = max(1, max_pages)
         self.cutoff = cutoff
+        # Which countries each portal's list is searched for. None = unscoped,
+        # which is also what every caller that never lists (the funnel's detail
+        # fetcher, verify_bad_slugs) gets.
+        self.scope = scope
+        if scope is not None:
+            self._log_scope(scope)
+
+    @staticmethod
+    def _log_scope(scope: Scope) -> None:
+        if scope.unresolved:
+            logger.warning(
+                "Direct portals search everywhere: no country known for location %s",
+                ", ".join(repr(t) for t in scope.unresolved),
+            )
+        for token, handler in _HANDLERS.items():
+            logger.info("Direct portal %s searches: %s", token,
+                        scope.describe(handler.SCOPE_COLUMN))
 
     async def fetch_all(self, board_token: str) -> list[Job]:
         handler = _HANDLERS.get(board_token)

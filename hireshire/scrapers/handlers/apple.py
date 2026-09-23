@@ -17,22 +17,28 @@ from typing import Any, Iterator, Optional
 from pydantic import ValidationError
 
 from hireshire.direct.locations import normalize_location
+from hireshire.direct.scope import Scope
 from hireshire.direct.staging import SOURCE, make_job_id
 from hireshire.models.job import Department, Job, Location
 
 logger = logging.getLogger(__name__)
 
 TOKEN = "apple"
-LIST_URL = (
-    "https://jobs.apple.com/en-us/search"
-    "?location=united-states-USA+india-INDC&sort=newest&page={page}"
-)
+SCOPE_COLUMN = "apple"
+SEARCH_URL = "https://jobs.apple.com/en-us/search"
 DETAIL_URL = "https://jobs.apple.com/en-us/details/{native_id}/{slug}"
 PAGE_SIZE = 20
 
 _HYDRATION = re.compile(
     r'window\.__staticRouterHydrationData\s*=\s*JSON\.parse\((".*?")\);', re.S
 )
+
+
+def list_url(scope: Optional[Scope], page: int) -> str:
+    """`location=` joins the scope's slugs with `+`; unscoped, it is left out."""
+    slugs = scope.for_portal(SCOPE_COLUMN) if scope else None
+    location = f"location={'+'.join(slugs)}&" if slugs else ""
+    return f"{SEARCH_URL}?{location}sort=newest&page={page}"
 
 
 def _walk(obj: Any) -> Iterator[dict]:
@@ -132,7 +138,7 @@ async def fetch_list(ctx, token: str) -> list[Job]:
     seen: set[str] = set()
 
     for page in range(1, ctx.max_pages + 1):
-        response = await ctx.get(LIST_URL.format(page=page))
+        response = await ctx.get(list_url(ctx.scope, page))
         page_jobs = _extract(response.text, scraped_at)
         if not page_jobs:
             break

@@ -6,8 +6,32 @@ All notable changes to this plugin are documented here. Versions follow
 
 ## [Unreleased]
 
+### Changed
+
+- **Apple, Google and Intuit are now searched in the countries you chose.** The three
+  company career sites HireShire reads directly were searched for the United States
+  and India whatever your locations said — Intuit for everywhere — so if you were
+  looking in London or Berlin, their jobs there were never fetched. Each site is now
+  asked for the countries your location list covers, worked out from the cities,
+  states and countries you gave at setup; nothing new to set. If your list includes a
+  place HireShire cannot pin to a country, those sites are searched everywhere
+  instead and your location filter narrows the results, so nothing you asked for is
+  left out. If you are searching the United States and India, the searches are
+  exactly what they were.
+
 ### Fixed
 
+- **Intuit jobs open in several cities are no longer thrown away.** Intuit lists those
+  as "Multiple Locations", which names no country, so the location filter discarded
+  every one — on the install this was found on, not one had ever been saved, and they
+  were 18 of the first 30 jobs Intuit returned in a check. They are now kept, since
+  Intuit is only searched in your countries to begin with.
+- **Google's jobs are no longer all dropped when your locations are cities or states
+  only.** Google's search results do not say where a job is until its page is opened,
+  and a list like `california` or `remote` never matched the stand-in location they
+  carried, so the whole of Google was filtered out before a single job was read.
+- **Indianapolis is no longer read as India**, nor Busan as the United States: place
+  names on these three sites are now matched as whole words.
 - **The lifetime dashboard now shows each job once, as it stands today.** A job the
   sweep could not get to — the call budget ran out, or the scorer failed — comes back
   on a later sweep, and the record of that later sweep was being added beside the old

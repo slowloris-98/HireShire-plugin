@@ -34,7 +34,11 @@ NOW = datetime(2026, 8, 7, 2, 0, tzinfo=timezone.utc)
     ("United States, Washington, Redmond", "United States"),  # Microsoft
     ("Bengaluru, Karnataka, India", "India"),
     ("India", "India"),
-    ("Dublin, Ireland", None),
+    ("Dublin, Ireland", "Ireland"),                  # any country in the table
+    ("Toronto, Ontario", "Canada"),
+    ("Indianapolis, Indiana", "United States"),       # whole words: not India
+    ("Busan, South Korea", "South Korea"),            # whole words: "usa" is in Busan
+    ("Albuquerque, New Mexico", "United States"),     # the state, not Mexico
     ("Hong Kong", None),
     ("", None),
 ])
@@ -51,8 +55,21 @@ def test_normalize_appends_country_so_the_existing_filter_matches():
 
 def test_normalize_leaves_foreign_locations_unmatched():
     terms = ["united states", "remote", "india"]
-    for raw in ("Dublin, Ireland", "Hong Kong"):
+    for raw in ("Dublin, Ireland", "Hong Kong", "London, UK"):
         assert not any(t in normalize_location(raw).lower() for t in terms), raw
+
+
+def test_normalize_names_every_table_country_so_a_country_filter_matches():
+    assert normalize_location("London, UK") == "London, UK, United Kingdom"
+    assert normalize_location("Toronto, Ontario") == "Toronto, Ontario, Canada"
+    assert normalize_location("Dublin, Ireland") == "Dublin, Ireland"
+
+
+def test_normalize_does_not_append_a_country_the_string_already_names():
+    raw = "United States, Washington, Redmond"
+    assert normalize_location(raw) == raw
+    # "USA" reads as US to a human but is not a substring of "united states".
+    assert normalize_location("Mountain View, CA, USA") == "Mountain View, CA, USA, United States"
 
 
 def test_normalize_does_not_duplicate_an_existing_country():

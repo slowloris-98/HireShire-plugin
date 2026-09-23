@@ -24,7 +24,7 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 588 tests, no network, no model weights
+pytest                                # 723 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_only_jobs_reaching_the_cutoff_are_judged
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
@@ -840,6 +840,26 @@ suppresses Rich in favour of `logging` — required under the monitor.
   as a time trade-off — and **no specific multiplier has been measured yet**, so say
   "considerably longer", not "3x". These counts come from `config/*_companies.json`
   and grow between releases; re-derive them rather than copying this paragraph.
+- **The direct portals are searched for the user's countries, derived from
+  `scraper.location_filter`.** `hireshire/direct/scope.py` resolves each term (country,
+  state, city, `remote - us`) against `portal_locations.COUNTRIES`, and each handler
+  builds its list URL from the result. Three rules, each learned from the portals:
+  - **The portal codes are a checked-in table, never looked up at sweep time.** Apple and
+    Google answer an unknown location with **zero results and a 200**, so a bad code
+    empties the board silently every sweep. Apple's codes are irregular (`USA`, `GBR`
+    but `INDC`, `CANC`, `AUSC`) and its lookup answers `georgia` with the Republic of
+    Georgia. `scripts/refresh_direct_locations.py` re-derives the columns by hand.
+    Intuit's free-text `Location=` is ignored outright; it scopes by a GeoNames country
+    facet, which exists only where Intuit has openings, so its column is sparse.
+  - **Anything unresolvable widens to everywhere; nothing narrows.** One unknown term,
+    a bare `remote`, or a country missing from one portal's column leaves that portal
+    unscoped. A narrowed scope hides jobs with no sign; a wide one only spends pages.
+  - **A job whose list entry names no place carries `location_is_placeholder`**, and
+    `scraper._matches_location` passes it. Google's list has no locations and Intuit's
+    says "Multiple Locations"; a filter of cities or states never contains the country
+    placeholder, which is how Google's whole board was once dropped and every Intuit
+    multi-city job with it. The price, accepted: such a job reaches scoring unchecked
+    until the applier's location verdict (`mark_not_shortlisted`) retires it.
 - **Interpreter discovery lives in exactly one place: `scripts/hireshire.sh`.**
   Two traps make this worth centralising. macOS has no bare `python` — Apple
   removed `/usr/bin/python` in 12.3 and Homebrew installs `python3` only. And
