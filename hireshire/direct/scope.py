@@ -51,19 +51,20 @@ class Scope:
             return []
         return [c.name for c in COUNTRIES if c.name in self.countries]
 
-    def for_portal(self, column: str) -> list[str] | None:
+    def for_portal(self, column: str | None) -> list[str] | None:
         """This portal's values for the scope, or None to search it unscoped.
 
-        None when the scope is everywhere, and also when any country in it has
-        no value in that portal's column — narrowing to the countries it does
-        know would silently drop the rest.
+        None when the scope is everywhere, when the portal has no column at all
+        (Meta returns its whole board, so there is nothing to scope), and when
+        any country in it has no value in that portal's column — narrowing to
+        the countries it does know would silently drop the rest.
         """
-        if self.countries is None:
+        if self.countries is None or column is None:
             return None
         values = [getattr(BY_NAME[name], column) for name in self.ordered]
         return None if any(v is None for v in values) else values
 
-    def placeholder(self, column: str) -> str:
+    def placeholder(self, column: str | None) -> str:
         """The location to give a job whose list entry does not say where it is.
 
         Names what the portal was actually searched for, so it is only as wide
@@ -73,7 +74,7 @@ class Scope:
             return WORLDWIDE
         return " | ".join(self.ordered)
 
-    def describe(self, column: str) -> str:
+    def describe(self, column: str | None) -> str:
         return "everywhere" if self.for_portal(column) is None else ", ".join(self.ordered)
 
 

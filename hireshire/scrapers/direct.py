@@ -1,16 +1,18 @@
 """Direct career portals — one scraper, one handler per company.
 
-Google, Apple and Intuit run their own portals rather than a multi-tenant ATS,
-so there is no slug list: `config/direct_companies.json` holds the fixed set of
-company names, and each maps to a handler module in `handlers/`.
+Amazon, Apple, Google, Intuit, Meta and Microsoft run their own portals rather
+than a multi-tenant ATS, so there is no slug list: `config/direct_companies.json`
+holds the fixed set of company names, and each maps to a handler module in
+`handlers/`.
 
-Modelling all three as ONE platform (`source="direct"`, `board_token=<company>`)
-rather than three keeps the DB rows identical to those the `/scrape-direct`
-skill already wrote, so `seen_jobs` dedupe carries across the migration.
+Modelling them as ONE platform (`source="direct"`, `board_token=<company>`)
+rather than six keeps the DB rows identical to those the old `/scrape-direct`
+skill wrote, so `seen_jobs` dedupe carries across the migration.
 
-Microsoft and Meta are deliberately NOT here — both hard-block plain HTTP
-(Eightfold 403 "Not authorized for PCSX"; Meta 400 on every request) and stay
-with the browser-driven `/scrape-direct` skill.
+Every one of them is plain HTTP — no browser, no Claude session. Microsoft and
+Meta were once thought to need a browser, and neither does: Microsoft's 403
+("Not authorized for PCSX") comes from `/api/apply/v2/jobs` only, and Meta's
+400 goes away once a request carries browser fetch metadata. See each handler.
 """
 
 from __future__ import annotations
@@ -26,16 +28,19 @@ from hireshire.http_client import make_retry_decorator
 from hireshire.models.job import Job
 from hireshire.rate_limit import RateLimiter
 from hireshire.scrapers.base import AbstractScraper
-from hireshire.scrapers.handlers import apple, google, intuit
+from hireshire.scrapers.handlers import amazon, apple, google, intuit, meta, microsoft
 
 logger = logging.getLogger(__name__)
 
 SOURCE = "direct"
 
 _HANDLERS = {
+    amazon.TOKEN: amazon,
     apple.TOKEN: apple,
     google.TOKEN: google,
     intuit.TOKEN: intuit,
+    meta.TOKEN: meta,
+    microsoft.TOKEN: microsoft,
 }
 
 # These portals soft-block non-browser user agents, so present a browser one
@@ -81,6 +86,12 @@ class DirectScraper(AbstractScraper):
                 ", ".join(repr(t) for t in scope.unresolved),
             )
         for token, handler in _HANDLERS.items():
+            if handler.SCOPE_COLUMN is None:
+                # The portal returns its whole board in one response (Meta), so
+                # the scraper's location filter does the narrowing afterwards.
+                logger.info("Direct portal %s searches: everywhere (filtered after fetch)",
+                            token)
+                continue
             logger.info("Direct portal %s searches: %s", token,
                         scope.describe(handler.SCOPE_COLUMN))
 
@@ -96,8 +107,8 @@ class DirectScraper(AbstractScraper):
     async def fetch_detail(self, job: Job) -> Job:
         """Hydrate a list-only job. Called by the matcher funnel.
 
-        Apple's handler has no fetch_detail: its list payload already carries
-        the description, so those jobs never reach here with empty content.
+        Apple's and Amazon's handlers have no fetch_detail: their list payloads
+        already carry the description, so those jobs never reach here empty.
         """
         handler = _HANDLERS.get(job.board_token)
         fetch = getattr(handler, "fetch_detail", None) if handler else None
@@ -128,3 +139,17 @@ class DirectScraper(AbstractScraper):
                 return response
 
         return await _do_get()
+
+    async def post(self, url: str, data: dict, headers: Optional[dict] = None) -> httpx.Response:
+        """`get`'s twin for a form POST (Meta's GraphQL search). Same retry and
+        rate limiting, and the same refusal to map anything to SlugNotFoundError."""
+        merged = {**_HEADERS, **(headers or {})}
+
+        @self._retry
+        async def _do_post():
+            async with self._limiter:
+                response = await self._client.post(url, data=data, headers=merged)
+                response.raise_for_status()
+                return response
+
+        return await _do_post()

@@ -20,7 +20,7 @@ flowchart TD
         R["Your resume"]
         SET["/hireshire:setup<br/>writes your profile and settings"]
         SWEEP["Sweep<br/>now, then every few hours"]
-        B1["Greenhouse, Lever, Ashby, direct<br/>15,868 employers"]
+        B1["Greenhouse, Lever, Ashby, direct<br/>15,871 employers"]
         B2["Workday, BambooHR<br/>24,200 more, off by default"]
         FUN["Relevance funnel<br/>free, see below"]
         OUT["Results CSV, shortlist JSON,<br/>overview page, local database"]

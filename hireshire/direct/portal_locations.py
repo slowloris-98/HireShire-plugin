@@ -5,9 +5,11 @@ terms against the aliases, regions and cities; `locations.py` infers a country
 from a portal's location string with the same names; and each handler turns a
 resolved scope into its own query parameter from the portal columns.
 
-**The portal columns are checked in, never resolved at sweep time.** Apple and
-Google answer a value they do not recognise with zero results and a 200, so a
-guessed code does not fail — it empties the board, silently, every sweep.
+**The portal columns are checked in, never resolved at sweep time.** Apple,
+Google and Amazon answer a value they do not recognise with zero results and a
+200, so a guessed code does not fail — it empties the board, silently, every
+sweep. Meta has no column: it returns its whole board in one response, so there
+is nothing to scope (see `handlers/meta.py`).
 `scripts/refresh_direct_locations.py` re-derives them from the portals. `None`
 means that portal cannot be scoped to that country, and a scope naming it
 leaves that portal unscoped rather than narrowed to the wrong place.
@@ -31,6 +33,8 @@ class Country:
     apple: str | None = None           # jobs.apple.com `location=` slug
     google: str | None = None          # google careers `location=` value
     intuit: str | None = None          # jobs.intuit.com country facet id (GeoNames)
+    amazon: str | None = None          # amazon.jobs `normalized_country_code[]` (ISO3)
+    microsoft: str | None = None       # careers.microsoft.com `location=` (free text)
 
 
 US_STATES = (
@@ -86,6 +90,7 @@ COUNTRIES: tuple[Country, ...] = (
             "kansas city", "columbus",
         ),
         apple="united-states-USA", google="United States", intuit="6252001",
+        amazon="USA", microsoft="United States",
     ),
     Country(
         name="India",
@@ -94,13 +99,14 @@ COUNTRIES: tuple[Country, ...] = (
                  "west bengal", "haryana", "uttar pradesh", "gujarat"),
         cities=INDIA_CITIES,
         apple="india-INDC", google="India", intuit="1269750",
+        amazon="IND", microsoft="India",
     ),
     Country(
         name="Canada",
         aliases=("canada",),
         regions=("ontario", "quebec", "british columbia", "alberta"),
         cities=("toronto", "vancouver", "montreal", "ottawa", "calgary", "waterloo"),
-        apple="canada-CANC", google="Canada", intuit="6251999",
+        apple="canada-CANC", google="Canada", amazon="CAN", microsoft="Canada", intuit="6251999",
     ),
     Country(
         name="United Kingdom",
@@ -108,41 +114,45 @@ COUNTRIES: tuple[Country, ...] = (
                  "england", "scotland"),
         cities=("london", "manchester", "edinburgh", "cambridge, uk"),
         apple="united-kingdom-GBR", google="United Kingdom", intuit="2635167",
+        amazon="GBR", microsoft="United Kingdom",
     ),
     Country(name="Ireland", aliases=("ireland",), cities=("dublin", "cork"),
-            apple="ireland-IRL", google="Ireland"),
+            apple="ireland-IRL", google="Ireland", amazon="IRL", microsoft="Ireland"),
     Country(name="Germany", aliases=("germany", "deutschland"),
             cities=("berlin", "munich", "hamburg", "frankfurt"),
-            apple="germany-DEU", google="Germany"),
+            apple="germany-DEU", google="Germany", amazon="DEU", microsoft="Germany"),
     Country(name="France", aliases=("france",), cities=("paris",),
-            apple="france-FRAC", google="France"),
+            apple="france-FRAC", google="France", amazon="FRA", microsoft="France"),
     Country(name="Netherlands", aliases=("netherlands", "the netherlands", "holland"),
-            cities=("amsterdam",), apple="netherlands-NLD", google="Netherlands"),
+            cities=("amsterdam",), apple="netherlands-NLD", google="Netherlands",
+            amazon="NLD", microsoft="Netherlands"),
     Country(name="Switzerland", aliases=("switzerland",), cities=("zurich", "zürich"),
-            apple="switzerland-CHEC", google="Switzerland"),
+            apple="switzerland-CHEC", google="Switzerland", amazon="CHE", microsoft="Switzerland"),
     Country(name="Spain", aliases=("spain",), cities=("madrid", "barcelona"),
-            apple="spain-ESPC", google="Spain"),
+            apple="spain-ESPC", google="Spain", amazon="ESP", microsoft="Spain"),
     Country(name="Poland", aliases=("poland",), cities=("warsaw", "krakow"),
-            apple="poland-POL", google="Poland"),
+            apple="poland-POL", google="Poland", amazon="POL", microsoft="Poland"),
     Country(name="Israel", aliases=("israel",), cities=("tel aviv", "haifa"),
-            apple="israel-ISR", google="Israel", intuit="294640"),
+            apple="israel-ISR", google="Israel", intuit="294640",
+            amazon="ISR", microsoft="Israel"),
     Country(name="Singapore", aliases=("singapore",),
-            apple="singapore-SGP", google="Singapore"),
+            apple="singapore-SGP", google="Singapore", amazon="SGP", microsoft="Singapore"),
     Country(name="Australia", aliases=("australia",), cities=("sydney", "melbourne"),
-            apple="australia-AUSC", google="Australia"),
+            apple="australia-AUSC", google="Australia", amazon="AUS", microsoft="Australia"),
     Country(name="Japan", aliases=("japan",), cities=("tokyo",),
-            apple="japan-JPNC", google="Japan"),
+            apple="japan-JPNC", google="Japan", amazon="JPN", microsoft="Japan"),
     Country(name="China", aliases=("china",), cities=("shanghai", "beijing"),
-            apple="china-CHNC", google="China"),
+            apple="china-CHNC", google="China", amazon="CHN", microsoft="China"),
     # Apple's own name is "Korea (Republic of)"; its search keys on the code.
     Country(name="South Korea", aliases=("south korea", "korea"), cities=("seoul",),
-            apple="korea-republic-of-KOR", google="South Korea"),
+            apple="korea-republic-of-KOR", google="South Korea",
+            amazon="KOR", microsoft="South Korea"),
     Country(name="Taiwan", aliases=("taiwan",), cities=("taipei",),
-            apple="taiwan-TWN", google="Taiwan"),
+            apple="taiwan-TWN", google="Taiwan", amazon="TWN", microsoft="Taiwan"),
     Country(name="Mexico", aliases=("mexico",), cities=("mexico city",),
-            apple="mexico-MEXC", google="Mexico"),
+            apple="mexico-MEXC", google="Mexico", amazon="MEX", microsoft="Mexico"),
     Country(name="Brazil", aliases=("brazil", "brasil"), cities=("sao paulo", "são paulo"),
-            apple="brazil-BRAC", google="Brazil"),
+            apple="brazil-BRAC", google="Brazil", amazon="BRA", microsoft="Brazil"),
 )
 
 BY_NAME: dict[str, Country] = {c.name: c for c in COUNTRIES}

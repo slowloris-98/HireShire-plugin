@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 
 from hireshire.direct.portal_locations import COUNTRIES
 from hireshire.direct.scope import EVERYWHERE, WORLDWIDE, Scope, resolve_scope
-from hireshire.scrapers.handlers import apple, google, intuit
+from hireshire.scrapers.handlers import amazon, apple, google, intuit, meta, microsoft
 from scraper import _matches_location
 
 NOW = datetime(2026, 9, 23, tzinfo=timezone.utc)
@@ -126,12 +126,40 @@ def test_intuit_scopes_by_country_facet():
     assert url.count("IsApplied=true") == 2
 
 
+def test_amazon_scopes_by_iso3_code_one_param_per_country():
+    url = amazon.list_url(US_IN, 3)
+    assert "offset=200" in url and "sort=recent" in url
+    assert url.count("normalized_country_code%5B%5D=") == 2
+    assert "normalized_country_code%5B%5D=USA" in url
+    assert "normalized_country_code%5B%5D=IND" in url
+
+
+def test_microsoft_walks_one_series_per_country():
+    """A repeated `location=` is silently ignored by the portal — only the first
+    country would be searched — so each country is its own request series."""
+    assert microsoft._countries(US_IN) == ["United States", "India"]
+    url = microsoft.list_url("India", 3)
+    assert "location=India" in url and "start=20" in url
+
+
 @pytest.mark.parametrize("scope", [None, EVERYWHERE])
 def test_unscoped_urls_carry_no_location(scope):
     assert "location=" not in apple.list_url(scope, 1)
     assert "location=" not in google.list_url(scope, 1)
     url = intuit.list_url(scope, 1)
     assert "FacetFilters" not in url and "ActiveFacetID=0" in url
+    assert "normalized_country_code" not in amazon.list_url(scope, 1)
+    assert microsoft._countries(scope) == [None]
+    assert "location=&" in microsoft.list_url(None, 1)
+
+
+def test_a_portal_with_no_column_is_never_scoped():
+    """Meta returns its whole board in one response; there is nothing to scope,
+    and `scraper.py`'s location filter narrows it afterwards."""
+    assert meta.SCOPE_COLUMN is None
+    assert US_IN.for_portal(None) is None
+    assert US_IN.describe(None) == "everywhere"
+    assert US_IN.placeholder(None) == WORLDWIDE
 
 
 # --------------------------------------------------------------------------
@@ -183,6 +211,14 @@ def test_every_country_has_apple_and_google_values():
         assert c.apple and c.google, c.name
 
 
+def test_amazon_codes_are_iso3_and_microsoft_names_are_the_country():
+    """Both verified live by scripts/refresh_direct_locations.py. Amazon answers a
+    bad code with 0 hits and a 200, so the shape is the least a row must meet."""
+    for c in COUNTRIES:
+        assert c.amazon and re.fullmatch(r"[A-Z]{3}", c.amazon), c.name
+        assert c.microsoft == c.name
+
+
 def test_apple_slugs_have_the_shape_the_portal_accepts():
     for c in COUNTRIES:
         assert re.fullmatch(r"[a-z0-9-]+-[A-Z]{3,4}", c.apple), c.apple
@@ -203,6 +239,7 @@ def test_the_scraper_logs_what_each_portal_searches(caplog):
         DirectScraper(None, None, scope=resolve_scope(["united states", "mars"]))
     assert "no country known for location 'mars'" in caplog.text
     assert "Direct portal google searches: everywhere" in caplog.text
+    assert "Direct portal meta searches: everywhere (filtered after fetch)" in caplog.text
 
 
 def test_scope_is_hashable_and_comparable():

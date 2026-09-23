@@ -12,6 +12,14 @@ checked, rather than guessed:
 - Intuit: the country facet ids (GeoNames) listed in the search page's filters.
   A country Intuit has no jobs in is simply absent, which is correct — the
   table then leaves Intuit unscoped for it.
+- Amazon: the ISO3 code already in the table is accepted when the search
+  returns any hit for it. An unknown code answers 0 hits and a 200, so a code is
+  never guessed; a new row needs its code added by hand, then checked here.
+- Microsoft: a country name is accepted when the search counts any job for it.
+  Its `location=` is fuzzy (a UK search also returns Nordic roles), which is
+  harmless: `scraper.py`'s location filter drops the strays.
+
+Meta has no column. It returns its whole board in one response.
 
     python scripts/refresh_direct_locations.py            # every country in the table
     python scripts/refresh_direct_locations.py Mexico     # or just the ones named
@@ -32,7 +40,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hireshire.direct.portal_locations import COUNTRIES  # noqa: E402
-from hireshire.scrapers.handlers import intuit  # noqa: E402
+from hireshire.scrapers.handlers import amazon, intuit, microsoft  # noqa: E402
 
 HEADERS = {
     "User-Agent": (
@@ -80,6 +88,19 @@ def intuit_facets(client: httpx.Client) -> dict[str, str]:
     return out
 
 
+def amazon_accepts(client: httpx.Client, code: str | None) -> bool:
+    if not code:
+        return False
+    url = amazon.list_url(None, 1).replace("result_limit=100", "result_limit=1")
+    payload = client.get(url, params={"normalized_country_code[]": code}).json()
+    return bool(payload.get("hits"))
+
+
+def microsoft_accepts(client: httpx.Client, name: str) -> bool:
+    payload = client.get(microsoft.list_url(name, 1)).json()
+    return bool((payload.get("data") or {}).get("count"))
+
+
 def main(argv: list[str]) -> int:
     wanted = {a.lower() for a in argv}
     rows = [c for c in COUNTRIES if not wanted or c.name.lower() in wanted]
@@ -90,10 +111,14 @@ def main(argv: list[str]) -> int:
             apple = next(filter(None, (apple_slug(client, q) for q in (c.name, *c.aliases))), None)
             google = c.name if google_accepts(client, c.name) else None
             intuit_id = facets.get(c.name.lower())
+            amazon_code = c.amazon if amazon_accepts(client, c.amazon) else None
+            ms_name = c.name if microsoft_accepts(client, c.name) else None
             cells = []
             for label, live, shipped in (("apple", apple, c.apple),
                                          ("google", google, c.google),
-                                         ("intuit", intuit_id, c.intuit)):
+                                         ("intuit", intuit_id, c.intuit),
+                                         ("amazon", amazon_code, c.amazon),
+                                         ("microsoft", ms_name, c.microsoft)):
                 mark = "" if live == shipped else "   <-- table has %r" % (shipped,)
                 cells.append(f"{label}={live!r}{mark}")
             print(f"{c.name:<16} " + "  ".join(cells))

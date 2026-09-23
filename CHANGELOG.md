@@ -6,6 +6,22 @@ All notable changes to this plugin are documented here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **Amazon, Meta and Microsoft jobs are now part of every sweep.** HireShire now reads
+  their career sites directly, as it already did for Apple, Google and Intuit. It runs
+  quietly in the background like the rest of the sweep: no browser window opens and no
+  extra Claude usage is spent fetching them. Amazon and Microsoft are searched in the
+  countries your location list covers. Meta publishes its whole job board at once, so
+  HireShire reads all of it and your location filter keeps the jobs in your places.
+  Meta's listings carry no posting date, so your first sweep after updating reads
+  through Meta's open jobs once, however old they are. Later sweeps only look at
+  what is new. There is nothing to set up.
+- **Amazon is skipped when applying, as Meta and Microsoft already were**, because its
+  application forms need an account login. This applies to new installs only. If you
+  set HireShire up before this update, it will still try to apply to Amazon jobs, and
+  they will land under Needs Attention.
+
 ### Changed
 
 - **Apple, Google and Intuit are now searched in the countries you chose.** The three

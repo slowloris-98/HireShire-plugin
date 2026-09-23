@@ -834,9 +834,9 @@ suppresses Rich in favour of `logging` — required under the monitor.
 ## Things that are easy to get wrong
 
 - **Board defaults.** Workday and BambooHR default **off**, and they are the two
-  biggest lists: 24,200 companies held back against 15,868 swept (greenhouse 8,333,
-  lever 4,369, ashby 3,163, direct 3), out of 40,068 shipped. `docs/SPECS.md` leads with
-  40,000+ but must state plainly that the default sweep is ~15,868. Setup presents it
+  biggest lists: 24,200 companies held back against 15,871 swept (greenhouse 8,333,
+  lever 4,369, ashby 3,163, direct 6), out of 40,071 shipped. `docs/SPECS.md` leads with
+  40,000+ but must state plainly that the default sweep is ~15,871. Setup presents it
   as a time trade-off — and **no specific multiplier has been measured yet**, so say
   "considerably longer", not "3x". These counts come from `config/*_companies.json`
   and grow between releases; re-derive them rather than copying this paragraph.
@@ -860,6 +860,20 @@ suppresses Rich in favour of `logging` — required under the monitor.
     placeholder, which is how Google's whole board was once dropped and every Intuit
     multi-city job with it. The price, accepted: such a job reaches scoring unchecked
     until the applier's location verdict (`mark_not_shortlisted`) retires it.
+
+  **Every direct portal is plain HTTP, including the two once thought browser-only.**
+  Do not bring back a browser path for either:
+  - **Microsoft** is `/api/pcsx/search`. The 403 "Not authorized for PCSX" comes from
+    `/api/apply/v2/jobs` only. Its page is fixed at 10 and `location=` takes one
+    country (a second is silently ignored), so it walks one series per country.
+  - **Meta** answers 400 until a request carries browser fetch metadata (`Sec-Fetch-*`,
+    `Origin`, `Referer`). With it, one GraphQL POST returns the whole board (~1,000
+    jobs), so Meta has **no scope column** and `scraper.py` filters afterwards. Its
+    `offices` filter wants exact names and empties the board on a wrong one.
+    `meta.DOC_ID` is **checked in**: it is in neither the page nor its eager bundles.
+    Meta rotates it, and a stale one answers 404, an error row rather than an empty
+    board. The module docstring says how to refresh it. Its list has no date, so the
+    first sweep takes in Meta's whole backlog once and `seen_jobs` handles the rest.
 - **Interpreter discovery lives in exactly one place: `scripts/hireshire.sh`.**
   Two traps make this worth centralising. macOS has no bare `python` — Apple
   removed `/usr/bin/python` in 12.3 and Homebrew installs `python3` only. And
