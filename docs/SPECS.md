@@ -155,6 +155,12 @@ page, for you to apply to by hand. And the applier will not invent experience yo
 not have: if a required question cannot be answered honestly from your resume, it
 records an error and moves on — which lands in the same place.
 
+A job it could not get to at all ends up there too. When a browser session fails to
+start, the job is retried on later sweeps for `backlog_hours` (72 by default); if the
+window closes with no application made, the job moves to **Needs Attention** with the
+posting link, rather than sitting in your shortlist waiting for something that is no
+longer coming.
+
 ## Development
 
 ```bash

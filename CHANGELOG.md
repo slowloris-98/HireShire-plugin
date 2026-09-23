@@ -4,6 +4,23 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [Unreleased]
+
+### Fixed
+
+- **A job the applier never managed to start on no longer disappears quietly.** When a
+  browser session fails to launch — the Claude CLI missing, or the machine refusing to
+  start it — the job is left alone and retried on later sweeps, for three days. After
+  that the retrying stopped and nothing said so: the job kept its place under **Jobs
+  Shortlisted** on your dashboard for good, looking like work that was still coming,
+  and the posting link you could have used yourself was buried among jobs that were
+  genuinely queued. Those jobs now move to **Needs Attention** when the three days are
+  up, with a line saying no application was completed and the link to apply by hand.
+
+  Nothing is given up on sooner than before — three days of retrying is unchanged, and
+  a sweep that could not start a single session gives up on nothing at all, since the
+  fault there is the machine's rather than the job's.
+
 ## [0.13.2] — 2026-09-22
 
 ### Fixed

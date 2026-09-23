@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+from hireshire.applier import worker
 from hireshire.models.job import Job, Location
 from hireshire.reporting import data, overview
 from hireshire.reporting.render import duration, e
@@ -206,6 +207,26 @@ def test_an_excluded_employer_needs_attention_not_a_shortlist_slot(tmp_path):
     assert db.overview_counts(RUN)["applied"] == 1        # j1, the real submission
     # Escaped, because the reason carries an apostrophe and the page escapes it.
     assert e(reason) in _job_block(overview.build(snap, RUN), "j7")
+
+
+def test_a_job_the_backlog_gave_up_on_needs_attention(tmp_path):
+    """The applier retries a job whose sessions fail to launch for `backlog_hours` and
+    then stops. That used to be silent — the job kept its shortlist row and no `applied`
+    row, so it sat under Jobs Shortlisted for good, reading as work still to come. The
+    `expired` row lands here instead, and like every other non-submission it must leave
+    the Jobs applied tile alone."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j8")])
+    _match(db, RUN, "j8", score=86, shortlisted=True, rerank=8.60)
+    reason = worker.expired_reason(72)
+    _apply(db, "j8", "expired", reason)
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j8") == ["attention"]
+    assert db.overview_counts(RUN)["applied"] == 1        # j1, the real submission
+    assert e(reason) in _job_block(overview.build(snap, RUN), "j8")
+    # One line, whole: nothing is clipped, so the tooltip is not needed.
+    assert overview._attention_reason({"applied_error": reason}) == (reason, reason)
 
 
 def test_a_cluster_sibling_follows_its_verdict_not_the_tail(tmp_path):

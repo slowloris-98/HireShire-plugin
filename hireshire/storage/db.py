@@ -1180,29 +1180,37 @@ class Database:
                  screenshot, error),
             )
 
-    def load_pending_applications(self, since_iso: str) -> list[dict]:
-        """Shortlisted jobs scored since `since_iso` with no `applied` row, best first.
+    def _unapplied(self, having: str, stamp_iso: str) -> list[dict]:
+        """Shortlisted representatives with no `applied` row, split on their age.
 
-        The apply worker's backlog. It exists because the matcher retires a job once it is judged:
-        a job whose apply session failed to launch is never streamed again, so this
-        is the only road back to it.
+        The body of `load_pending_applications` and `load_expired_applications`, which
+        are the two halves of one set and must partition it exactly: a job the backlog
+        can no longer see is a job the applier will never be handed again, and that is
+        the whole basis for retiring it.
 
-        Cluster siblings are excluded — only the representative is ever applied to,
-        the same rule the stream follows. One row per job, from its newest match.
-        Rows come back in the pipeline-record shape the stream uses (`company`,
-        `job_url`), so the worker treats both sources identically.
+        **The age test is a `HAVING` on the aggregate, not a `WHERE` on the row**, and
+        that is load-bearing. `matches` is keyed `(run_id, job_id)`, so a job scored in
+        one sweep and rescored in a later one has two rows (see known issue R1). A
+        row-level `scored_at <` would match the stale row and report a job as expired
+        while its fresh row still sits in the backlog — the applier would retire a job
+        it is actively retrying. Against `MAX(scored_at)` the two predicates are
+        complements by construction.
+
+        Filtering after the group does not move the bare columns: SQLite takes them
+        from the row that produced the `MAX()`, which is the newest match either way.
         """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT m.job_id, m.board_token, m.title, m.relevance_score, m.raw_json, "
                 "MAX(m.scored_at) AS scored_at "
                 "FROM matches m "
-                "WHERE m.shortlisted = 1 AND m.scored_at >= ? "
+                "WHERE m.shortlisted = 1 "
                 f"AND NOT ({self._sibling_sql('m')}) "
                 "AND NOT EXISTS (SELECT 1 FROM applied a WHERE a.job_id = m.job_id) "
                 "GROUP BY m.job_id "
+                f"HAVING MAX(m.scored_at) {having} ? "
                 "ORDER BY m.relevance_score DESC",
-                (since_iso,),
+                (stamp_iso,),
             ).fetchall()
         out = []
         for r in rows:
@@ -1216,6 +1224,34 @@ class Database:
                 "scored_at": r["scored_at"],
             })
         return out
+
+    def load_pending_applications(self, since_iso: str) -> list[dict]:
+        """Shortlisted jobs scored since `since_iso` with no `applied` row, best first.
+
+        The apply worker's backlog. It exists because the matcher retires a job once it is judged:
+        a job whose apply session failed to launch is never streamed again, so this
+        is the only road back to it.
+
+        Cluster siblings are excluded — only the representative is ever applied to,
+        the same rule the stream follows. One row per job, from its newest match.
+        Rows come back in the pipeline-record shape the stream uses (`company`,
+        `job_url`), so the worker treats both sources identically.
+        """
+        return self._unapplied(">=", since_iso)
+
+    def load_expired_applications(self, before_iso: str) -> list[dict]:
+        """The backlog's other end: shortlisted jobs it can no longer reach.
+
+        Same set, same shape, opposite side of `before_iso` — jobs last scored before
+        the window opened, still shortlisted, still never applied to. Nothing will
+        stream them again (the matcher retires a judged job) and the backlog has
+        stopped looking at them, so without a record they sit under Jobs Shortlisted
+        for good, reading as work the applier still has to do.
+
+        `worker.run_apply_worker` is the only caller: it writes each one a terminal
+        `applied` row, which is what takes it out of this set permanently.
+        """
+        return self._unapplied("<", before_iso)
 
     # -- retention (manual, via scripts/prune_runs.py) -----------------------
 

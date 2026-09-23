@@ -669,6 +669,31 @@ Four things about the applier that are easy to break:
   `backlog_hours`) retries it next sweep — the only road back, because the matcher
   never streams a judged job twice. Three launch failures in a row stop the applier
   for the sweep.
+- **The backlog's window closing is itself recorded, on the window and never on a
+  count.** `backlog_hours` is measured against `scored_at`, which never advances — the
+  matcher retires a judged job — so a job whose sessions keep failing to launch stops
+  being retried after ~18 sweeps at a 4-hour poll. That used to happen silently: the
+  row kept `shortlisted = 1` with no `applied` row, so it sat under Jobs Shortlisted
+  for good, reading as work the applier would still get to, and the link the user could
+  have used by hand was buried among jobs that looked pending. `worker.EXPIRED_STATUS`
+  is the terminal record that ends it, written by a pass after the queue drains.
+
+  **A retry counter was rejected and must not be added.** A launch failure is a fact
+  about the host, not the job — known issue S2 is a machine where every `claude` launch
+  failed at once — so retiring on N failures would discard a whole sweep's shortlist
+  for a transient fault, which is precisely what "retire on a verdict, never on a
+  deferral" forbids. The time bound was already there; this only makes the moment it
+  fires visible, and the three gates on the pass (`include_backlog`, not `blocked`, the
+  breaker not tripped) exist so a sweep that could apply to nothing declares nothing
+  abandoned.
+
+  Two consequences. `Database._unapplied` tests the age with `HAVING MAX(scored_at)`,
+  not a `WHERE` on the row, because a rescored job keeps its stale row (known issue R1)
+  and a row-level test would expire a job the backlog was still retrying — the two
+  halves have to partition the set exactly. And the pass writes **no** `bump_progress`
+  and does **not** clear `shortlisted`: these jobs belong to earlier sweeps, so the
+  applier bar (total `apply_queued`) must not count them, and the shortlist tile keeps
+  them exactly as an `excluded` row does.
 - **`exclude_companies` is a verdict too, and is the one no session produces.** Those
   portals need an account login, so the answer is the same on every future sweep; the
   worker writes an `excluded` row itself, before the resume and breaker checks, and the

@@ -26,6 +26,13 @@ Three rules shape this file:
   the backlog (`Database.load_pending_applications`) retries it on a later sweep. That
   matters because the matcher retires a judged job: without the backlog, a broken MCP
   server would lose a whole sweep's shortlist for good.
+* **The backlog's window closes, and that is recorded too.** `backlog_hours` is
+  measured against `scored_at`, which never advances, so a job whose sessions keep
+  failing to launch stops being retried after ~18 sweeps at a 4-hour poll. It used to
+  stop silently: still shortlisted, no `applied` row, sitting under Jobs Shortlisted
+  for good as though the applier would still get to it. `EXPIRED_STATUS` is the
+  terminal record that says otherwise, and it is written on the window, never on a
+  count of failures — see the constant.
 * **A location skip is a verdict too, and is the one that retires a job without an
   `applied` row.** The posting page states a location outside `location_filter`, which
   will read the same on every future sweep, so `Database.mark_not_shortlisted` clears
@@ -74,6 +81,29 @@ BREAKER_LIMIT = 3
 #: section, so it obeys the same one-short-line contract `apply_one.md` imposes.
 EXCLUDED_REASON = ("Requires human verification — this employer's portal needs an "
                    "account login, so apply to it yourself.")
+
+#: The `applied` status written when the backlog's window closes on a job that never
+#: got an application. Not a status any session returns: the applier is recording that
+#: it has run out of chances, so the job stops reading as work still to come.
+#:
+#: **The trigger is the window closing, never a count of failures.** A session that
+#: fails to launch says nothing about the job — known issue S2 is a host where every
+#: `claude` launch failed at once — so counting them would retire a whole sweep's
+#: shortlist for a transient fault, which is the direction the deferral-versus-verdict
+#: rule exists to prevent. `backlog_hours` already bounds the retrying; this only makes
+#: the moment it stops visible.
+EXPIRED_STATUS = "expired"
+
+
+def expired_reason(hours: int) -> str:
+    """The one line Needs Attention prints for a job the backlog gave up on.
+
+    Short enough to clear `reporting.overview._REASON_CHARS` (140) whole, and phrased
+    as what the user can still do about it — the same contract `EXCLUDED_REASON` and
+    `apply_one.md` follow.
+    """
+    return (f"No application was completed in the {hours}h after it was shortlisted — "
+            "apply to it yourself.")
 
 #: The `skip_reason` written onto the match row when the posting page states a location
 #: the user does not accept. A VERDICT: same page, same `location_filter`, same answer
@@ -408,7 +438,7 @@ async def run_apply_worker(
     """
     db = db or get_db()
     stats = {"submitted": 0, "error": 0, "skipped_location": 0,
-             "excluded": 0, "deferred": 0}
+             "excluded": 0, "deferred": 0, "expired": 0}
     excluded = {c.strip().lower() for c in settings.exclude_companies}
     attempted: set[str] = set()
     state = {"consecutive": 0, "tripped": False, "launched": False}
@@ -557,10 +587,63 @@ async def run_apply_worker(
             break
         await safely(job, from_backlog=False)
 
+    # The backlog's other end, and deliberately after the drain: the breaker's state is
+    # only known once this sweep has tried. Gated on the same three things, each of
+    # which would make the record a lie —
+    #   `include_backlog`: a caller that opted out of the backlog is not asking this
+    #     worker to retire anything it was never going to reach;
+    #   `blocked`: a missing resume or an unwritable apply directory is the install's
+    #     problem, not the job's;
+    #   `tripped`: no session on this host could start, which is the S2 failure. A
+    #     machine that launched nothing has learnt nothing about these jobs.
+    # No `bump_progress`: the applier bar's total is `apply_queued`, this sweep's own
+    # stream, and these jobs belong to earlier sweeps — the same reason the backlog is
+    # left out of it. `shortlisted` is left alone too, exactly as an excluded company
+    # leaves it: the job stays in the shortlist tile and moves from the lifetime bar's
+    # "not yet applied" share to its "need attention" share.
+    if include_backlog and not blocked and not state["tripped"]:
+        before = datetime.now(timezone.utc) - timedelta(hours=settings.backlog_hours)
+        try:
+            gone = await asyncio.to_thread(
+                db.load_expired_applications, before.isoformat()
+            )
+        except Exception:  # noqa: BLE001 - never worth the sweep, same as the backlog
+            logger.exception("Could not load the expired shortlist")
+            gone = []
+        reason = expired_reason(settings.backlog_hours)
+        for job in gone:
+            job_id = job.get("job_id")
+            # Cannot overlap today — anything handled this sweep is either inside the
+            # window or already has an `applied` row — but it makes this pass unable
+            # to contradict a verdict written minutes ago, whatever the clock does.
+            if not job_id or job_id in attempted:
+                continue
+            try:
+                await asyncio.to_thread(
+                    db.record_applied, job_id, job.get("company") or "",
+                    job.get("title") or "", job.get("job_url") or "",
+                    datetime.now(timezone.utc).isoformat(), EXPIRED_STATUS, None,
+                    reason,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Could not retire the expired job %s", job_id)
+                continue
+            stats["expired"] += 1
+            logger.debug("Gave up on %s — %s %s", job.get("company"), job.get("title"),
+                         job.get("job_url"))
+        if stats["expired"]:
+            # A warning, because it is the only notice an unattended user gets that
+            # the applier has stopped trying — the page says the rest.
+            logger.warning(
+                "Applier: gave up on %d job(s) never applied to within %dh — they are "
+                "under Needs Attention on the overview page, to apply to by hand.",
+                stats["expired"], settings.backlog_hours,
+            )
+
     logger.info(
         "Applier done: %d submitted, %d error, %d skipped for location, "
-        "%d at excluded companies, %d deferred to a later sweep",
+        "%d at excluded companies, %d deferred to a later sweep, %d given up on",
         stats["submitted"], stats["error"], stats["skipped_location"],
-        stats["excluded"], stats["deferred"],
+        stats["excluded"], stats["deferred"], stats["expired"],
     )
     return stats
