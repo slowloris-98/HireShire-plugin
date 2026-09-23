@@ -9,7 +9,9 @@ What is pinned here, each for a failure that costs the user something real:
 * an ambiguous ending (timeout, unreadable result) *is* recorded, because the form may
   already be submitted and retrying would apply twice;
 * nothing is launched for excluded employers or jobs already applied to — but an
-  excluded employer is still recorded, so the user is told to apply by hand.
+  excluded employer is still recorded, so the user is told to apply by hand;
+* the backlog's window closing is recorded too, and only ever on the window — a host
+  that could start no session at all retires nothing.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from hireshire.applier import config as applier_config
 from hireshire.applier import worker
 from hireshire.applier.config import ApplierSettings
 from hireshire.storage.db import Database
@@ -205,6 +208,71 @@ def test_the_session_runs_in_the_workspace_so_the_resume_can_be_uploaded(
     assert Path(out_dir).is_relative_to(ws), "the server refuses to write outside cwd"
 
 
+def _write_configs(tmp_path, scraper_yaml: str) -> Path:
+    applier = tmp_path / "applier.yaml"
+    applier.write_text("settings:\n  enable_applier: true\n", encoding="utf-8")
+    (tmp_path / "scraper.yaml").write_text(scraper_yaml, encoding="utf-8")
+    return applier
+
+
+@pytest.mark.parametrize("yaml_text, expected", [
+    ("settings:\n  location_filter:\n    - united states\n    - india\n",
+     ["united states", "india"]),
+    ("settings:\n  location_filter: []\n", []),                    # no check at all
+    ("settings:\n  location_filter: remote\n", ["remote"]),        # a bare string
+    ("settings:\n  location_filter:\n    - ' usa '\n    - '  '\n", ["usa"]),
+    ("settings: {}\n", []),                                        # key absent
+    ("settings:\n  location_filter: 7\n", []),                     # not a list
+    ("this: [is: not: yaml\n", []),                                # unreadable
+])
+def test_the_location_list_comes_from_the_scraper(tmp_path, monkeypatch, yaml_text,
+                                                  expected):
+    """One list, and the scraper owns it. A malformed or missing file must leave the
+    applier checking nothing rather than failing to load — the same trade
+    `reporting.data._matcher_settings` makes."""
+    applier = _write_configs(tmp_path, yaml_text)
+    monkeypatch.setattr(applier_config.paths, "config_file", lambda name: tmp_path / name)
+
+    cfg = applier_config.load_applier_config(applier)
+    assert cfg.settings.location_filter == expected
+
+
+def test_a_location_list_in_applier_yaml_loses_to_the_scraper(tmp_path, monkeypatch):
+    """The field is derived, not user-set. A stale copy in `applier.yaml` — hand-edited,
+    or left by an install that wrote it — must not be what the session is told."""
+    applier = tmp_path / "applier.yaml"
+    applier.write_text(
+        "settings:\n  enable_applier: true\n  location_filter: [mars]\n",
+        encoding="utf-8")
+    (tmp_path / "scraper.yaml").write_text(
+        "settings:\n  location_filter: [india]\n", encoding="utf-8")
+    monkeypatch.setattr(applier_config.paths, "config_file", lambda name: tmp_path / name)
+
+    assert applier_config.load_applier_config(applier).settings.location_filter == ["india"]
+
+
+def test_the_session_is_given_the_users_own_location_list(tmp_path, launcher):
+    """`apply_one.md` used to hardcode six strings and never read config, so a job
+    scraped as `Arlington, VA, United States` and rendered as `Arlington, VA` was
+    skipped against a list the user never wrote. There is one list now, and this is
+    the only path it reaches the session by."""
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1")],
+         settings=_settings(tmp_path, location_filter=["united states", "india"]))
+
+    assert _inputs(calls[0])["accepted_locations"] == ["united states", "india"]
+
+
+def test_an_empty_location_list_still_builds_a_prompt(tmp_path, launcher):
+    """Empty means no check at all, matching the scraper. The branch itself is prose
+    in the skill, so what is pinned here is that the key arrives empty rather than
+    missing — an absent key reads to the session as "no list given"."""
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1")], settings=_settings(tmp_path, location_filter=[]))
+
+    assert _inputs(calls[0])["accepted_locations"] == []
+
+
 # --- the browser server's own output -----------------------------------------
 
 def _output_dir(call) -> Path:
@@ -376,12 +444,87 @@ def test_submitted_and_error_outcomes_are_recorded(tmp_path, launcher):
     assert stats["submitted"] == 1 and stats["error"] == 1
 
 
-def test_a_location_skip_is_not_recorded(tmp_path, launcher):
+def test_a_location_skip_retires_the_job(tmp_path, launcher):
+    """It used to be counted and dropped on the floor: no `applied` row and still
+    shortlisted, so `load_pending_applications` re-queued it every sweep for the whole
+    `backlog_hours` window — one browser session each time to re-read a location that
+    cannot change. A location is a verdict, so the job is un-shortlisted instead.
+
+    Still no `applied` row, unlike an excluded employer: there is nothing for the user
+    to do about a job in the wrong country, so it belongs under Jobs Filtered rather
+    than Needs Attention. And `skipped` must stay falsy — the judge really did read
+    this posting, and setting it would blank a real score in the results CSV."""
+    _, script, _ = launcher
+    script.append(_outcome(status="skipped_location", location="London, UK"))
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    stats, _ = _run(tmp_path, [_job("j1")], db=db)
+
+    assert _statuses(db) == {} and stats["skipped_location"] == 1
+    (row,) = db.load_all_matches("r0")
+    assert row["shortlisted"] is False
+    assert row["skip_reason"] == worker.LOCATION_SKIP_REASON
+    assert not row.get("skipped"), "a judged job must keep its score"
+    assert row["relevance_score"] == 80
+    assert row["applier_location"] == "London, UK"
+
+
+def test_a_retired_location_skip_leaves_the_backlog(tmp_path, launcher):
+    """The whole point of the change: the only thing that stopped it being re-driven
+    every sweep for `backlog_hours`."""
+    _, script, _ = launcher
+    script.append(_outcome(status="skipped_location", location="Berlin"))
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    _run(tmp_path, [_job("j1")], db=db)
+
+    since = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    assert db.load_pending_applications(since) == []
+
+
+def test_a_location_skip_retires_the_job_in_every_run_that_shortlisted_it(
+        tmp_path, launcher):
+    """`matches` is keyed `(run_id, job_id)` and a backlog job's row belongs to an
+    earlier sweep, so `mark_not_shortlisted` takes no `run_id`. Updating only one row
+    would leave the other shortlisted — back in the backlog, and rendered a second
+    time on the lifetime page under a contradicting label."""
+    _, script, _ = launcher
+    script.append(_outcome(status="skipped_location", location="Paris"))
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    _match(db, "r1", "j1", score=75)
+    _run(tmp_path, [_job("j1")], db=db)
+
+    for run_id in ("r0", "r1"):
+        (row,) = db.load_all_matches(run_id)
+        assert row["shortlisted"] is False, run_id
+        assert row["skip_reason"] == worker.LOCATION_SKIP_REASON, run_id
+
+
+def test_retiring_a_job_twice_is_a_no_op(tmp_path):
+    """`AND shortlisted = 1` makes it idempotent, so a job reached again through some
+    other path does not churn rows or overwrite a later verdict."""
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+
+    assert db.mark_not_shortlisted("j1", worker.LOCATION_SKIP_REASON, "London") == 1
+    assert db.mark_not_shortlisted("j1", worker.LOCATION_SKIP_REASON, "Berlin") == 0
+    (row,) = db.load_all_matches("r0")
+    assert row["applier_location"] == "London"
+
+
+def test_a_location_skip_with_no_location_text_still_retires_the_job(tmp_path, launcher):
+    """`location` is optional on the outcome, and a session that omits it must not
+    leave the job looping. The page just renders the bare label."""
     _, script, _ = launcher
     script.append(_outcome(status="skipped_location"))
-    stats, db = _run(tmp_path, [_job("j1")])
-    assert _statuses(db) == {}
-    assert stats["skipped_location"] == 1
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    _run(tmp_path, [_job("j1")], db=db)
+
+    (row,) = db.load_all_matches("r0")
+    assert row["shortlisted"] is False
+    assert "applier_location" not in row
 
 
 def test_excluded_and_already_applied_jobs_launch_nothing(tmp_path, launcher):
@@ -627,6 +770,154 @@ def test_the_applier_bar_counts_every_streamed_job_but_not_the_backlog(
     asyncio.run(go())
     assert len(launcher[0]) == 2                  # the backlog job and j1 launched
     assert db.run_progress("now")["apply_handled"] == 2
+
+
+# --- the window the backlog closes ------------------------------------------
+
+def _stale(db: Database, job_id: str = "stale", **over) -> None:
+    """A shortlisted job the backlog can no longer see: scored before the window."""
+    over.setdefault("scored_at", datetime.now(timezone.utc) - timedelta(days=10))
+    _match(db, "r0", job_id, **over)
+
+
+def _window_start() -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+
+
+@pytest.mark.parametrize("json1", [True, False])
+def test_the_backlogs_two_halves_partition_the_unapplied_shortlist(tmp_path, json1):
+    """Pending and expired are one set split on age, and nothing may fall between
+    them: a job neither half returns is a job that is never applied to and never
+    recorded, which is the silence this pair exists to end.
+
+    `rescored` is why the age test is a `HAVING` on `MAX(scored_at)` rather than a
+    `WHERE` on the row. It has a stale row beside a fresh one — `matches` is keyed
+    `(run_id, job_id)`, so a retried scoring leaves both (known issue R1) — and a
+    row-level test would report it as expired while the backlog was still retrying it.
+    """
+    db = Database(tmp_path / "test.db")
+    db._has_json1 = json1
+
+    _match(db, "r0", "fresh")
+    _stale(db, "stale")
+    _stale(db, "sibling", rep="fresh")            # judged by proxy, never applied to
+    _stale(db, "done")
+    db.record_applied("done", "acme", "t", "u", "2026-09-01T00:00:00+00:00",
+                      "error", None, None)
+    _stale(db, "rejected", shortlisted=False)
+    _stale(db, "rescored", score=70)              # the stale row that survives…
+    _match(db, "r1", "rescored", score=75)        # …beside the fresh one
+
+    pending = {r["job_id"] for r in db.load_pending_applications(_window_start())}
+    expired = {r["job_id"] for r in db.load_expired_applications(_window_start())}
+
+    assert pending == {"fresh", "rescored"}
+    assert expired == {"stale"}
+    assert not pending & expired
+
+
+def test_the_window_closing_records_the_job_instead_of_dropping_it(tmp_path, launcher):
+    """`backlog_hours` runs against `scored_at`, which never advances, so a job whose
+    sessions keep failing to launch stops being retried. It used to stop silently —
+    still shortlisted, no `applied` row, sitting under Jobs Shortlisted for good as
+    though the applier would still get to it."""
+    calls, _, _ = launcher
+    db = Database(tmp_path / "test.db")
+    _stale(db)
+
+    stats, _ = _run(tmp_path, [], db=db, backlog=True)
+
+    assert calls == [], "a job past the window was launched"
+    assert stats["expired"] == 1
+    row = db.load_applied()[0]
+    assert row["job_id"] == "stale" and row["status"] == "expired"
+    assert row["error"] == worker.expired_reason(72)
+    assert row["absolute_url"] == "https://example.com/jobs/stale"
+    # Out of both halves for good: the record is what retires it.
+    assert db.load_pending_applications(_window_start()) == []
+    assert db.load_expired_applications(_window_start()) == []
+
+
+def test_a_job_given_up_on_is_never_queued_or_recorded_twice(tmp_path, launcher):
+    calls, _, _ = launcher
+    db = Database(tmp_path / "test.db")
+    _stale(db)
+
+    _run(tmp_path, [], db=db, backlog=True)
+    stats, _ = _run(tmp_path, [], db=db, backlog=True)
+
+    assert calls == []
+    assert stats["expired"] == 0
+    assert len(db.load_applied()) == 1
+
+
+def test_a_job_still_inside_the_window_is_retried_not_given_up_on(tmp_path, launcher):
+    calls, _, _ = launcher
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+
+    stats, _ = _run(tmp_path, [], db=db, backlog=True)
+
+    assert len(calls) == 1 and stats["expired"] == 0
+    assert _statuses(db) == {"j1": "submitted"}
+
+
+def test_a_tripped_breaker_gives_up_on_nothing(tmp_path, launcher):
+    """Known issue S2: a host where every `claude` launch failed at once. A machine
+    that could not start a session has learnt nothing about the jobs it never
+    reached, and retiring them would be the deferral-as-verdict bug in a new place."""
+    _, script, _ = launcher
+    db = Database(tmp_path / "test.db")
+    _stale(db)
+    script += [_Proc(rc=1), _Proc(rc=1), _Proc(rc=1)]
+
+    stats, _ = _run(tmp_path, [_job("j1"), _job("j2"), _job("j3")], db=db, backlog=True)
+
+    assert stats["deferred"] == 3 and stats["expired"] == 0
+    assert _statuses(db) == {}
+
+
+def test_a_blocked_applier_gives_up_on_nothing(tmp_path, launcher):
+    """A missing resume is the install's problem, not the job's."""
+    db = Database(tmp_path / "test.db")
+    _stale(db)
+
+    stats, _ = _run(tmp_path, [], settings=_settings(tmp_path, resume_path=""),
+                    db=db, backlog=True)
+
+    assert stats["expired"] == 0 and _statuses(db) == {}
+
+
+def test_the_expiry_pass_opts_out_with_the_backlog(tmp_path, launcher):
+    """It is that flag's other half: a caller that does not want earlier sweeps'
+    jobs retried does not want them retired either."""
+    db = Database(tmp_path / "test.db")
+    _stale(db)
+
+    stats, _ = _run(tmp_path, [], db=db, backlog=False)
+
+    assert stats["expired"] == 0 and _statuses(db) == {}
+
+
+def test_giving_up_on_a_job_does_not_move_this_sweeps_applier_bar(tmp_path, launcher):
+    """The bar's total is `apply_queued`, this sweep's own stream. An expired job
+    belongs to an earlier sweep — the same reason the backlog is left out of it."""
+    db = Database(tmp_path / "test.db")
+    db.start_progress("now", apply_enabled=True)
+    _stale(db)
+
+    async def go():
+        q: asyncio.Queue = asyncio.Queue()
+        await q.put(_job("j1"))
+        await q.put(None)
+        return await worker.run_apply_worker(
+            q, _settings(tmp_path), "RESUME TEXT", run_dir=_run_dir(tmp_path),
+            db=db, include_backlog=True, run_id="now",
+        )
+
+    stats = asyncio.run(go())
+    assert stats["expired"] == 1
+    assert db.run_progress("now")["apply_handled"] == 1      # j1 only
 
 
 # --- the queue it is fed from -----------------------------------------------

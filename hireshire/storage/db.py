@@ -426,30 +426,81 @@ class Database:
             f"(skipped = 0 OR skipped IS NULL OR {self._sibling_sql(alias)})"
         )
 
+    def _canonical_matches_sql(self, cols: str, joins: str = "") -> str:
+        """One row per `job_id` across every run: the job's **newest** match row.
+
+        `matches` is keyed `(run_id, job_id)`, so a job dropped on a deferral — the
+        call cap, a scoring failure — and judged in a later sweep keeps *both* rows.
+        Every lifetime read has to choose one, and the newest is the one still true:
+        the matcher retires a judged job, so a verdict is always the last word, and
+        only a later sweep can supersede a deferral. Counting "any row that ever said
+        so" instead listed 381 jobs twice on the lifetime page and left 8 more in the
+        `Relevant jobs` tile on a reading the cross-encoder had since overturned.
+
+        **Newest, not "judged first".** The obvious refinement — prefer a row with a
+        standing verdict — is wrong, because `_judged_sql` is also true of a cluster
+        sibling whose representative *failed*: that row carries a placeholder 0 and no
+        verdict behind it, and preferring it suppresses a genuine `rerank_below_cutoff`
+        written weeks later. Measured on a real database, no job's newest row loses a
+        real verdict, and both rules produce identical tiles.
+
+        `MAX(m.scored_at)` over bare columns is the same trick `_unapplied` uses on the
+        backlog window, for the same reason: SQLite fills the other columns from the
+        row that produced the maximum, so the whole row comes back in one pass — no
+        window function, no correlated subquery. It is aliased `canonical` rather than
+        `scored_at` so it cannot collide with the bare column of that name, which holds
+        the identical value.
+
+        Predicates belong on the **outer** select, where `_judged_sql()`,
+        `_relevant_sql()` and `_sibling_sql()` run unaliased against the row this has
+        already chosen. Inside the aggregate they would be answered by rows the group
+        is in the middle of discarding.
+        """
+        return (
+            f"SELECT {cols}, MAX(m.scored_at) AS canonical "
+            f"FROM matches m {joins} GROUP BY m.job_id"
+        )
+
     def overview_counts(self, run_id: str | None = None) -> dict[str, int]:
         """The overview page's four figures, at run scope or across the install.
 
-        Counted by DISTINCT job_id rather than by row, so a job that resurfaced in
-        several sweeps is one job on the lifetime page — unlike a per-run total's
-        totals, which sum per-run counts and say so.
+        Counted one job at a time rather than one row at a time, so a job that
+        resurfaced in several sweeps is one job on the lifetime page — unlike a per-run
+        total's totals, which sum per-run counts and say so.
+
+        The two `matches` figures differ by scope in *which* row they ask. A run-scoped
+        query needs no choosing: `(run_id, job_id)` is the primary key, so the run holds
+        exactly one row per job. Across the install a job can hold rows from several
+        sweeps, and `COUNT(DISTINCT job_id)` over them answers "did any row ever say
+        so", which keeps a superseded reading alive for good. The lifetime counts
+        therefore run over `_canonical_matches_sql` — the same row the page's sections
+        render, so the tile and the list below it cannot disagree about a job's state.
+
+        This changes only which row is consulted, never what `shortlisted = 1` means: an
+        `excluded` or `expired` job keeps its shortlist row and its place in the tile.
         """
         run_filter = " AND run_id = ?" if run_id else ""
         params: tuple = (run_id,) if run_id else ()
+        if run_id:
+            relevant_sql = ("SELECT COUNT(DISTINCT job_id) AS n FROM matches "
+                            f"WHERE {self._relevant_sql()}" + run_filter)
+            shortlisted_sql = ("SELECT COUNT(DISTINCT job_id) AS n FROM matches "
+                               "WHERE shortlisted = 1" + run_filter)
+        else:
+            canonical = self._canonical_matches_sql(
+                "m.job_id, m.raw_json, m.skip_reason, m.shortlisted"
+            )
+            relevant_sql = (f"SELECT COUNT(*) AS n FROM ({canonical}) "
+                            f"WHERE {self._relevant_sql()}")
+            shortlisted_sql = (f"SELECT COUNT(*) AS n FROM ({canonical}) "
+                               "WHERE shortlisted = 1")
         with self._lock:
             seen = self._conn.execute(
                 "SELECT COUNT(DISTINCT job_id) AS n FROM jobs WHERE 1=1" + run_filter,
                 params,
             ).fetchone()
-            relevant = self._conn.execute(
-                "SELECT COUNT(DISTINCT job_id) AS n FROM matches "
-                f"WHERE {self._relevant_sql()}" + run_filter,
-                params,
-            ).fetchone()
-            shortlisted = self._conn.execute(
-                "SELECT COUNT(DISTINCT job_id) AS n FROM matches WHERE shortlisted = 1"
-                + run_filter,
-                params,
-            ).fetchone()
+            relevant = self._conn.execute(relevant_sql, params).fetchone()
+            shortlisted = self._conn.execute(shortlisted_sql, params).fetchone()
             # `applied` has no run_id — an application is a fact about a job, not
             # about the sweep that surfaced it — so run scope means "applications to
             # jobs this sweep saw" rather than "applications made during it".
@@ -489,28 +540,32 @@ class Database:
         record["shortlisted"] = bool(row["shortlisted"])
         return record
 
-    def load_lifetime_matches(self, judged: bool, limit: int) -> list[dict]:
-        """One row per job_id across every run, best first.
+    def load_lifetime_matches(self, limit: int) -> list[dict]:
+        """One row per job_id across every run — its canonical row, best first.
 
-        Deduped with ``GROUP BY job_id`` over a single ``MAX()``: SQLite's bare-column
-        rule then fills the other columns from the row that held that maximum, which
-        is the job's best showing in any sweep. ``DESC`` sorts NULLs last, so a job
-        that never reached the reranker falls to the bottom rather than the top.
+        Row selection is `_canonical_matches_sql`: the job's newest match row, because
+        an older one may have been superseded by a later sweep. This used to be two
+        calls, one for rows carrying a standing verdict and one for the rest, each
+        deduping only *within* itself — so a job holding both kinds of row satisfied
+        both queries and the page listed it twice, under contradicting labels — filed
+        as issue R1, 381 jobs on a real install.
 
-        ``judged`` selects between the two halves of the page: rows with a standing
-        LLM verdict, ranked by that verdict, and everything else, ranked by the
-        cross-encoder logit that decided whether it was worth one.
+        The ranking that pair produced survives, because it is the one the page wants:
+        judged jobs first by the verdict they got, then everything else by the
+        cross-encoder logit that decided whether they were worth a call. `IS NULL`
+        first keeps a job that never reached the reranker at the bottom rather than
+        the top.
         """
-        sort = "m.relevance_score" if judged else "m.rerank_score"
-        judged_sql = self._judged_sql("m")
-        where = judged_sql if judged else f"NOT ({judged_sql})"
+        judged = self._judged_sql()
+        rank = f"CASE WHEN {judged} THEN relevance_score ELSE rerank_score END"
+        canonical = self._canonical_matches_sql(
+            self._MATCH_COLUMNS,
+            "LEFT JOIN jobs j ON j.run_id = m.run_id AND j.job_id = m.job_id",
+        )
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT {self._MATCH_COLUMNS}, MAX({sort}) AS best "
-                "FROM matches m LEFT JOIN jobs j "
-                "  ON j.run_id = m.run_id AND j.job_id = m.job_id "
-                f"WHERE {where} "
-                "GROUP BY m.job_id ORDER BY best DESC LIMIT ?",
+                f"SELECT * FROM ({canonical}) "
+                f"ORDER BY ({judged}) DESC, {rank} IS NULL, {rank} DESC LIMIT ?",
                 (int(limit),),
             ).fetchall()
         return [self._match_record(r) for r in rows]
@@ -566,6 +621,12 @@ class Database:
         prunes old runs should still see what they applied to. Rows with no match
         keep their title and company from `applied` and simply have no rationales.
 
+        The joined row is the job's **newest** match, the same one
+        `_canonical_matches_sql` picks for every other lifetime read, so an application
+        cannot be rendered from a row the page has stopped believing elsewhere. It used
+        to be the row with the best `relevance_score`, which differs only for a job
+        judged more than once.
+
         Ordered by the LLM's verdict, best first, so the applied accordion ranks the
         same way every other list on the overview page does. An application with no
         match row left to point at sorts last rather than first, and the timestamp
@@ -585,7 +646,7 @@ class Database:
                 "FROM applied a "
                 "LEFT JOIN matches m ON m.rowid = ("
                 "    SELECT rowid FROM matches WHERE job_id = a.job_id "
-                "    ORDER BY relevance_score IS NULL, relevance_score DESC LIMIT 1) "
+                "    ORDER BY scored_at DESC, rowid DESC LIMIT 1) "
                 "LEFT JOIN jobs j ON j.run_id = m.run_id AND j.job_id = m.job_id "
                 + scope +
                 " ORDER BY m.relevance_score IS NULL, m.relevance_score DESC,"
@@ -755,9 +816,17 @@ class Database:
         runs made before tracking began. Siblings are out for the reason they are out
         of `run_progress` — nothing ever applies to them.
 
+        The shortlist half reads canonical rows, for the reason `overview_counts` does:
+        this bar's total *is* the `Jobs shortlisted` tile, and the two must be the same
+        number by construction rather than by coincidence.
+
         Groups whole tables, so it belongs on the lifetime page's slower throttle.
         """
-        sib = self._sibling_sql("m")
+        canonical = self._canonical_matches_sql("m.job_id, m.raw_json, m.shortlisted")
+        shortlist = (
+            f"SELECT job_id FROM ({canonical}) "
+            f"WHERE shortlisted = 1 AND NOT ({self._sibling_sql()})"
+        )
         with self._lock:
             sums = self._conn.execute(
                 "SELECT COUNT(*) AS sweeps, "
@@ -776,14 +845,12 @@ class Database:
                 "SELECT COUNT(DISTINCT job_id) AS n FROM jobs"
             ).fetchone()
             shortlisted = self._conn.execute(
-                "SELECT COUNT(DISTINCT m.job_id) AS n FROM matches m "
-                f"WHERE m.shortlisted = 1 AND NOT ({sib})"
+                f"SELECT COUNT(*) AS n FROM ({shortlist})"
             ).fetchone()
             applied = self._conn.execute(
                 "SELECT SUM(CASE WHEN a.status = 'submitted' THEN 1 ELSE 0 END) AS ok, "
                 "       SUM(CASE WHEN a.status != 'submitted' THEN 1 ELSE 0 END) AS bad "
-                "FROM applied a WHERE EXISTS (SELECT 1 FROM matches m "
-                f"  WHERE m.job_id = a.job_id AND m.shortlisted = 1 AND NOT ({sib}))"
+                f"FROM applied a WHERE a.job_id IN ({shortlist})"
             ).fetchone()
         return {
             "sweeps": sums["sweeps"] or 0,
@@ -1014,6 +1081,60 @@ class Database:
             ).fetchall()
         return [json.loads(r["raw_json"]) for r in rows]
 
+    def mark_not_shortlisted(self, job_id: str, reason: str,
+                             location: str | None = None) -> int:
+        """Retire a shortlisted job on a verdict reached after it was scored.
+
+        The applier's location check is the only caller: the posting page states a
+        location outside the user's list, which is a fact about the job and will be
+        the same on every future sweep. Clearing `shortlisted` is what takes it out of
+        `load_pending_applications`, which re-queued it every sweep for the whole
+        `backlog_hours` window — one browser session each time, to re-read a location
+        that cannot change.
+
+        **`skipped` is deliberately left alone.** It is what `_judged_sql` and both
+        copies of `_never_scored` read to decide whether a verdict stands behind
+        `relevance_score`, and this job *was* judged — it has a real LLM score. Setting
+        it would blank the score in the results CSV and file the row among the
+        never-scored ones, the same misreading the CSV leaves `llm_score` empty to
+        avoid.
+
+        **No `run_id` filter.** `matches` is keyed `(run_id, job_id)` and a job reached
+        from the backlog belongs to an earlier sweep, so every row for it is updated —
+        which also avoids leaving the stale duplicate the lifetime page would then
+        render twice, once under its real verdict and once under this one.
+
+        `AND shortlisted = 1` makes it idempotent and a no-op for a job already
+        retired. Returns how many rows changed, so the caller can log a miss.
+
+        Note this lowers the `Jobs shortlisted` tile and the applier bar's denominator
+        (`overview_counts`, `lifetime_progress`), retroactively and on both scopes.
+        That is correct — the job is no longer waiting to be applied to — and is not a
+        discrepancy to reconcile.
+        """
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT run_id, raw_json FROM matches "
+                "WHERE job_id = ? AND shortlisted = 1",
+                (job_id,),
+            ).fetchall()
+            for row in rows:
+                raw = json.loads(row["raw_json"])
+                # The column and the blob both, because they are read from different
+                # places: `_match_record` overrides `shortlisted` from the column but
+                # takes `skip_reason` straight out of `raw_json`. `applier_location`
+                # is an extra key rather than a `MatchResult` field — the blob is
+                # loaded as a plain dict, and nothing else needs to know about it.
+                raw["skip_reason"] = reason
+                if location:
+                    raw["applier_location"] = location
+                self._conn.execute(
+                    "UPDATE matches SET shortlisted = 0, skip_reason = ?, "
+                    "raw_json = ? WHERE run_id = ? AND job_id = ?",
+                    (reason, json.dumps(raw), row["run_id"], job_id),
+                )
+        return len(rows)
+
     # -- seen ----------------------------------------------------------------
 
     def seen_ids(self) -> set[str]:
@@ -1126,29 +1247,38 @@ class Database:
                  screenshot, error),
             )
 
-    def load_pending_applications(self, since_iso: str) -> list[dict]:
-        """Shortlisted jobs scored since `since_iso` with no `applied` row, best first.
+    def _unapplied(self, having: str, stamp_iso: str) -> list[dict]:
+        """Shortlisted representatives with no `applied` row, split on their age.
 
-        The apply worker's backlog. It exists because the matcher retires a job once it is judged:
-        a job whose apply session failed to launch is never streamed again, so this
-        is the only road back to it.
+        The body of `load_pending_applications` and `load_expired_applications`, which
+        are the two halves of one set and must partition it exactly: a job the backlog
+        can no longer see is a job the applier will never be handed again, and that is
+        the whole basis for retiring it.
 
-        Cluster siblings are excluded — only the representative is ever applied to,
-        the same rule the stream follows. One row per job, from its newest match.
-        Rows come back in the pipeline-record shape the stream uses (`company`,
-        `job_url`), so the worker treats both sources identically.
+        **The age test is a `HAVING` on the aggregate, not a `WHERE` on the row**, and
+        that is load-bearing. `matches` is keyed `(run_id, job_id)`, so a job scored in
+        one sweep and rescored in a later one has two rows — the same fact
+        `_canonical_matches_sql` exists for, resolved the same way. A row-level
+        `scored_at <` would match the stale row and report a job as expired
+        while its fresh row still sits in the backlog — the applier would retire a job
+        it is actively retrying. Against `MAX(scored_at)` the two predicates are
+        complements by construction.
+
+        Filtering after the group does not move the bare columns: SQLite takes them
+        from the row that produced the `MAX()`, which is the newest match either way.
         """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT m.job_id, m.board_token, m.title, m.relevance_score, m.raw_json, "
                 "MAX(m.scored_at) AS scored_at "
                 "FROM matches m "
-                "WHERE m.shortlisted = 1 AND m.scored_at >= ? "
+                "WHERE m.shortlisted = 1 "
                 f"AND NOT ({self._sibling_sql('m')}) "
                 "AND NOT EXISTS (SELECT 1 FROM applied a WHERE a.job_id = m.job_id) "
                 "GROUP BY m.job_id "
+                f"HAVING MAX(m.scored_at) {having} ? "
                 "ORDER BY m.relevance_score DESC",
-                (since_iso,),
+                (stamp_iso,),
             ).fetchall()
         out = []
         for r in rows:
@@ -1162,6 +1292,34 @@ class Database:
                 "scored_at": r["scored_at"],
             })
         return out
+
+    def load_pending_applications(self, since_iso: str) -> list[dict]:
+        """Shortlisted jobs scored since `since_iso` with no `applied` row, best first.
+
+        The apply worker's backlog. It exists because the matcher retires a job once it is judged:
+        a job whose apply session failed to launch is never streamed again, so this
+        is the only road back to it.
+
+        Cluster siblings are excluded — only the representative is ever applied to,
+        the same rule the stream follows. One row per job, from its newest match.
+        Rows come back in the pipeline-record shape the stream uses (`company`,
+        `job_url`), so the worker treats both sources identically.
+        """
+        return self._unapplied(">=", since_iso)
+
+    def load_expired_applications(self, before_iso: str) -> list[dict]:
+        """The backlog's other end: shortlisted jobs it can no longer reach.
+
+        Same set, same shape, opposite side of `before_iso` — jobs last scored before
+        the window opened, still shortlisted, still never applied to. Nothing will
+        stream them again (the matcher retires a judged job) and the backlog has
+        stopped looking at them, so without a record they sit under Jobs Shortlisted
+        for good, reading as work the applier still has to do.
+
+        `worker.run_apply_worker` is the only caller: it writes each one a terminal
+        `applied` row, which is what takes it out of this set permanently.
+        """
+        return self._unapplied("<", before_iso)
 
     # -- retention (manual, via scripts/prune_runs.py) -----------------------
 

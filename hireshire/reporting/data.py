@@ -53,6 +53,10 @@ REASON_LABELS = {
     # verbatim, which reads as a bug.
     "rerank_below_top_k": "Over budget — lost the top-K race",
     "duplicate_of_cluster": "Duplicate requisition — verdict copied from its cluster",
+    # Written by the applier, not the matcher: the posting page stated a location
+    # outside `scraper.location_filter`. The job keeps its LLM score — it was judged,
+    # then found to be somewhere the user will not work.
+    "location_mismatch": "Outside your search locations",
     "no_content_text": "No description text to score",
     "api_error": "Scoring call failed",
 }
@@ -188,10 +192,17 @@ def partition_jobs(
     shortlisted: list[dict] = []
     filtered: list[dict] = []
     seen: list[dict] = []
+    # Structural, not a fallback for a loader that misbehaves. Both loaders return one
+    # row per job — run scope because `(run_id, job_id)` is the primary key, lifetime
+    # scope because the query groups on `job_id` — but the page's one real promise
+    # should not rest on the shape of whichever query fed it.
+    placed: set[str] = set()
 
     for record in records:
-        if record.get("job_id") in applied_ids:
+        job_id = record.get("job_id")
+        if job_id in applied_ids or job_id in placed:
             continue
+        placed.add(job_id)
         if (record.get("skip_reason") or "") in _FREE_GATE_VERDICTS:
             seen.append(record)
         elif record.get("shortlisted"):
@@ -429,12 +440,15 @@ def overview_snapshot(
     if run_id:
         rows = db.load_all_matches(run_id) if records is None else records
     else:
-        # Two calls because the lifetime loader ranks each half by the score that
-        # half actually has. Concatenated in that order, the partition below inherits
-        # "LLM score first, then the cross-encoder logit" for free.
+        # One call, one row per job — the loader picks each job's canonical row and
+        # ranks judged jobs ahead of the rest. This was two calls, one per half, and
+        # each deduped only within itself: a job holding both a stale deferral and a
+        # later verdict satisfied both and was listed twice, under contradicting
+        # labels. The single limit covers both ends of the old pair because the
+        # ordering puts the judged block first.
         rows = db.load_lifetime_matches(
-            judged=True, limit=MAX_JOB_ROWS * 2 + len(attempts)
-        ) + db.load_lifetime_matches(judged=False, limit=MAX_TAIL_ROWS)
+            limit=MAX_TAIL_ROWS + MAX_JOB_ROWS * 2 + len(attempts)
+        )
 
     shortlisted, filtered, seen = partition_jobs(rows, applied_ids)
 

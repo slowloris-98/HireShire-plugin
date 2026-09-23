@@ -4,6 +4,65 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [Unreleased]
+
+### Fixed
+
+- **The lifetime dashboard now shows each job once, as it stands today.** A job the
+  sweep could not get to — the call budget ran out, or the scorer failed — comes back
+  on a later sweep, and the record of that later sweep was being added beside the old
+  one rather than replacing it. So a job could appear twice: once with the score it
+  eventually got, and again, further down, still described as waiting for a call it had
+  already had. 381 jobs on a real install were listed under two contradicting labels.
+  Where a job had several unfinished attempts, the page picked between them arbitrarily,
+  which could show a job as still in the running after the relevance check had ruled it
+  out. Every part of the page — the four tiles, the five lists and the progress bars —
+  now reads the same, most recent record of each job, so the tiles and the lists beneath
+  them can no longer tell you different things.
+
+  The page also stopped cutting off scored jobs. It loaded at most ~650 of them, so on a
+  mature install several hundred judged jobs were missing from the lists entirely; on the
+  install this was measured against, 1,233 now appear where 755 did. Per-sweep dashboards
+  were never affected, and no score, verdict or database row changes — only which one the
+  page reads.
+- **A job the applier never managed to start on no longer disappears quietly.** When a
+  browser session fails to launch — the Claude CLI missing, or the machine refusing to
+  start it — the job is left alone and retried on later sweeps, for three days. After
+  that the retrying stopped and nothing said so: the job kept its place under **Jobs
+  Shortlisted** on your dashboard for good, looking like work that was still coming,
+  and the posting link you could have used yourself was buried among jobs that were
+  genuinely queued. Those jobs now move to **Needs Attention** when the three days are
+  up, with a line saying no application was completed and the link to apply by hand.
+
+  Nothing is given up on sooner than before — three days of retrying is unchanged, and
+  a sweep that could not start a single session gives up on nothing at all, since the
+  fault there is the machine's rather than the job's.
+
+## [0.13.2] — 2026-09-22
+
+### Fixed
+
+- **A job in the wrong location is no longer re-opened every sweep.** When the applier
+  found a posting was somewhere you had not asked for, it set the job aside but never
+  wrote that down — so every sweep for the next three days picked it up again, opened a
+  browser and re-read the same page, up to about 36 times per job. One job was reopened
+  eleven times before this was caught, and the wasted sessions were compounding sweep
+  over sweep. The job is now set aside once and moves to **Jobs Filtered** on your
+  dashboard, with its score and a line saying which location it was, instead of sitting
+  under Jobs Shortlisted as though it were still queued.
+- **The location check now uses your own list.** It was comparing against six
+  hard-coded words and never read your settings, so a job in `Arlington, VA` could be
+  set aside as out of area even though Virginia is on your list. It now reads the same
+  locations `/hireshire:setup` saved for the job search, and works them out rather than
+  matching them letter by letter — `Arlington, VA` counts as the United States. When
+  the posting is vague about where the job is, it applies rather than guessing.
+
+Two notes if you look at the files a sweep writes: the results CSV shows these jobs
+with their real score and `shortlisted` empty, while `<stamp>_results.json` still lists
+them, because that file records what the sweep handed the applier. And a dashboard from
+an *older* sweep is a saved file that is never rewritten, so it keeps showing such a job
+under Jobs Shortlisted; the lifetime dashboard is always current.
+
 ## [0.13.1] — 2026-09-22
 
 ### Fixed

@@ -526,6 +526,35 @@ siblings (grouped after the rerank, never competed for a slot) while the section
 a sibling follow its verdict, since it carries a real score copied from its
 representative.
 
+**What they must agree on is which row per job they read, and lifetime scope is where
+that has teeth.** `matches` is keyed `(run_id, job_id)`, so a job dropped on a
+*deferral* — the call cap, a scoring failure — comes back and its later sweep writes a
+**second row** beside the first. `Database._canonical_matches_sql` is the one place
+that chooses between them: `MAX(m.scored_at)` with bare columns, the same trick and the
+same rule `_unapplied` uses for the backlog window. The lifetime sections, the
+`Relevant jobs` and `Jobs shortlisted` tiles and the lifetime applier bar all go
+through it, so a tile can no longer count a job on a reading the list below has
+dropped. Run scope needs none of this — `(run_id, job_id)` is the primary key — and its
+queries are deliberately left alone.
+
+Three things about that rule which should not be re-derived:
+
+- **It is "newest", not "the row that has a verdict".** Preferring a judged row looks
+  safer and is not: `_judged_sql` is also true of a cluster sibling whose representative
+  **failed**, which carries a placeholder 0 and nothing behind it, so the preference
+  would bury a genuine `rerank_below_cutoff` written weeks later. Measured on a real
+  install, no job's newest row loses a real verdict — the matcher retires a judged job,
+  so a verdict is always the last word — and both rules produce identical tiles.
+- **The predicates go on the outer select.** `_judged_sql()`, `_relevant_sql()` and
+  `_sibling_sql()` read the row the aggregate has already chosen. Inside the aggregate
+  they would be answered by rows the group is discarding.
+- **The sections used to load in two halves and must not again.** One query for rows
+  with a standing verdict and one for the rest, each deduping only *within* itself, put
+  381 jobs on the page twice under contradicting labels — and its judged half carried
+  its own limit, which silently truncated the scored jobs the user most wants (755 of
+  1,233 on the same install). `partition_jobs` keeps a `placed` set anyway: the page's
+  one real promise should not rest on the shape of whichever query fed it.
+
 The last section, `Total Jobs Seen`, is the only one that reads the **`jobs` table**
 rather than `matches` (`Database.load_unmatched_jobs`). That is what finally puts the
 title-gate rejections on a page — `matcher.py` keeps them out of `matches` on purpose,
@@ -669,6 +698,32 @@ Four things about the applier that are easy to break:
   `backlog_hours`) retries it next sweep — the only road back, because the matcher
   never streams a judged job twice. Three launch failures in a row stop the applier
   for the sweep.
+- **The backlog's window closing is itself recorded, on the window and never on a
+  count.** `backlog_hours` is measured against `scored_at`, which never advances — the
+  matcher retires a judged job — so a job whose sessions keep failing to launch stops
+  being retried after ~18 sweeps at a 4-hour poll. That used to happen silently: the
+  row kept `shortlisted = 1` with no `applied` row, so it sat under Jobs Shortlisted
+  for good, reading as work the applier would still get to, and the link the user could
+  have used by hand was buried among jobs that looked pending. `worker.EXPIRED_STATUS`
+  is the terminal record that ends it, written by a pass after the queue drains.
+
+  **A retry counter was rejected and must not be added.** A launch failure is a fact
+  about the host, not the job — known issue S2 is a machine where every `claude` launch
+  failed at once — so retiring on N failures would discard a whole sweep's shortlist
+  for a transient fault, which is precisely what "retire on a verdict, never on a
+  deferral" forbids. The time bound was already there; this only makes the moment it
+  fires visible, and the three gates on the pass (`include_backlog`, not `blocked`, the
+  breaker not tripped) exist so a sweep that could apply to nothing declares nothing
+  abandoned.
+
+  Two consequences. `Database._unapplied` tests the age with `HAVING MAX(scored_at)`,
+  not a `WHERE` on the row, because a rescored job keeps its stale row — the same fact
+  `_canonical_matches_sql` exists for, and the same aggregate rule — and a row-level
+  test would expire a job the backlog was still retrying; the two
+  halves have to partition the set exactly. And the pass writes **no** `bump_progress`
+  and does **not** clear `shortlisted`: these jobs belong to earlier sweeps, so the
+  applier bar (total `apply_queued`) must not count them, and the shortlist tile keeps
+  them exactly as an `excluded` row does.
 - **`exclude_companies` is a verdict too, and is the one no session produces.** Those
   portals need an account login, so the answer is the same on every future sweep; the
   worker writes an `excluded` row itself, before the resume and breaker checks, and the
@@ -679,6 +734,47 @@ Four things about the applier that are easy to break:
   Recording it retires the job, so lifting an exclusion later does **not** bring it
   back — the same open half of known issue A4, accepted for the same reason the
   ambiguous-ending rule accepts it.
+- **A location skip is a verdict too, and is the one that retires a job with no
+  `applied` row.** The posting page states a location outside the user's list, which
+  reads the same on every future sweep, so `Database.mark_not_shortlisted` clears
+  `shortlisted` and writes `location_mismatch` — the backlog's `WHERE m.shortlisted = 1`
+  is what then stops seeing it. It had the `exclude_companies` bug and worse: with no
+  retry counter anywhere, `poll_interval_hours: 2` and `backlog_hours: 72` re-drove one
+  job ~36 times, a full `claude -p` and browser session each time to re-read a location
+  that cannot change.
+
+  Three things about it that are easy to get wrong:
+
+  - **No `applied` row, and that is the difference from `exclude_companies`.** An
+    account-login portal is something the user can go and do by hand, so it belongs
+    under Needs Attention; a job in the wrong country is not, so it is un-shortlisted
+    into Jobs Filtered instead. This also keeps the progress-bar rule below true as
+    written.
+  - **`skipped` must stay 0.** It is what `_judged_sql` and both copies of
+    `_never_scored` read, and this job *was* judged — it carries a real LLM score.
+    Setting it would blank that score in the results CSV and file the row among the
+    never-scored ones. For the same reason `overview._job_entry` needs
+    `location_mismatch` in `_SCORED_REASONS` but **not** in `judged`: the two look
+    interchangeable and drive different things — the score column and the reason label
+    — and Jobs Filtered is the section whose entire question is why.
+  - **`mark_not_shortlisted` takes no `run_id`.** `matches` is keyed `(run_id, job_id)`
+    and a backlog job's row belongs to an earlier sweep, so every row for the job is
+    updated; leaving one shortlisted would put it straight back in the backlog and
+    render it twice on the lifetime page under contradicting labels. It therefore lowers
+    the `Jobs shortlisted` tile and the applier bar's denominator retroactively, at both
+    scopes — correct, since the job is no longer waiting on the applier, and not a
+    discrepancy to reconcile.
+
+  **There is one location list, and the scraper owns it.** `ApplierSettings.location_filter`
+  is *derived*: `load_applier_config` overwrites it from `scraper.location_filter` on
+  every load, so a value in `applier.yaml` never wins and setup writes it in one place.
+  `apply_one.md` used to hardcode six strings and read no config at all, which is how a
+  job scraped as `Arlington, VA, United States` and rendered as `Arlington, VA` was
+  skipped against a list the user never wrote. The session **infers** rather than
+  string-matches — the list mixes countries, states and cities (107 entries on a real
+  install) and a page rarely contains any of them verbatim — and an ambiguous location
+  continues with the application, because a missed skip costs one form while a wrong
+  skip retires the job for good.
 - **Ambiguous endings are recorded, deliberately.** A timeout or an unreadable result
   may come after the submit click, so it is written as an `error` telling the user to
   check. Retrying it would risk a second application to the same employer, which is

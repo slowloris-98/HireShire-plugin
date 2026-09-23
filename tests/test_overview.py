@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+from hireshire.applier import worker
 from hireshire.models.job import Job, Location
 from hireshire.reporting import data, overview
 from hireshire.reporting.render import duration, e
@@ -70,12 +71,16 @@ def _raw(job_id: str, **over) -> dict:
 
 
 def _match(db: Database, run_id: str, job_id: str, *, score=78, shortlisted=False,
-           skipped=False, reason=None, rerank=7.19, **over) -> None:
+           skipped=False, reason=None, rerank=7.19,
+           scored_at="2026-09-09T07:00:00+00:00", **over) -> None:
+    """One `matches` row. `scored_at` is a parameter because the lifetime loader
+    chooses a job's canonical row by it — rows written at the same instant leave it
+    nothing to choose between."""
     raw = _raw(job_id, relevance_score=score, skipped=skipped,
                skip_reason=reason, rerank_score=rerank, **over)
     db.upsert_match(
         run_id, job_id, raw["board_token"], raw["title"], score, shortlisted,
-        skipped, reason, run_id, "2026-09-09T07:00:00+00:00", json.dumps(raw),
+        skipped, reason, run_id, scored_at, json.dumps(raw),
         encoder_score=raw["encoder_score"], rerank_score=rerank,
     )
 
@@ -208,6 +213,26 @@ def test_an_excluded_employer_needs_attention_not_a_shortlist_slot(tmp_path):
     assert e(reason) in _job_block(overview.build(snap, RUN), "j7")
 
 
+def test_a_job_the_backlog_gave_up_on_needs_attention(tmp_path):
+    """The applier retries a job whose sessions fail to launch for `backlog_hours` and
+    then stops. That used to be silent — the job kept its shortlist row and no `applied`
+    row, so it sat under Jobs Shortlisted for good, reading as work still to come. The
+    `expired` row lands here instead, and like every other non-submission it must leave
+    the Jobs applied tile alone."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j8")])
+    _match(db, RUN, "j8", score=86, shortlisted=True, rerank=8.60)
+    reason = worker.expired_reason(72)
+    _apply(db, "j8", "expired", reason)
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j8") == ["attention"]
+    assert db.overview_counts(RUN)["applied"] == 1        # j1, the real submission
+    assert e(reason) in _job_block(overview.build(snap, RUN), "j8")
+    # One line, whole: nothing is clipped, so the tooltip is not needed.
+    assert overview._attention_reason({"applied_error": reason}) == (reason, reason)
+
+
 def test_a_cluster_sibling_follows_its_verdict_not_the_tail(tmp_path):
     """It was judged, just once for the whole cluster — the same rule
     `data._never_scored` applies, reached here through SQL. j4 carries j1's 82
@@ -251,6 +276,52 @@ def test_a_yoe_drop_falls_to_the_last_section(tmp_path):
     assert _section_of(snap, "j6") == ["seen"]
 
 
+def test_a_location_skip_is_filtered_not_shortlisted_or_seen(tmp_path):
+    """The applier's verdict, not the matcher's: the job was judged and shortlisted,
+    and the posting page then turned out to state a location the user does not accept.
+    It belongs with the jobs that cleared both free gates — it cleared them — so it is
+    filtered, not in the last section, and it must leave Jobs Shortlisted, which is
+    the section that says what the applier still has to do."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=79, shortlisted=False, reason="location_mismatch",
+           rerank=7.50, applier_location="London, UK")
+    db.insert_jobs(RUN, [_job("j6")])
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j6") == ["filtered"]
+
+
+def test_a_location_skip_keeps_its_score_and_its_reason(tmp_path):
+    """The regression guard for the one trap in this change. `_job_entry` had a single
+    `judged` tuple driving two different things — whether to print the score, and
+    whether to print the reason label. Appending the new reason to it keeps the score
+    and silently deletes the label, on the one section whose entire question is *why*
+    a job is there. Both halves have to hold, so both are asserted."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=79, shortlisted=False, reason="location_mismatch",
+           rerank=7.50, applier_location="London, UK")
+    db.insert_jobs(RUN, [_job("j6")])
+
+    block = _job_block(overview.build(_snapshot(db), RUN), "j6")
+    assert '<span class="job-s">79</span>' in block, "a judged job keeps its score"
+    assert "Outside your search locations" in block, "and says why it is here"
+    assert 'page says &quot;London, UK&quot;' in block
+    assert '<span class="job-s">—</span>' not in block
+
+
+def test_a_location_skip_without_a_recorded_location_still_reads(tmp_path):
+    """Rows written before the applier recorded the page's text, and any skip where it
+    was unreadable. The label stands on its own; nothing renders an empty quotation."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=79, shortlisted=False, reason="location_mismatch",
+           rerank=7.50)
+    db.insert_jobs(RUN, [_job("j6")])
+
+    block = _job_block(overview.build(_snapshot(db), RUN), "j6")
+    assert "Outside your search locations" in block
+    assert "page says" not in block
+
+
 def test_the_last_section_is_ordered_by_the_cross_encoder(tmp_path):
     db = _populated(tmp_path)
     _match(db, RUN, "j6", score=0, skipped=True, reason="rerank_below_cutoff",
@@ -286,11 +357,21 @@ def test_the_sql_judged_predicate_matches_never_scored(tmp_path):
     _match(db, RUN, "j7", score=0, skipped=True, reason="api_error")
     db.insert_jobs(RUN, [_job("j6"), _job("j7")])
 
-    by_sql = {r["job_id"] for r in db.load_lifetime_matches(judged=True, limit=100)}
+    with db._lock:
+        by_sql = {
+            r["job_id"] for r in db._conn.execute(
+                f"SELECT m.job_id FROM matches m WHERE {db._judged_sql('m')}"
+            )
+        }
     by_python = {
         r["job_id"] for r in db.load_all_matches(RUN) if not data._never_scored(r)
     }
     assert by_sql == by_python
+
+    # And the lifetime loader ranks on that same predicate: every judged job comes
+    # before every never-scored one, whatever scores they carry.
+    ranked = [not data._never_scored(r) for r in db.load_lifetime_matches(limit=100)]
+    assert ranked == sorted(ranked, reverse=True)
 
 
 # --- the four numbers ---------------------------------------------------------
@@ -345,17 +426,124 @@ def test_lifetime_counts_a_resurfaced_job_once(tmp_path):
     assert db.overview_counts(OLDER)["seen"] == 1
 
 
-def test_the_lifetime_loader_keeps_a_jobs_best_showing(tmp_path):
-    """One row per job_id, and the row is the sweep where it did best — a job that
-    scored 82 once and 64 later is an 82."""
+def test_the_relevant_tile_drops_a_job_a_later_sweep_overturned(tmp_path):
+    """The tile used to ask "did any row ever say so", which keeps a superseded
+    reading alive for good: a job deferred on the call cap and later cut by the
+    cross-encoder stayed relevant forever. It now reads the same canonical row the
+    sections render. The per-run tile is unaffected — that sweep really did defer it,
+    and `(run_id, job_id)` leaves it nothing to choose between."""
     db = _populated(tmp_path)
-    db.insert_jobs(OLDER, [_job("j2")])
-    _match(db, OLDER, "j2", score=91, rerank=9.50)
+    db.record_company(OLDER, "acme", "greenhouse", "ok", 1, 0.2, None)
+    db.insert_jobs(OLDER, [_job("j6")])
+    _match(db, OLDER, "j6", score=0, skipped=True, reason="llm_call_cap_reached",
+           rerank=2.94, scored_at="2026-09-01T07:00:00+00:00")
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=0, skipped=True, reason="rerank_below_cutoff",
+           rerank=2.94)
 
-    rows = db.load_lifetime_matches(judged=True, limit=100)
-    j2 = [r for r in rows if r["job_id"] == "j2"]
+    assert db.overview_counts(OLDER)["relevant"] == 1
+    assert db.overview_counts(None)["relevant"] == 2       # j1 and j2, not j6
+
+
+def test_the_lifetime_applier_bar_and_the_shortlist_tile_are_one_number(tmp_path):
+    """The bar's denominator is every shortlisted representative the install has, which
+    is what the tile counts. Two queries, so they agree only if they choose the same
+    row per job."""
+    db = _populated(tmp_path)
+    db.record_company(OLDER, "acme", "greenhouse", "ok", 1, 0.2, None)
+    db.insert_jobs(OLDER, [_job("j6")])
+    _match(db, OLDER, "j6", score=81, shortlisted=True, rerank=8.10,
+           scored_at="2026-09-01T07:00:00+00:00")
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=0, skipped=True, reason="rerank_below_cutoff",
+           rerank=2.94)
+
+    assert db.lifetime_progress()["shortlisted"] == \
+        db.overview_counts(None)["shortlisted"]
+
+
+def test_the_lifetime_loader_keeps_the_jobs_current_row(tmp_path):
+    """One row per job_id, and the row is the newest — not the best it ever did.
+
+    This reverses the original rule, and the reversal is the point. `matches` is keyed
+    `(run_id, job_id)`, so a rescored job keeps its old row; "best" would let a reading
+    a later sweep overturned outlive the one that replaced it."""
+    db = _populated(tmp_path)          # j2 scored 71 in RUN
+    db.insert_jobs(OLDER, [_job("j2")])
+    _match(db, OLDER, "j2", score=91, rerank=9.50,
+           scored_at="2026-09-01T07:00:00+00:00")
+
+    j2 = [r for r in db.load_lifetime_matches(limit=100) if r["job_id"] == "j2"]
     assert len(j2) == 1
-    assert j2[0]["relevance_score"] == 91
+    assert j2[0]["relevance_score"] == 71
+
+
+def test_a_rescored_job_is_listed_once_with_its_verdict(tmp_path):
+    """The bug filed as issue R1. A cap drop is a deferral, so the job comes back and
+    a later sweep writes it a second row. The page used to load its rows in two halves — those
+    with a standing verdict and those without — each deduped only within itself, so a
+    job holding one of each satisfied both and rendered twice, once under Shortlisted
+    with its score and once under Jobs Filtered as "still eligible next sweep"."""
+    db = _populated(tmp_path)
+    db.record_company(OLDER, "acme", "greenhouse", "ok", 1, 0.2, None)
+    db.insert_jobs(OLDER, [_job("j6")])
+    _match(db, OLDER, "j6", score=0, skipped=True, reason="llm_call_cap_reached",
+           rerank=8.30, scored_at="2026-09-01T07:00:00+00:00")
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=88, shortlisted=True, rerank=8.30)
+
+    snap = _snapshot(db, None, live=False)
+    assert _section_of(snap, "j6") == ["shortlisted"]
+    assert [r["relevance_score"] for r in snap["shortlisted"]
+            if r["job_id"] == "j6"] == [88]
+    # And once in the markup: two entries would share a DOM id, which is what breaks
+    # `_STATE_SCRIPT`'s restore across the meta refresh.
+    assert overview.build(snap).count('id="j:j6"') == 1
+
+
+def test_a_verdict_outranks_the_deferral_it_replaced(tmp_path):
+    """The same stale row, one step further down the funnel. Both rows are unjudged
+    here, so the old loader picked between them with `MAX(rerank_score)` — and the
+    logit is deterministic, so the two tie and SQLite chose arbitrarily. That decided
+    the job's label *and* its section: a cutoff verdict belongs in the last section,
+    a cap drop in Jobs Filtered."""
+    db = _populated(tmp_path)
+    db.record_company(OLDER, "acme", "greenhouse", "ok", 1, 0.2, None)
+    db.insert_jobs(OLDER, [_job("j6")])
+    _match(db, OLDER, "j6", score=0, skipped=True, reason="llm_call_cap_reached",
+           rerank=2.94, scored_at="2026-09-01T07:00:00+00:00")
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=0, skipped=True, reason="rerank_below_cutoff",
+           rerank=2.94)
+
+    snap = _snapshot(db, None, live=False)
+    assert _section_of(snap, "j6") == ["seen"]
+    assert [r["skip_reason"] for r in snap["seen"] if r["job_id"] == "j6"] == [
+        "rerank_below_cutoff"
+    ]
+
+
+def test_a_failed_representatives_sibling_does_not_outrank_a_later_verdict(tmp_path):
+    """Why the rule is "newest", not "the row with a verdict". `_judged_sql` is true of
+    a cluster sibling whose representative *failed* — it carries the representative's
+    error reason and a placeholder 0, with nothing behind it — so preferring a judged
+    row would print that placeholder and bury the genuine cutoff verdict written
+    later. Observed on a real install, on a job whose sibling row said
+    `backend_unavailable`."""
+    db = _populated(tmp_path)
+    db.record_company(OLDER, "acme", "greenhouse", "ok", 1, 0.2, None)
+    db.insert_jobs(OLDER, [_job("j6")])
+    _match(db, OLDER, "j6", score=0, skipped=True, reason="backend_unavailable",
+           rerank=2.89, cluster_representative="j2",
+           scored_at="2026-09-01T07:00:00+00:00")
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=0, skipped=True, reason="rerank_below_cutoff",
+           rerank=2.94)
+
+    j6 = [r for r in db.load_lifetime_matches(limit=100) if r["job_id"] == "j6"]
+    assert len(j6) == 1
+    assert j6[0]["skip_reason"] == "rerank_below_cutoff"
+    assert not j6[0].get("cluster_representative")
 
 
 # --- the extra tile, and the one that was withdrawn ---------------------------
