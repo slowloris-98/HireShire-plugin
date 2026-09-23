@@ -251,6 +251,52 @@ def test_a_yoe_drop_falls_to_the_last_section(tmp_path):
     assert _section_of(snap, "j6") == ["seen"]
 
 
+def test_a_location_skip_is_filtered_not_shortlisted_or_seen(tmp_path):
+    """The applier's verdict, not the matcher's: the job was judged and shortlisted,
+    and the posting page then turned out to state a location the user does not accept.
+    It belongs with the jobs that cleared both free gates — it cleared them — so it is
+    filtered, not in the last section, and it must leave Jobs Shortlisted, which is
+    the section that says what the applier still has to do."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=79, shortlisted=False, reason="location_mismatch",
+           rerank=7.50, applier_location="London, UK")
+    db.insert_jobs(RUN, [_job("j6")])
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j6") == ["filtered"]
+
+
+def test_a_location_skip_keeps_its_score_and_its_reason(tmp_path):
+    """The regression guard for the one trap in this change. `_job_entry` had a single
+    `judged` tuple driving two different things — whether to print the score, and
+    whether to print the reason label. Appending the new reason to it keeps the score
+    and silently deletes the label, on the one section whose entire question is *why*
+    a job is there. Both halves have to hold, so both are asserted."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=79, shortlisted=False, reason="location_mismatch",
+           rerank=7.50, applier_location="London, UK")
+    db.insert_jobs(RUN, [_job("j6")])
+
+    block = _job_block(overview.build(_snapshot(db), RUN), "j6")
+    assert '<span class="job-s">79</span>' in block, "a judged job keeps its score"
+    assert "Outside your search locations" in block, "and says why it is here"
+    assert 'page says &quot;London, UK&quot;' in block
+    assert '<span class="job-s">—</span>' not in block
+
+
+def test_a_location_skip_without_a_recorded_location_still_reads(tmp_path):
+    """Rows written before the applier recorded the page's text, and any skip where it
+    was unreadable. The label stands on its own; nothing renders an empty quotation."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=79, shortlisted=False, reason="location_mismatch",
+           rerank=7.50)
+    db.insert_jobs(RUN, [_job("j6")])
+
+    block = _job_block(overview.build(_snapshot(db), RUN), "j6")
+    assert "Outside your search locations" in block
+    assert "page says" not in block
+
+
 def test_the_last_section_is_ordered_by_the_cross_encoder(tmp_path):
     db = _populated(tmp_path)
     _match(db, RUN, "j6", score=0, skipped=True, reason="rerank_below_cutoff",

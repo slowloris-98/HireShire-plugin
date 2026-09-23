@@ -1014,6 +1014,60 @@ class Database:
             ).fetchall()
         return [json.loads(r["raw_json"]) for r in rows]
 
+    def mark_not_shortlisted(self, job_id: str, reason: str,
+                             location: str | None = None) -> int:
+        """Retire a shortlisted job on a verdict reached after it was scored.
+
+        The applier's location check is the only caller: the posting page states a
+        location outside the user's list, which is a fact about the job and will be
+        the same on every future sweep. Clearing `shortlisted` is what takes it out of
+        `load_pending_applications`, which re-queued it every sweep for the whole
+        `backlog_hours` window — one browser session each time, to re-read a location
+        that cannot change.
+
+        **`skipped` is deliberately left alone.** It is what `_judged_sql` and both
+        copies of `_never_scored` read to decide whether a verdict stands behind
+        `relevance_score`, and this job *was* judged — it has a real LLM score. Setting
+        it would blank the score in the results CSV and file the row among the
+        never-scored ones, the same misreading the CSV leaves `llm_score` empty to
+        avoid.
+
+        **No `run_id` filter.** `matches` is keyed `(run_id, job_id)` and a job reached
+        from the backlog belongs to an earlier sweep, so every row for it is updated —
+        which also avoids leaving the stale duplicate the lifetime page would then
+        render twice, once under its real verdict and once under this one.
+
+        `AND shortlisted = 1` makes it idempotent and a no-op for a job already
+        retired. Returns how many rows changed, so the caller can log a miss.
+
+        Note this lowers the `Jobs shortlisted` tile and the applier bar's denominator
+        (`overview_counts`, `lifetime_progress`), retroactively and on both scopes.
+        That is correct — the job is no longer waiting to be applied to — and is not a
+        discrepancy to reconcile.
+        """
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT run_id, raw_json FROM matches "
+                "WHERE job_id = ? AND shortlisted = 1",
+                (job_id,),
+            ).fetchall()
+            for row in rows:
+                raw = json.loads(row["raw_json"])
+                # The column and the blob both, because they are read from different
+                # places: `_match_record` overrides `shortlisted` from the column but
+                # takes `skip_reason` straight out of `raw_json`. `applier_location`
+                # is an extra key rather than a `MatchResult` field — the blob is
+                # loaded as a plain dict, and nothing else needs to know about it.
+                raw["skip_reason"] = reason
+                if location:
+                    raw["applier_location"] = location
+                self._conn.execute(
+                    "UPDATE matches SET shortlisted = 0, skip_reason = ?, "
+                    "raw_json = ? WHERE run_id = ? AND job_id = ?",
+                    (reason, json.dumps(raw), row["run_id"], job_id),
+                )
+        return len(rows)
+
     # -- seen ----------------------------------------------------------------
 
     def seen_ids(self) -> set[str]:

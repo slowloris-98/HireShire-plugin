@@ -4,6 +4,31 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.13.2] — 2026-09-22
+
+### Fixed
+
+- **A job in the wrong location is no longer re-opened every sweep.** When the applier
+  found a posting was somewhere you had not asked for, it set the job aside but never
+  wrote that down — so every sweep for the next three days picked it up again, opened a
+  browser and re-read the same page, up to about 36 times per job. One job was reopened
+  eleven times before this was caught, and the wasted sessions were compounding sweep
+  over sweep. The job is now set aside once and moves to **Jobs Filtered** on your
+  dashboard, with its score and a line saying which location it was, instead of sitting
+  under Jobs Shortlisted as though it were still queued.
+- **The location check now uses your own list.** It was comparing against six
+  hard-coded words and never read your settings, so a job in `Arlington, VA` could be
+  set aside as out of area even though Virginia is on your list. It now reads the same
+  locations `/hireshire:setup` saved for the job search, and works them out rather than
+  matching them letter by letter — `Arlington, VA` counts as the United States. When
+  the posting is vague about where the job is, it applies rather than guessing.
+
+Two notes if you look at the files a sweep writes: the results CSV shows these jobs
+with their real score and `shortlisted` empty, while `<stamp>_results.json` still lists
+them, because that file records what the sweep handed the applier. And a dashboard from
+an *older* sweep is a saved file that is never rewritten, so it keeps showing such a job
+under Jobs Shortlisted; the lifetime dashboard is always current.
+
 ## [0.13.1] — 2026-09-22
 
 ### Fixed

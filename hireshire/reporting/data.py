@@ -53,6 +53,10 @@ REASON_LABELS = {
     # verbatim, which reads as a bug.
     "rerank_below_top_k": "Over budget — lost the top-K race",
     "duplicate_of_cluster": "Duplicate requisition — verdict copied from its cluster",
+    # Written by the applier, not the matcher: the posting page stated a location
+    # outside `scraper.location_filter`. The job keeps its LLM score — it was judged,
+    # then found to be somewhere the user will not work.
+    "location_mismatch": "Outside your search locations",
     "no_content_text": "No description text to score",
     "api_error": "Scoring call failed",
 }

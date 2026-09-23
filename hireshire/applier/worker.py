@@ -26,6 +26,11 @@ Three rules shape this file:
   the backlog (`Database.load_pending_applications`) retries it on a later sweep. That
   matters because the matcher retires a judged job: without the backlog, a broken MCP
   server would lose a whole sweep's shortlist for good.
+* **A location skip is a verdict too, and is the one that retires a job without an
+  `applied` row.** The posting page states a location outside `location_filter`, which
+  will read the same on every future sweep, so `Database.mark_not_shortlisted` clears
+  `shortlisted` and the backlog stops seeing it. No `applied` row, because there is
+  nothing for the user to do — it belongs under Jobs Filtered, not Needs Attention.
 * **Never apply twice.** A timeout, or a clean exit with an unreadable result, may
   come *after* the submit click, so those are recorded as `error` with a message
   telling the user to check — the one case where the job is retired on something other
@@ -70,6 +75,17 @@ BREAKER_LIMIT = 3
 EXCLUDED_REASON = ("Requires human verification — this employer's portal needs an "
                    "account login, so apply to it yourself.")
 
+#: The `skip_reason` written onto the match row when the posting page states a location
+#: the user does not accept. A VERDICT: same page, same `location_filter`, same answer
+#: on every future sweep, so the job is retired rather than re-driven.
+#:
+#: Unlike `exclude_companies` this writes no `applied` row, and the difference is
+#: deliberate. An account-login portal is something the user can go and do by hand, so
+#: it belongs under Needs Attention. A job in the wrong country is not — there is
+#: nothing for them to do about it — so it is un-shortlisted into Jobs Filtered
+#: instead, where it reads as what it is: judged, scored, and out of scope.
+LOCATION_SKIP_REASON = "location_mismatch"
+
 
 class ApplyOutcome(BaseModel):
     """What one apply session reports back, as its `--json-schema` result."""
@@ -77,6 +93,10 @@ class ApplyOutcome(BaseModel):
     status: Literal["submitted", "error", "skipped_location"]
     screenshot: Optional[str] = None
     error: Optional[str] = None
+    #: On a `skipped_location`, the location text the page stated. Recorded on the
+    #: match row so the overview page can say which location was rejected, rather
+    #: than leaving the user to reopen the posting to find out.
+    location: Optional[str] = None
 
 
 class ApplyLaunchError(RuntimeError):
@@ -248,6 +268,11 @@ def build_prompt(job: dict, settings: ApplierSettings, dirs: SessionDirs,
             "requires_sponsorship": settings.requires_sponsorship,
             "willing_to_relocate": settings.willing_to_relocate,
         },
+        # The user's own list, copied from `scraper.location_filter` — see
+        # `ApplierSettings.location_filter`. The session re-checks the location
+        # because the scraper read board metadata and the session reads the rendered
+        # page; there is one list so the two cannot disagree. Empty means no check.
+        "accepted_locations": settings.location_filter,
         "resume_path": str(dirs.resume_path),
         "screenshot_path": str(dirs.out_dir / _screenshot_name(job)),
         "generate_cover_letter": settings.generate_cover_letter,
@@ -462,8 +487,25 @@ async def run_apply_worker(
             state["consecutive"] = 0
 
             if outcome.status == "skipped_location":
+                # A verdict, so the job is retired — but by un-shortlisting it, not by
+                # an `applied` row. It used to be counted and dropped, which left it
+                # shortlisted with no application, so `load_pending_applications`
+                # re-queued it every sweep for the whole `backlog_hours` window: one
+                # browser session each time to re-read a location that cannot change,
+                # up to ~36 times, while it sat under Jobs Shortlisted as though the
+                # applier still had it to do.
                 stats["skipped_location"] += 1
-                logger.info("Skipped (location): %s — %s", company, title)
+                where = outcome.location or "unstated"
+                logger.info("Skipped (location): %s — %s — page says %s",
+                            company, title, where)
+                rows = await asyncio.to_thread(
+                    db.mark_not_shortlisted, job_id, LOCATION_SKIP_REASON,
+                    outcome.location,
+                )
+                if not rows:
+                    logger.warning(
+                        "No shortlisted match row to retire for %s — %s; it may be "
+                        "re-queued from the backlog.", company, title)
             else:
                 await asyncio.to_thread(
                     db.record_applied, job_id, company, title, job.get("job_url") or "",

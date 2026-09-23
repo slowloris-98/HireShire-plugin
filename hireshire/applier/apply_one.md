@@ -27,9 +27,20 @@ of a form, the outcome is `error`. Stop there.
 
 ## 2. Location check
 
-If the page states a location and it does not case-insensitively contain any of
-`united states`, `us`, `remote`, `india`, `worldwide`, `anywhere`, the outcome is
-`skipped_location`. Stop there. No location text at all means continue.
+`accepted_locations` in the inputs is the applicant's own list of places they will work.
+**If it is empty or absent, skip this step entirely** and go on to step 3.
+
+Otherwise: if the page states no location at all, continue. If it states one, decide
+whether that location falls **inside** any accepted one, judged the way a person would.
+The list mixes countries, states and cities, and is written for a different tool — do
+**not** string-match against it. `Arlington, VA` is inside `united states`; `Bengaluru`
+is inside `india`; a remote role open to an accepted country is inside it. Only when the
+stated location falls inside none of them is the outcome `skipped_location`, and then
+you stop there and report the page's location text.
+
+When it is genuinely ambiguous — a bare "Remote" with no country, a multi-site posting
+that lists an accepted location among others — continue with the application. A missed
+skip costs one form; a wrong skip retires the job permanently.
 
 ## 3. Identity fields
 
@@ -116,6 +127,9 @@ Exactly one of:
   `Required question: graduation date (not on resume).`,
   `Sign-in required before the form appears.`,
   `Submit clicked but not confirmed — check before applying again.`
-- `skipped_location` — the page states a location outside the accepted list.
+- `skipped_location` — the page states a location that falls inside none of
+  `accepted_locations` (step 2). Put the page's **exact location text** in `location`,
+  e.g. `London, United Kingdom`. It is shown to the applicant as the reason the job was
+  set aside, so copy what the page says rather than summarising it.
 
 Include `screenshot` whenever you took one.

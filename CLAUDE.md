@@ -679,6 +679,47 @@ Four things about the applier that are easy to break:
   Recording it retires the job, so lifting an exclusion later does **not** bring it
   back — the same open half of known issue A4, accepted for the same reason the
   ambiguous-ending rule accepts it.
+- **A location skip is a verdict too, and is the one that retires a job with no
+  `applied` row.** The posting page states a location outside the user's list, which
+  reads the same on every future sweep, so `Database.mark_not_shortlisted` clears
+  `shortlisted` and writes `location_mismatch` — the backlog's `WHERE m.shortlisted = 1`
+  is what then stops seeing it. It had the `exclude_companies` bug and worse: with no
+  retry counter anywhere, `poll_interval_hours: 2` and `backlog_hours: 72` re-drove one
+  job ~36 times, a full `claude -p` and browser session each time to re-read a location
+  that cannot change.
+
+  Three things about it that are easy to get wrong:
+
+  - **No `applied` row, and that is the difference from `exclude_companies`.** An
+    account-login portal is something the user can go and do by hand, so it belongs
+    under Needs Attention; a job in the wrong country is not, so it is un-shortlisted
+    into Jobs Filtered instead. This also keeps the progress-bar rule below true as
+    written.
+  - **`skipped` must stay 0.** It is what `_judged_sql` and both copies of
+    `_never_scored` read, and this job *was* judged — it carries a real LLM score.
+    Setting it would blank that score in the results CSV and file the row among the
+    never-scored ones. For the same reason `overview._job_entry` needs
+    `location_mismatch` in `_SCORED_REASONS` but **not** in `judged`: the two look
+    interchangeable and drive different things — the score column and the reason label
+    — and Jobs Filtered is the section whose entire question is why.
+  - **`mark_not_shortlisted` takes no `run_id`.** `matches` is keyed `(run_id, job_id)`
+    and a backlog job's row belongs to an earlier sweep, so every row for the job is
+    updated; leaving one shortlisted would put it straight back in the backlog and
+    render it twice on the lifetime page under contradicting labels. It therefore lowers
+    the `Jobs shortlisted` tile and the applier bar's denominator retroactively, at both
+    scopes — correct, since the job is no longer waiting on the applier, and not a
+    discrepancy to reconcile.
+
+  **There is one location list, and the scraper owns it.** `ApplierSettings.location_filter`
+  is *derived*: `load_applier_config` overwrites it from `scraper.location_filter` on
+  every load, so a value in `applier.yaml` never wins and setup writes it in one place.
+  `apply_one.md` used to hardcode six strings and read no config at all, which is how a
+  job scraped as `Arlington, VA, United States` and rendered as `Arlington, VA` was
+  skipped against a list the user never wrote. The session **infers** rather than
+  string-matches — the list mixes countries, states and cities (107 entries on a real
+  install) and a page rarely contains any of them verbatim — and an ambiguous location
+  continues with the application, because a missed skip costs one form while a wrong
+  skip retires the job for good.
 - **Ambiguous endings are recorded, deliberately.** A timeout or an unreadable result
   may come after the submit click, so it is written as an `error` telling the user to
   check. Retrying it would risk a second application to the same employer, which is

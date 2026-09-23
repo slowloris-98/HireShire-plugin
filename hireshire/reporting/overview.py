@@ -250,6 +250,16 @@ def _cross(job: dict) -> str:
 #: question's own wording> (not on resume)", short enough to stay one line on a laptop.
 _REASON_CHARS = 140
 
+#: Reasons whose row still has a real LLM verdict behind `relevance_score`, so the
+#: score column prints a number rather than an em dash.
+#:
+#: Deliberately WIDER than `_job_entry`'s `judged`, which asks a different question:
+#: whether to print a reason label under the title. The two used to be one tuple, and
+#: merging them again silently breaks one of them. `location_mismatch` needs both — the
+#: score, because the judge really did read the posting, and the label, because Jobs
+#: Filtered is the section whose entire question is why a job is there.
+_SCORED_REASONS = ("", "duplicate_of_cluster", "location_mismatch")
+
 
 def _attention_reason(job: dict) -> tuple[str, str]:
     """`(line, full)`: the one line saying why an application needs the user, and the
@@ -294,7 +304,7 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
     """
     reason = job.get("skip_reason") or ""
     judged = reason in ("", "duplicate_of_cluster")
-    score = job.get("relevance_score") if judged else None
+    score = job.get("relevance_score") if reason in _SCORED_REASONS else None
     shortlisted = bool(job.get("shortlisted"))
     url = job.get("absolute_url") or ""
     title = job.get("title") or ""
@@ -306,6 +316,12 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
     # sit under the title, which keeps the six columns scannable and — the part that
     # matters — keeps a *why* on the section whose only question is why.
     sub = "" if judged else data.reason_label(reason)
+    # The location the applier's session actually read off the page. Worth naming: the
+    # bare label says a job is out of scope, this says which place put it there, and
+    # the alternative is reopening the posting to find out. Absent on rows written
+    # before the applier recorded it, and on any skip where the page text was unreadable.
+    if reason == "location_mismatch" and job.get("applier_location"):
+        sub = f'{sub} — page says "{job["applier_location"]}"'
     tip = ""
     if attention:
         # The reason replaces the funnel's label: this job cleared the funnel, and

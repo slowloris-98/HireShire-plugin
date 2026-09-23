@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from hireshire.applier import config as applier_config
 from hireshire.applier import worker
 from hireshire.applier.config import ApplierSettings
 from hireshire.storage.db import Database
@@ -205,6 +206,71 @@ def test_the_session_runs_in_the_workspace_so_the_resume_can_be_uploaded(
     assert Path(out_dir).is_relative_to(ws), "the server refuses to write outside cwd"
 
 
+def _write_configs(tmp_path, scraper_yaml: str) -> Path:
+    applier = tmp_path / "applier.yaml"
+    applier.write_text("settings:\n  enable_applier: true\n", encoding="utf-8")
+    (tmp_path / "scraper.yaml").write_text(scraper_yaml, encoding="utf-8")
+    return applier
+
+
+@pytest.mark.parametrize("yaml_text, expected", [
+    ("settings:\n  location_filter:\n    - united states\n    - india\n",
+     ["united states", "india"]),
+    ("settings:\n  location_filter: []\n", []),                    # no check at all
+    ("settings:\n  location_filter: remote\n", ["remote"]),        # a bare string
+    ("settings:\n  location_filter:\n    - ' usa '\n    - '  '\n", ["usa"]),
+    ("settings: {}\n", []),                                        # key absent
+    ("settings:\n  location_filter: 7\n", []),                     # not a list
+    ("this: [is: not: yaml\n", []),                                # unreadable
+])
+def test_the_location_list_comes_from_the_scraper(tmp_path, monkeypatch, yaml_text,
+                                                  expected):
+    """One list, and the scraper owns it. A malformed or missing file must leave the
+    applier checking nothing rather than failing to load — the same trade
+    `reporting.data._matcher_settings` makes."""
+    applier = _write_configs(tmp_path, yaml_text)
+    monkeypatch.setattr(applier_config.paths, "config_file", lambda name: tmp_path / name)
+
+    cfg = applier_config.load_applier_config(applier)
+    assert cfg.settings.location_filter == expected
+
+
+def test_a_location_list_in_applier_yaml_loses_to_the_scraper(tmp_path, monkeypatch):
+    """The field is derived, not user-set. A stale copy in `applier.yaml` — hand-edited,
+    or left by an install that wrote it — must not be what the session is told."""
+    applier = tmp_path / "applier.yaml"
+    applier.write_text(
+        "settings:\n  enable_applier: true\n  location_filter: [mars]\n",
+        encoding="utf-8")
+    (tmp_path / "scraper.yaml").write_text(
+        "settings:\n  location_filter: [india]\n", encoding="utf-8")
+    monkeypatch.setattr(applier_config.paths, "config_file", lambda name: tmp_path / name)
+
+    assert applier_config.load_applier_config(applier).settings.location_filter == ["india"]
+
+
+def test_the_session_is_given_the_users_own_location_list(tmp_path, launcher):
+    """`apply_one.md` used to hardcode six strings and never read config, so a job
+    scraped as `Arlington, VA, United States` and rendered as `Arlington, VA` was
+    skipped against a list the user never wrote. There is one list now, and this is
+    the only path it reaches the session by."""
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1")],
+         settings=_settings(tmp_path, location_filter=["united states", "india"]))
+
+    assert _inputs(calls[0])["accepted_locations"] == ["united states", "india"]
+
+
+def test_an_empty_location_list_still_builds_a_prompt(tmp_path, launcher):
+    """Empty means no check at all, matching the scraper. The branch itself is prose
+    in the skill, so what is pinned here is that the key arrives empty rather than
+    missing — an absent key reads to the session as "no list given"."""
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1")], settings=_settings(tmp_path, location_filter=[]))
+
+    assert _inputs(calls[0])["accepted_locations"] == []
+
+
 # --- the browser server's own output -----------------------------------------
 
 def _output_dir(call) -> Path:
@@ -376,12 +442,87 @@ def test_submitted_and_error_outcomes_are_recorded(tmp_path, launcher):
     assert stats["submitted"] == 1 and stats["error"] == 1
 
 
-def test_a_location_skip_is_not_recorded(tmp_path, launcher):
+def test_a_location_skip_retires_the_job(tmp_path, launcher):
+    """It used to be counted and dropped on the floor: no `applied` row and still
+    shortlisted, so `load_pending_applications` re-queued it every sweep for the whole
+    `backlog_hours` window — one browser session each time to re-read a location that
+    cannot change. A location is a verdict, so the job is un-shortlisted instead.
+
+    Still no `applied` row, unlike an excluded employer: there is nothing for the user
+    to do about a job in the wrong country, so it belongs under Jobs Filtered rather
+    than Needs Attention. And `skipped` must stay falsy — the judge really did read
+    this posting, and setting it would blank a real score in the results CSV."""
+    _, script, _ = launcher
+    script.append(_outcome(status="skipped_location", location="London, UK"))
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    stats, _ = _run(tmp_path, [_job("j1")], db=db)
+
+    assert _statuses(db) == {} and stats["skipped_location"] == 1
+    (row,) = db.load_all_matches("r0")
+    assert row["shortlisted"] is False
+    assert row["skip_reason"] == worker.LOCATION_SKIP_REASON
+    assert not row.get("skipped"), "a judged job must keep its score"
+    assert row["relevance_score"] == 80
+    assert row["applier_location"] == "London, UK"
+
+
+def test_a_retired_location_skip_leaves_the_backlog(tmp_path, launcher):
+    """The whole point of the change: the only thing that stopped it being re-driven
+    every sweep for `backlog_hours`."""
+    _, script, _ = launcher
+    script.append(_outcome(status="skipped_location", location="Berlin"))
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    _run(tmp_path, [_job("j1")], db=db)
+
+    since = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    assert db.load_pending_applications(since) == []
+
+
+def test_a_location_skip_retires_the_job_in_every_run_that_shortlisted_it(
+        tmp_path, launcher):
+    """`matches` is keyed `(run_id, job_id)` and a backlog job's row belongs to an
+    earlier sweep, so `mark_not_shortlisted` takes no `run_id`. Updating only one row
+    would leave the other shortlisted — back in the backlog, and rendered a second
+    time on the lifetime page under a contradicting label."""
+    _, script, _ = launcher
+    script.append(_outcome(status="skipped_location", location="Paris"))
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    _match(db, "r1", "j1", score=75)
+    _run(tmp_path, [_job("j1")], db=db)
+
+    for run_id in ("r0", "r1"):
+        (row,) = db.load_all_matches(run_id)
+        assert row["shortlisted"] is False, run_id
+        assert row["skip_reason"] == worker.LOCATION_SKIP_REASON, run_id
+
+
+def test_retiring_a_job_twice_is_a_no_op(tmp_path):
+    """`AND shortlisted = 1` makes it idempotent, so a job reached again through some
+    other path does not churn rows or overwrite a later verdict."""
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+
+    assert db.mark_not_shortlisted("j1", worker.LOCATION_SKIP_REASON, "London") == 1
+    assert db.mark_not_shortlisted("j1", worker.LOCATION_SKIP_REASON, "Berlin") == 0
+    (row,) = db.load_all_matches("r0")
+    assert row["applier_location"] == "London"
+
+
+def test_a_location_skip_with_no_location_text_still_retires_the_job(tmp_path, launcher):
+    """`location` is optional on the outcome, and a session that omits it must not
+    leave the job looping. The page just renders the bare label."""
     _, script, _ = launcher
     script.append(_outcome(status="skipped_location"))
-    stats, db = _run(tmp_path, [_job("j1")])
-    assert _statuses(db) == {}
-    assert stats["skipped_location"] == 1
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    _run(tmp_path, [_job("j1")], db=db)
+
+    (row,) = db.load_all_matches("r0")
+    assert row["shortlisted"] is False
+    assert "applier_location" not in row
 
 
 def test_excluded_and_already_applied_jobs_launch_nothing(tmp_path, launcher):
