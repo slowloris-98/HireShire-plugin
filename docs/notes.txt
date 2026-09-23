@@ -1,8 +1,8 @@
 1. Option to move jobs from needs attention / shortlisted / filtered / etc section into the jobs applied section. Basically if a user applis on a job manually then they should have a option to update it in the db and move those jobs into the applied section.
+    a human check to approve before applying into jobs
 
-2. When a old failed scoring or applying is attemptes it should update both the db and the dashboard.
-2. check how many times do old/failed applied attempts try to apply again, perplexity and a couple of shortlisted jobs are being tried in every run without success.
-3. introduce resume tuning.
+2. introduce resume tuning.
+3. db balooning for users over time
 
 
 4. setup recommendations:
@@ -11,6 +11,10 @@
 
 
 
+Check:
 
+meta 
+amazon
+scraping working ?
 
 
