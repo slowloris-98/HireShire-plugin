@@ -78,6 +78,11 @@ Tell the user, plainly:
   sweep also leaves its own copy in its run folder. The results root is
   `<workspace_dir>/hireshire_run_results/`, or `<DATA>/results/` when `workspace_dir`
   is empty.
+- **What to do about a job the sweep could not finish:** rows under Needs Attention, and
+  under Jobs Shortlisted, each carry two buttons — *I applied to this* and *Not pursuing
+  this*. A local page cannot write to the database, so a button copies a
+  `/hireshire:mark-applied` command; pasting it into Claude records the outcome and
+  rewrites the dashboard.
 - **Where each sweep's results land:**
   `<results root>/<date>_<time>/<date>_<time>_results.csv` — every job that reached the
   funnel, best first. A blank `llm_score` means no judge read that job, not a score of

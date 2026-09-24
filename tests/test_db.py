@@ -1,10 +1,11 @@
 """Unit tests for the shared SQLite storage layer (hireshire.storage.db)."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from hireshire.models.job import Job, Location
-from hireshire.storage.db import PHASE_SCRAPE, Database
+from hireshire.storage.db import DECLINED_BY_USER, PHASE_SCRAPE, Database
 
 
 def _job(job_id: str, token: str = "acme") -> Job:
@@ -166,3 +167,121 @@ def test_columns_are_added_to_a_database_that_predates_them(tmp_path):
                     "2026-07-07T00:00:00+00:00", '{"job_id": "j1"}',
                     encoder_score=0.5)
     assert db.load_all_matches("r")[0]["job_id"] == "j1"
+
+
+# -- outcomes the user records by hand ---------------------------------------
+
+
+def _shortlisted(db: Database, job_id: str, run_id: str, *, score: int = 85,
+                 url: str = "https://example.com/j") -> None:
+    """One shortlisted, judged match row — what the applier is handed.
+
+    `raw_json` carries the score and `skipped` because `load_all_matches` reads the
+    record out of the blob and only overrides a few columns, so a minimal blob would
+    hide exactly the keys these tests are about.
+    """
+    raw = json.dumps({
+        "job_id": job_id, "absolute_url": url, "board_token": "acme",
+        "title": "Backend Engineer", "relevance_score": score, "skipped": False,
+        "skip_reason": None,
+    })
+    db.upsert_match(run_id, job_id, "acme", "Backend Engineer", score, True, False,
+                    None, run_id, "2026-07-07T00:00:00+00:00", raw)
+
+
+def _attempt(db: Database, job_id: str, status: str = "error") -> None:
+    """An application that stopped short — a Needs Attention row."""
+    db.record_applied(job_id, "acme", "Backend Engineer", "https://example.com/j",
+                      "2026-07-07T01:00:00+00:00", status, "shot.png",
+                      "Stuck on a required question — check whether it was submitted.")
+
+
+def test_marking_an_attempt_applied_promotes_the_row_it_already_has(tmp_path):
+    """The Needs Attention case: the columns a pruned install depends on survive.
+
+    `record_applied` is INSERT OR REPLACE, so re-recording through it would blank
+    board_token, title and absolute_url — which are exactly what
+    `load_applied_matches` falls back on once the job's `matches` rows are gone.
+    """
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    _shortlisted(db, "j1", run_id)
+    _attempt(db, "j1")
+
+    assert db.mark_applied_by_hand("j1", "2026-07-08T09:00:00+00:00") == "updated"
+
+    row = next(r for r in db.load_applied() if r["job_id"] == "j1")
+    assert row["status"] == "submitted"
+    assert row["applied_at"] == "2026-07-08T09:00:00+00:00"
+    # The reason it needed attention is discharged; the capture of the form is not.
+    assert row["error"] is None
+    assert row["screenshot"] == "shot.png"
+    assert (row["board_token"], row["title"]) == ("acme", "Backend Engineer")
+    assert row["absolute_url"] == "https://example.com/j"
+
+
+def test_marking_a_shortlisted_job_applied_builds_its_row_from_the_match(tmp_path):
+    """The Shortlisted case: no attempt exists, so identity comes from `matches`."""
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    _shortlisted(db, "j1", run_id, url="https://example.com/jobs/j1")
+
+    assert db.mark_applied_by_hand("j1", "2026-07-08T09:00:00+00:00") == "inserted"
+
+    row = next(r for r in db.load_applied() if r["job_id"] == "j1")
+    assert row["status"] == "submitted"
+    assert row["title"] == "Backend Engineer"
+    assert row["board_token"] == "acme"
+    assert row["absolute_url"] == "https://example.com/jobs/j1"
+    # And it is out of the applier's reach for good.
+    assert db.load_pending_applications("1970-01-01T00:00:00+00:00") == []
+
+
+def test_marking_applied_is_idempotent_and_refuses_a_job_it_cannot_find(tmp_path):
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    _shortlisted(db, "j1", run_id)
+
+    assert db.mark_applied_by_hand("j1", "2026-07-08T09:00:00+00:00") == "inserted"
+    assert db.mark_applied_by_hand("j1", "2026-07-09T09:00:00+00:00") == "updated"
+    assert len([r for r in db.load_applied() if r["job_id"] == "j1"]) == 1
+
+    # Nothing on record names this job, so nothing is invented for it.
+    assert db.mark_applied_by_hand("nope", "2026-07-08T09:00:00+00:00") == "unknown"
+    assert [r["job_id"] for r in db.load_applied()] == ["j1"]
+
+
+def test_declining_a_job_clears_the_attempt_and_un_shortlists_it(tmp_path):
+    """A decision not to apply is not an application, so it leaves no `applied` row.
+
+    Any status other than 'submitted' renders under Needs Attention by design, so the
+    row has to go rather than change — and the job has to stop being shortlisted, or
+    the backlog hands it straight back to the applier.
+    """
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    _shortlisted(db, "j1", run_id)
+    _attempt(db, "j1", status="excluded")
+
+    assert db.decline_job("j1") == {"deleted": True, "unshortlisted": 1}
+
+    assert db.applied_ids() == set()
+    row = next(r for r in db.load_all_matches(run_id) if r["job_id"] == "j1")
+    assert row["shortlisted"] in (0, False)
+    assert row["skip_reason"] == DECLINED_BY_USER
+    # It was judged, and that must survive: `skipped` is what blanks the score in the
+    # results CSV and files a row among the never-scored ones.
+    assert row["skipped"] in (0, False)
+    assert row["relevance_score"] == 85
+    assert db.load_pending_applications("1970-01-01T00:00:00+00:00") == []
+
+
+def test_declining_a_shortlisted_job_with_no_attempt_still_retires_it(tmp_path):
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    _shortlisted(db, "j1", run_id)
+
+    assert db.decline_job("j1") == {"deleted": False, "unshortlisted": 1}
+    # Idempotent: the second call finds nothing left to change.
+    assert db.decline_job("j1") == {"deleted": False, "unshortlisted": 0}
+    assert db.load_shortlisted(run_id) == []

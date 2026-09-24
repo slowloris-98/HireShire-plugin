@@ -8,6 +8,23 @@ All notable changes to this plugin are documented here. Versions follow
 
 ### Added
 
+- **You can now tell HireShire what you did about a job yourself.** Every job under
+  Needs Attention or Jobs Shortlisted on the dashboard carries two buttons: *I applied
+  to this* and *Not pursuing this*. Clicking one copies a command; paste it into Claude
+  and the job moves, and the dashboard is rewritten straight away. You can also just run
+  `/hireshire:mark-applied` and pick from a list.
+
+  Until now those jobs were stuck. When an application stopped short of submitting, when
+  an employer's portal needed an account login, or when the retry window closed, the job
+  sat under Needs Attention for good — however many times you went and applied yourself.
+  And a shortlisted job you applied to before the sweep reached it would be applied to
+  a second time.
+
+  The two answers do different things. *I applied to this* counts toward Jobs applied.
+  *Not pursuing this* records no application at all: the job moves to Jobs Filtered,
+  labelled, and HireShire stops offering it to the applier. Neither can be undone, so
+  the list shows you what you are about to mark before it writes anything.
+
 - **Amazon, Meta and Microsoft jobs are now part of every sweep.** HireShire now reads
   their career sites directly, as it already did for Apple, Google and Intuit. It runs
   quietly in the background like the rest of the sweep: no browser window opens and no

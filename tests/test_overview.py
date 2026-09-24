@@ -18,7 +18,7 @@ from hireshire.applier import worker
 from hireshire.models.job import Job, Location
 from hireshire.reporting import data, overview
 from hireshire.reporting.render import duration, e
-from hireshire.storage.db import Database
+from hireshire.storage.db import DECLINED_BY_USER, Database
 
 RUN = "2026-09-09T06-51-12Z"
 OLDER = "2026-09-01T00-00-00Z"
@@ -930,3 +930,120 @@ def test_an_empty_install_still_renders(tmp_path):
     assert "ov-tail-data" not in html
     # No filter box over zero rows, and no script shipped to wire one.
     assert "filterable" not in html
+
+
+# --- outcomes the user records by hand -----------------------------------------
+
+
+def test_a_hand_marked_application_moves_to_jobs_applied(tmp_path):
+    """The Needs Attention dead end, cleared. Three of the applier's verdicts hand the
+    job back to the user, and until this existed there was nothing to do about it: the
+    row stayed in that section for good however many times they applied by hand."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=80, shortlisted=True, rerank=7.90)
+    _apply(db, "j6", "error", "Stuck on a required question — check whether it was sent.")
+    assert _section_of(_snapshot(db), "j6") == ["attention"]
+
+    db.mark_applied_by_hand("j6", "2026-09-10T09:00:00+00:00")
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j6") == ["applied"]
+    # The tile counts submissions, so it moves with the section — both key off the same
+    # 'submitted' literal, which is why nothing else had to be taught about this.
+    assert db.overview_counts(RUN)["applied"] == 2
+    assert db.overview_counts(None)["applied"] == 2
+
+
+def test_a_job_the_user_declined_is_filtered_and_keeps_its_score(tmp_path):
+    """A decision not to apply is not an application, so it writes no `applied` row.
+
+    It lands in Jobs Filtered under a label, exactly as the applier's location verdict
+    does, and it keeps the number the judge gave it — `skipped` stays 0, which is what
+    separates a job that lost from one nothing ever read.
+    """
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=80, shortlisted=True, rerank=7.90)
+    _apply(db, "j6", "excluded", worker.EXCLUDED_REASON)
+    assert _section_of(_snapshot(db), "j6") == ["attention"]
+
+    db.decline_job("j6")
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j6") == ["filtered"]
+    # Not an application, so the tile does not move.
+    assert db.overview_counts(RUN)["applied"] == 1
+
+    block = _job_block(overview.build(snap, RUN), "j6")
+    assert data.reason_label(DECLINED_BY_USER) in block
+    # The score column prints the verdict, not an em dash: the judge did read this one.
+    assert ">80<" in block
+
+
+def test_declining_a_shortlisted_job_takes_it_off_the_applier_s_list(tmp_path):
+    """The other half of the feature: a job the user applied to — or gave up on —
+    before the sweep reached it must not be applied to anyway."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=80, shortlisted=True, rerank=7.90)
+    assert _section_of(_snapshot(db), "j6") == ["shortlisted"]
+
+    db.decline_job("j6")
+
+    assert _section_of(_snapshot(db), "j6") == ["filtered"]
+    assert db.load_pending_applications("1970-01-01T00:00:00+00:00") == []
+
+
+def test_both_hand_recorded_states_keep_the_partition_whole(tmp_path):
+    """The page's one real promise, with the two new states present at both scopes."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j6"), _job("j7")])
+    _match(db, RUN, "j6", score=80, shortlisted=True, rerank=7.90)
+    _match(db, RUN, "j7", score=79, shortlisted=True, rerank=7.80)
+    _apply(db, "j6", "error", "Stopped short.")
+    db.mark_applied_by_hand("j6", "2026-09-10T09:00:00+00:00")
+    db.decline_job("j7")
+
+    for run_id in (RUN, None):
+        snap = _snapshot(db, run_id)
+        for job_id in ("j1", "j2", "j3", "j4", "j5", "j6", "j7"):
+            assert len(_section_of(snap, job_id)) == 1, (run_id, job_id)
+
+
+def test_only_the_sections_the_user_must_act_on_carry_buttons(tmp_path):
+    """A `file://` page cannot write to the database, so the button copies the command
+    that can. It belongs on the two sections where the user is the one who has to act —
+    not on a finished application, and not on a job the funnel already dropped."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=80, shortlisted=True, rerank=7.90)
+    _apply(db, "j6", "error", "Stopped short.")
+
+    snap = _snapshot(db)
+    html = overview.build(snap, RUN)
+
+    # j6 needs attention, j1 is a finished application, j2 lost on its score.
+    assert 'data-mark="applied"' in _job_block(html, "j6")
+    assert 'data-mark="declined"' in _job_block(html, "j6")
+    assert "job-mark" not in _job_block(html, "j1")
+    assert "job-mark" not in _job_block(html, "j2")
+    # The command is the skill's, and the script that copies it shipped with the page.
+    assert overview._MARK_COMMAND == "/hireshire:mark-applied"
+    assert "navigator.clipboard" in html and "execCommand" in html
+
+
+def test_a_page_with_nothing_to_act_on_ships_no_mark_script(tmp_path):
+    """The same rule the other two scripts follow: no list, no script.
+
+    The *styling* ships either way, like every other rule in OVERVIEW_CSS — it is the
+    behaviour that is conditional, so this checks for the script and the buttons rather
+    than for the class name.
+    """
+    db = _db(tmp_path)
+    db.record_company(RUN, "acme", "greenhouse", "ok", 0, 0.1, None)
+    html = overview.build(_snapshot(db), RUN)
+    assert "navigator.clipboard" not in html
+    # The markup, not the attribute selector or the comment the stylesheet carries
+    # either way.
+    assert '<button type="button"' not in html

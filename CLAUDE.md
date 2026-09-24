@@ -24,7 +24,7 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 723 tests, no network, no model weights
+pytest                                # 772 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_only_jobs_reaching_the_cutoff_are_judged
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
@@ -486,6 +486,40 @@ first sentence). `apply_one.md` asks the session for exactly that line, and
 counts **`submitted` only**. It used to count every attempt, which is how known issue
 A4 hid: a form stuck on a question read as a finished application. Both halves stay
 in `applied_ids`, so a needs-attention job never also appears under Shortlisted.
+
+**The user can record either outcome by hand, and the two are deliberately
+asymmetric.** `/hireshire:mark-applied` over `scripts/jobs_cli.py` writes what the
+applier could not: `Database.mark_applied_by_hand` promotes the row to `submitted`,
+and `Database.decline_job` **deletes** it and un-shortlists the job with
+`DECLINED_BY_USER`. A declined job gets no `applied` row at all, and that is forced
+rather than chosen — every status that is not `submitted` renders under Needs
+Attention by design, so a "not pursuing" status would sit in the one section the
+feature exists to clear. It is the `location_mismatch` shape exactly: a verdict
+reached after scoring, so `skipped` stays 0 and the job keeps its LLM score in Jobs
+Filtered. Three consequences:
+
+- **The promotion is a narrow `UPDATE`, never `record_applied`.** That writer is
+  `INSERT OR REPLACE` on the primary key, so it would blank `board_token`, `title`
+  and `absolute_url` — the columns `load_applied_matches` falls back on once a job's
+  `matches` rows are pruned, which is exactly the old application being tidied up.
+- **A hand-marked application is indistinguishable from an automatic one**, because
+  the status written is plain `submitted`. A second "counts as applied" status would
+  have to be added to `overview_counts`, `run_progress`, `lifetime_progress` and
+  `data.overview_snapshot`, and each omission would be a silent undercount.
+  Provenance belongs in a new column, not a new status.
+- **The CLI rebuilds both pages itself**, from `last_run.json`. The pages are static
+  files only the engine rewrites, and between sweeps nothing rewrites them at all — so
+  without that call the user pastes the command, the database changes, and the page in
+  front of them does not. The same limit as everywhere else applies: `refresh` writes
+  the lifetime page and the newest run's page, so an older sweep's dashboard keeps
+  showing what was true when it ran.
+
+The buttons that carry this live in the row **body**, beside `Open posting →`, not in
+the `<summary>`: a `<button>` there fights the `<details>` element's own activation,
+and the six-column grid has no free cell. A `file://` page cannot write to SQLite, so
+the button copies the command rather than pretending to record anything — with an
+`execCommand` fallback and then a selectable `<code>`, because a local file is not
+reliably a secure context and `navigator.clipboard` can simply be absent.
 
 **All five sections read the same way, and the rows stay `<details>` for one
 load-bearing reason.** Each section is a filter box over a sticky six-column header
