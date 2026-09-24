@@ -228,7 +228,12 @@ Three things that trip people up:
    match, so `["united states"]`, `["remote"]`, `["london", "berlin"]` all work. One
    location is still a list. Empty list means everywhere.
 
-3. **Posting age**, in days → `scraper.max_age_hours` (multiply by 24).
+3. **Posting age, in hours** → `scraper.max_age_hours`. Offer **6 hours
+   (recommended)**, 12 hours and 24 hours, in that order; "Other" takes any number of
+   hours, and an answer given in days is multiplied by 24. Keep it at least as long as
+   the poll interval (question 9, default 4): a posting younger than the window at one
+   sweep but older by the next is never seen. If they later choose a poll interval
+   longer than this, raise this to match and tell them.
 
 4. **Match threshold, as a number from 0 to 100** → `threshold` on the **`matcher`**
    phase. Offer numbers — 75 recommended, plus a couple either side — and let "Other"

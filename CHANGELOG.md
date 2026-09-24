@@ -51,6 +51,9 @@ All notable changes to this plugin are documented here. Versions follow
   instead and your location filter narrows the results, so nothing you asked for is
   left out. If you are searching the United States and India, the searches are
   exactly what they were.
+- **Setup now asks how recent a posting must be in hours, not days.** It offers 6 hours
+  (recommended), 12 hours or 24 hours, so a sweep every few hours only reads what is
+  new. Your current setting is unchanged; re-run `/hireshire:setup` to pick one.
 
 ### Fixed
 
