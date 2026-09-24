@@ -821,7 +821,11 @@ Four things about the applier that are easy to break:
   invented. Do not widen the exception, and do not "restore" the strict rule without
   asking. Screening answers (`work_authorized`, `requires_sponsorship`,
   `willing_to_relocate`) come from setup, and `null` means never asked, which is
-  different from "no". Essays are written from the resume and the job description,
+  different from "no". The EEO self-identification answers (`gender`,
+  `race_ethnicity`, `disability`, `veteran_status`) come from setup too, as `Literal`
+  strings where `""` means never asked and the session **declines**, which is what it
+  did for every one of them before they existed. They are never inferred from the
+  name or the resume. Essays are written from the resume and the job description,
   never from the search profile, for the same reason the scorer never sees it.
 - **`applied_ids` is re-read before every launch**, so a job recorded since the queue
   was built is never applied to twice.

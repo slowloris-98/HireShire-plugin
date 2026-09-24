@@ -293,10 +293,17 @@ def build_prompt(job: dict, settings: ApplierSettings, dirs: SessionDirs,
             "email": settings.email,
             "phone": settings.phone,
             "linkedin_url": settings.linkedin_url,
+            "github_url": settings.github_url,
             "portfolio_url": settings.portfolio_url,
             "work_authorized": settings.work_authorized,
             "requires_sponsorship": settings.requires_sponsorship,
             "willing_to_relocate": settings.willing_to_relocate,
+            "self_identification": {
+                "gender": settings.gender,
+                "race_ethnicity": settings.race_ethnicity,
+                "disability": settings.disability,
+                "veteran_status": settings.veteran_status,
+            },
         },
         # The user's own list, copied from `scraper.location_filter` — see
         # `ApplierSettings.location_filter`. The session re-checks the location

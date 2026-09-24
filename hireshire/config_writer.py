@@ -29,7 +29,9 @@ from pydantic import ValidationError
 from ruamel.yaml import YAML
 
 from hireshire import paths
-from hireshire.applier.config import ApplierSettings
+from hireshire.applier.config import (
+    ApplierSettings, Disability, Gender, RaceEthnicity, VeteranStatus, answer_options,
+)
 from hireshire.config import ScraperSettings
 from hireshire.funnel.config import FunnelConfig
 from hireshire.matcher.config import MatcherSettings, TitleFilterConfig
@@ -258,9 +260,13 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 ("settings", "linkedin_url"), "str",
                 "LinkedIn profile URL, read off the resume. Empty if it has none.",
             ),
+            "github_url": FieldSpec(
+                ("settings", "github_url"), "str",
+                "GitHub profile URL, read off the resume. Empty if it has none.",
+            ),
             "portfolio_url": FieldSpec(
                 ("settings", "portfolio_url"), "str",
-                "GitHub, personal site or portfolio URL, read off the resume.",
+                "Personal site or portfolio URL, read off the resume.",
             ),
             "work_authorized": FieldSpec(
                 ("settings", "work_authorized"), "bool",
@@ -273,6 +279,27 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
             "willing_to_relocate": FieldSpec(
                 ("settings", "willing_to_relocate"), "bool",
                 "Open to relocating for a role.",
+            ),
+            # Voluntary EEO answers. "" means never asked and the applier declines.
+            "gender": FieldSpec(
+                ("settings", "gender"), "enum",
+                "Self-identified gender for EEO questions.",
+                options=answer_options(Gender),
+            ),
+            "race_ethnicity": FieldSpec(
+                ("settings", "race_ethnicity"), "enum",
+                "Self-identified race/ethnicity for EEO questions.",
+                options=answer_options(RaceEthnicity),
+            ),
+            "disability": FieldSpec(
+                ("settings", "disability"), "enum",
+                "Self-identified disability status for EEO questions.",
+                options=answer_options(Disability),
+            ),
+            "veteran_status": FieldSpec(
+                ("settings", "veteran_status"), "enum",
+                "Self-identified veteran status for EEO questions.",
+                options=answer_options(VeteranStatus),
             ),
             "generate_cover_letter": FieldSpec(
                 ("settings", "generate_cover_letter"), "bool",

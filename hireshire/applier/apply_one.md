@@ -47,8 +47,10 @@ skip costs one form; a wrong skip retires the job permanently.
 Fill first name, last name, email and phone from the applicant's details. No reasoning
 needed.
 
-Fill LinkedIn from `linkedin_url`, and GitHub, portfolio or personal website from
-`portfolio_url`. Leave an optional link field blank when the value is empty.
+Fill LinkedIn from `linkedin_url`, GitHub from `github_url`, and portfolio or personal
+website from `portfolio_url`. When the form has one generic "website" or "portfolio"
+box and `portfolio_url` is empty, put `github_url` there. Leave an optional link field
+blank when there is no value for it.
 
 ## 4. Resume upload
 
@@ -93,8 +95,15 @@ posting page (open its description tab if the form hides it). The rules that mat
 - Salary expectation: "Open / negotiable". Salary history: "Prefer not to disclose".
   Start date or notice period: "Flexible". If the field accepts only a number or a
   date, the outcome is `error`.
-- Demographic / EEO questions: "Prefer not to answer" or "Decline to self-identify",
-  always.
+- Demographic / EEO questions (gender, race/ethnicity, disability, veteran status):
+  answer from `self_identification`, choosing the form's option closest in meaning —
+  `not_protected_veteran` is "I am not a protected veteran", `two_or_more` is "Two or
+  more races", `disability: yes` is "Yes, I have a disability (or previously had
+  one)". A separate "Are you Hispanic or Latino?" question is **Yes** only when
+  `race_ethnicity` is `hispanic_latino`. When the value is `decline`, empty, or matches
+  no option, choose "Prefer not to answer" / "Decline to self-identify". Never infer
+  any of these from the name, the resume or anything else: they are the applicant's
+  own statement or nothing.
 - "How did you hear about us": "Job board".
 
 If a required question still cannot be answered under these rules, the outcome is

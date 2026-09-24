@@ -4,6 +4,20 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.15.0] — 2026-09-24
+
+### Added
+
+- **Auto-apply can now fill in more of each application form.** When you turn on
+  auto-apply, `/hireshire:setup` also asks four optional self-identification
+  questions: gender, race/ethnicity, disability and veteran status. It uses your
+  answers to fill the voluntary EEO section of each form. These answers are never
+  used to find or score jobs, "Prefer not to say" is always an option, and if you
+  skip them the applier declines on every form, as it did before.
+- **Your GitHub link has its own field.** Setup reads your GitHub URL off your resume
+  separately from your portfolio or personal site, so a form that asks for both gets
+  both.
+
 ## [0.14.0] — 2026-09-24
 
 ### Added

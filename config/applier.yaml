@@ -28,12 +28,21 @@ settings:
   email: ""
   phone: ""
   linkedin_url: ""        # read off your resume at setup; empty if it has none
-  portfolio_url: ""       # GitHub, personal site or portfolio, likewise
+  github_url: ""          # GitHub profile, likewise
+  portfolio_url: ""       # personal site or portfolio, likewise
 
   # Screening questions your resume cannot answer, asked once at setup.
   # Empty means never asked: authorization then defaults to yes and sponsorship to no.
   work_authorized:        # authorized to work where you are applying
   requires_sponsorship:   # need visa sponsorship now or in future
   willing_to_relocate:    # open to relocating for the role
+
+  # Voluntary self-identification (US EEO questions), asked once at setup. Used only
+  # to fill that section of a form; never read by scoring. Empty means the applier
+  # declines to self-identify.
+  gender: ""              # male | female | non_binary | decline
+  race_ethnicity: ""      # american_indian_alaska_native | asian | black | hispanic_latino | native_hawaiian_pacific_islander | white | two_or_more | decline
+  disability: ""          # yes | no | decline
+  veteran_status: ""      # protected_veteran | not_protected_veteran | decline
 
   generate_cover_letter: false

@@ -71,6 +71,31 @@ def test_the_screening_answers_start_unasked_and_are_writable(data_dir):
         cw.write_config("applier", {"requires_sponsorship": "maybe"})
 
 
+def test_self_identification_ships_unasked_and_rejects_unknown_answers(data_dir):
+    """Empty is how `apply_one.md` knows to decline; a typo must never land on disk,
+    since the session would then map an answer the user never gave."""
+    keys = ("gender", "race_ethnicity", "disability", "veteran_status")
+    before = cw.read_config("applier")
+    for key in keys:
+        assert before[key] == ""
+    assert before["github_url"] == ""
+
+    cw.write_config("applier", {
+        "gender": "non_binary", "race_ethnicity": "two_or_more",
+        "disability": "decline", "veteran_status": "protected_veteran",
+        "github_url": "https://github.com/ada",
+    })
+    after = cw.read_config("applier")
+    assert after["gender"] == "non_binary"
+    assert after["race_ethnicity"] == "two_or_more"
+    assert after["veteran_status"] == "protected_veteran"
+    assert after["github_url"] == "https://github.com/ada"
+
+    with pytest.raises(cw.ConfigError):
+        cw.write_config("applier", {"gender": "maybe"})
+    assert cw.read_config("applier")["gender"] == "non_binary"
+
+
 def test_a_bare_string_is_accepted_for_a_list_field(data_dir):
     """Setup asks for locations in plain English, so "united states" is the natural
     answer — and pydantic can reject that but never clean it."""

@@ -1,3 +1,9 @@
+
+Smart apply:
+
+    1. Ask for gender, disability, veteran options & linkedin, portfolio, github links in setup to complete the application properly
+    2. Should be able to deal with jobs where text field performs prompt injection like if a bot type this, if a agent answer that.
+
 1. Option to move jobs from needs attention / shortlisted / filtered / etc section into the jobs applied section. Basically if a user applis on a job manually then they should have a option to update it in the db and move those jobs into the applied section.
     a human check to approve before applying into jobs
 
@@ -6,8 +12,6 @@
 
 
 4. setup recommendations:
-    1. The job posting date recommendation should be 6 hours (recommended), 12 hours, 24 hours
-    2. 
 
 
 

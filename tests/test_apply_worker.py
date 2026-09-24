@@ -671,6 +671,26 @@ def test_the_prompt_carries_the_screening_answers_and_links(tmp_path):
     assert applicant["willing_to_relocate"] is None
 
 
+def test_the_prompt_carries_github_and_self_identification(tmp_path):
+    """GitHub has its own box on many forms, and the EEO section is answered from the
+    user's own setup answers. Unset answers go through as "" — decline."""
+    settings = _settings(
+        tmp_path, github_url="https://github.com/ada", gender="female",
+        veteran_status="not_protected_veteran",
+    )
+    dirs = worker.SessionDirs(cwd=tmp_path, out_dir=tmp_path,
+                              resume_path=tmp_path / "resume.pdf")
+    prompt = worker.build_prompt(_job("j1"), settings, dirs, "RESUME")
+    inputs = json.loads(prompt.split("```json\n", 1)[1].split("\n```", 1)[0])
+
+    applicant = inputs["applicant"]
+    assert applicant["github_url"] == "https://github.com/ada"
+    assert applicant["self_identification"] == {
+        "gender": "female", "race_ethnicity": "", "disability": "",
+        "veteran_status": "not_protected_veteran",
+    }
+
+
 def test_cancelling_the_worker_kills_the_session_in_flight(tmp_path, launcher):
     calls, script, killed = launcher
     script.append(_Proc(hang=True))
