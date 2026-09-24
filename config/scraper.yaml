@@ -7,7 +7,7 @@ settings:
   max_age_hours: 24  # only keep jobs updated in the last N hours; remove this line to fetch all
   location_filter: []  # case-insensitive substring match; empty = every location. Set at setup.
   db_path: hireshire.db  # shared SQLite datastore — scraper writes the jobs + run_companies tables
-  poll_interval_hours: 4  # how often /hireshire:start-orchestration re-sweeps
+  poll_interval_hours: 3  # how often /hireshire:start-orchestration re-sweeps
 
   # Your job-search folder, set by /hireshire:setup. Everything you look at lives
   # under it:

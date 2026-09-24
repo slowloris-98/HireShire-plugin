@@ -230,10 +230,8 @@ Three things that trip people up:
 
 3. **Posting age, in hours** → `scraper.max_age_hours`. Offer **6 hours
    (recommended)**, 12 hours and 24 hours, in that order; "Other" takes any number of
-   hours, and an answer given in days is multiplied by 24. Keep it at least as long as
-   the poll interval (question 9, default 4): a posting younger than the window at one
-   sweep but older by the next is never seen. If they later choose a poll interval
-   longer than this, raise this to match and tell them.
+   hours, and an answer given in days is multiplied by 24. It has to be wide enough to
+   cover the gap between sweeps — see question 9, which checks the two together.
 
 4. **Match threshold, as a number from 0 to 100** → `threshold` on the **`matcher`**
    phase. Offer numbers — 75 recommended, plus a couple either side — and let "Other"
@@ -577,9 +575,19 @@ Three things that trip people up:
    longer" until a real timed run exists.
 
 9. **How often to re-run**, in hours → `poll_interval_hours` on the **`scraper`**
-   phase, default 4. This is what `/hireshire:start-orchestration` sweeps on; the
-   monitor cannot read `${user_config.*}`, so this value is the only way the user's
+   phase. Offer **3 hours (recommended)**, 2 hours and 4 hours, in that order; "Other"
+   takes any number of hours. This is what `/hireshire:start-orchestration` sweeps on;
+   the monitor cannot read `${user_config.*}`, so this value is the only way the user's
    answer reaches it.
+
+   **Check it against the posting age from question 3.** The age cutoff is fixed when a
+   sweep starts, and the wait only begins once a sweep finishes, so the gap between two
+   sweeps is the poll interval *plus* the sweep itself — which can take up to about an
+   hour. If poll interval + 1 hour is longer than the posting age, postings published in
+   between are never seen. When that happens, raise `max_age_hours` to at least poll
+   interval + 2 hours, rounded up to the next of 6, 12 or 24, and tell the user you did
+   and why. Extra sweeps are cheap: jobs an earlier sweep already judged are skipped, so
+   a shorter interval adds scraping time, not scoring calls.
 
 10. **Scoring backend** → `matcher.provider`.
    - **Their Claude subscription** (`claude_code`) — the default, and the reason

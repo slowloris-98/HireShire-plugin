@@ -3,11 +3,6 @@ instead of a folder for each run, folder for each day makes more sense.
 same goes for run dashboard/csv, instead of a dashboard for each run, dashboard for each day orchestrate was trigered more sense.
 
 
-option for a single run in the orchestrate. currently it reccurs everytime.
-
-reduce the recommended polling duration just 
-
-
 Smart apply:
 
     1. Ask for gender, disability, veteran options & linkedin, portfolio, github links in setup to complete the application properly
@@ -21,13 +16,8 @@ Smart apply:
 
 
 4. setup recommendations:
+    option for a single run in the orchestrate. currently it reccurs everytime.
+    reduce the recommended polling duration just like the job posting duration was reduced.
 
-
-
-Check:
-
-meta 
-amazon
-scraping working ?
 
 

@@ -15,6 +15,12 @@ All notable changes to this plugin are documented here. Versions follow
   Microsoft, Intuit and Amazon, and forms that email you a verification code, now read
   "Requires human verification". Jobs already on your dashboard switch to the new
   labels too. Hover over a label to see the full original message.
+- **Setup now asks how recent a posting must be in hours, not days, and sweeps more
+  often by default.** It offers 6 hours (recommended), 12 hours or 24 hours for posting
+  age, and 3 hours (recommended), 2 hours or 4 hours for how often to sweep. If the two
+  answers would leave a gap between sweeps that postings could fall through, setup
+  widens the posting age and tells you. New installs sweep every 3 hours instead of 4.
+  Your current settings are unchanged; re-run `/hireshire:setup` to pick new ones.
 
 ## [0.15.1] — 2026-09-24
 
@@ -86,9 +92,6 @@ All notable changes to this plugin are documented here. Versions follow
   instead and your location filter narrows the results, so nothing you asked for is
   left out. If you are searching the United States and India, the searches are
   exactly what they were.
-- **Setup now asks how recent a posting must be in hours, not days.** It offers 6 hours
-  (recommended), 12 hours or 24 hours, so a sweep every few hours only reads what is
-  new. Your current setting is unchanged; re-run `/hireshire:setup` to pick one.
 
 ### Fixed
 
