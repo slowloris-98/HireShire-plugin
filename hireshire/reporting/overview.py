@@ -47,6 +47,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from hireshire.applier import reasons
 from hireshire.reporting import data
 from hireshire.reporting.render import (
     SHOW_COST,
@@ -289,12 +290,18 @@ def _attention_reason(job: dict) -> tuple[str, str]:
     """`(line, full)`: the one line saying why an application needs the user, and the
     whole message for its tooltip.
 
-    `apply_one.md` asks the session for a single short line, but rows recorded before
-    that rule carry paragraph-length messages, and a model can ignore an instruction.
-    Cut at a word, not at a sentence: on the first real render, splitting on ". "
-    cut "can you get a U.S. security clearance" at "U.S.".
+    The line is the cause's fixed label from `reasons` whenever the stored text maps
+    onto one — rows written before the labels existed carry free-form and even
+    paragraph-length messages, and a model can ignore an instruction. The stored text
+    is never rewritten: it stays whole in `full`, the only place its detail survives.
+
+    Text no label accounts for is cut at a word, not at a sentence: on the first real
+    render, splitting on ". " cut "can you get a U.S. security clearance" at "U.S.".
     """
     full = " ".join((job.get("applied_error") or "").split())
+    label = reasons.short_label(job.get("applied_status"), full)
+    if label:
+        return label, full
     if not full:
         return "Not submitted — open the posting to finish it.", ""
     if len(full) <= _REASON_CHARS:

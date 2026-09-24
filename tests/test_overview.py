@@ -167,11 +167,12 @@ def test_an_application_that_stopped_short_needs_attention(tmp_path):
     db = _populated(tmp_path)
     _match(db, RUN, "j6", score=80, shortlisted=True, rerank=7.90)
     db.insert_jobs(RUN, [_job("j6")])
-    # Paragraph-length, as rows recorded before the one-line rule are, and with a
-    # "U.S." in it — a sentence split cut the first real render there.
-    long = ("Blocked by the required question (can you get a U.S. security clearance?) "
-            "which the resume cannot answer, so the filled form was left unsent and "
-            "needs the user to review it and submit it themselves.")
+    # Paragraph-length, as rows recorded before the one-line rule are, with a "U.S."
+    # in it — a sentence split cut the first real render there — and matching no
+    # fixed label, so the page has to clip it rather than replace it.
+    long = ("Blocked after the phone field refused a U.S. number twice, and the retry "
+            "was then stopped by a permission prompt, so the filled form was left unsent "
+            "and needs the user to review it and submit it themselves.")
     _apply(db, "j6", "error", long)
 
     snap = _snapshot(db)
@@ -185,7 +186,7 @@ def test_an_application_that_stopped_short_needs_attention(tmp_path):
     # One line, cut at a word and past the "U.S."; the whole message is the tooltip.
     line, full = overview._attention_reason({"applied_error": long})
     assert full == long and line.endswith("…") and len(line) <= 141
-    assert "U.S. security clearance" in line
+    assert "U.S. number" in line
     assert long.startswith(line[:-1]) and long[len(line) - 1] == " "
     assert line in block
     assert f'title="{long}"' in block
@@ -202,15 +203,19 @@ def test_an_excluded_employer_needs_attention_not_a_shortlist_slot(tmp_path):
     db = _populated(tmp_path)
     db.insert_jobs(RUN, [_job("j7")])
     _match(db, RUN, "j7", score=84, shortlisted=True, rerank=8.40)
-    reason = ("Requires human verification — this employer's portal needs an account "
-              "login, so apply to it yourself.")
-    _apply(db, "j7", "excluded", reason)
+    # The text older installs stored. The page prints the fixed label instead, and
+    # keeps the stored text whole as the tooltip.
+    old = ("Requires human verification — this employer's portal needs an account "
+           "login, so apply to it yourself.")
+    _apply(db, "j7", "excluded", old)
 
     snap = _snapshot(db)
     assert _section_of(snap, "j7") == ["attention"]
     assert db.overview_counts(RUN)["applied"] == 1        # j1, the real submission
-    # Escaped, because the reason carries an apostrophe and the page escapes it.
-    assert e(reason) in _job_block(overview.build(snap, RUN), "j7")
+    block = _job_block(overview.build(snap, RUN), "j7")
+    assert f"{worker.EXCLUDED_REASON} · " in block
+    # Escaped, because the stored text carries an apostrophe and the page escapes it.
+    assert f'title="{e(old)}"' in block
 
 
 def test_a_job_the_backlog_gave_up_on_needs_attention(tmp_path):

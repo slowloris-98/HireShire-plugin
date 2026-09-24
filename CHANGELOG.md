@@ -4,6 +4,18 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [Unreleased]
+
+### Changed
+
+- **Needs Attention is shorter and easier to scan.** Each reason a job needs you now
+  appears as one short label instead of a sentence the applier wrote. Examples:
+  "Requires human verification", "Required question: zip code", "Posting closed" and
+  "Submit not confirmed — check before reapplying". Jobs at Google, Apple, Meta,
+  Microsoft, Intuit and Amazon, and forms that email you a verification code, now read
+  "Requires human verification". Jobs already on your dashboard switch to the new
+  labels too. Hover over a label to see the full original message.
+
 ## [0.15.1] — 2026-09-24
 
 ### Changed

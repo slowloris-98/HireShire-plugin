@@ -479,10 +479,24 @@ A bare `Dashboard.html` would not, since Windows paths are case-insensitive.
 **Needs Attention sits between Jobs Applied and Jobs Shortlisted, and the `applied`
 table feeds both.** `overview_snapshot` splits it on `status`: `submitted` goes to
 Jobs Applied, and every other status goes to Needs Attention (`error`, `excluded`,
-plus any status nobody has named yet, so a new one cannot disappear). The row's
-`error` text is printed as a one-line `.job-sub` (`_attention_reason` clips it to its
-first sentence). `apply_one.md` asks the session for exactly that line, and
-`worker.EXCLUDED_REASON` is the one the engine writes itself. The `Jobs applied` tile
+plus any status nobody has named yet, so a new one cannot disappear). The row is
+printed as a one-line `.job-sub` holding a **fixed label per cause**
+(`Requires human verification`, `Required question: <topic>`, `Posting closed`…).
+`hireshire/applier/reasons.py` is the only place those labels are spelled. The engine
+writes them (`worker.EXCLUDED_REASON`, the ambiguous endings, the expiry), and
+`apply_one.md` tells the session to copy them exactly. `tests/test_apply_worker.py`
+fails if the prompt and the module drift apart. The session used to write free text,
+which put one cause on the page in six wordings.
+
+`_attention_reason` maps the **stored** text onto a label with `reasons.short_label`,
+at render time. That is what shortens rows written before the labels existed, and
+what absorbs a model that ignores the instruction. It never rewrites the row: the
+stored text stays whole as the `title=` tooltip, which is the only place its detail
+(which question, which employer) survives. Text no rule accounts for gets `None` and
+is word-clipped as before, because a label must never stand in for a message it cannot
+explain. The regexes are ordered and first-match wins: a verification code is also
+"required", so the specific causes come before the `Required question` fallback. The
+`Jobs applied` tile
 counts **`submitted` only**. It used to count every attempt, which is how known issue
 A4 hid: a form stuck on a question read as a finished application. Both halves stay
 in `applied_ids`, so a needs-attention job never also appears under Shortlisted.

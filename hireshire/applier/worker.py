@@ -63,6 +63,7 @@ from typing import Callable, Literal, Optional
 from pydantic import BaseModel, ValidationError
 
 from hireshire import claude_cli, paths
+from hireshire.applier import reasons
 from hireshire.applier.config import ApplierSettings
 from hireshire.storage.db import Database, get_db
 
@@ -78,9 +79,9 @@ BREAKER_LIMIT = 3
 
 #: Why an excluded employer never becomes an application. Recorded as the `error` of
 #: an `excluded` row and printed verbatim under the overview's Needs Attention
-#: section, so it obeys the same one-short-line contract `apply_one.md` imposes.
-EXCLUDED_REASON = ("Requires human verification — this employer's portal needs an "
-                   "account login, so apply to it yourself.")
+#: section. The same label a session reports for a verification code or a sign-in
+#: gate — every label lives in `reasons`.
+EXCLUDED_REASON = reasons.HUMAN_VERIFICATION
 
 #: The `applied` status written when the backlog's window closes on a job that never
 #: got an application. Not a status any session returns: the applier is recording that
@@ -98,12 +99,9 @@ EXPIRED_STATUS = "expired"
 def expired_reason(hours: int) -> str:
     """The one line Needs Attention prints for a job the backlog gave up on.
 
-    Short enough to clear `reporting.overview._REASON_CHARS` (140) whole, and phrased
-    as what the user can still do about it — the same contract `EXCLUDED_REASON` and
-    `apply_one.md` follow.
+    One of the fixed labels in `reasons`, phrased as what the user can still do.
     """
-    return (f"No application was completed in the {hours}h after it was shortlisted — "
-            "apply to it yourself.")
+    return reasons.expired(hours)
 
 #: The `skip_reason` written onto the match row when the posting page states a location
 #: the user does not accept. A VERDICT: same page, same `location_filter`, same answer
@@ -386,9 +384,8 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
         terminate_apply_subprocess()
         return ApplyOutcome(
             status="error",
-            # One line: the overview's Needs Attention section prints it verbatim.
-            error=(f"Timed out after {settings.apply_timeout_s:g}s — check whether it "
-                   "was submitted before applying again."),
+            # It may have timed out after the submit click, so the label warns.
+            error=reasons.SUBMIT_UNCONFIRMED,
         )
     except asyncio.CancelledError:
         # The sweep is being torn down. An orphaned session would go on submitting
@@ -416,8 +413,7 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
         logger.error("Unreadable apply result for %s: %s", job.get("job_id"), raw[:500])
         return ApplyOutcome(
             status="error",
-            error=("Session ended without a result — check whether it was submitted "
-                   "before applying again."),
+            error=reasons.SUBMIT_UNCONFIRMED,
         )
 
 

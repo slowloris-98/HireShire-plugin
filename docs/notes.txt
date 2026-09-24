@@ -1,5 +1,11 @@
 
-reduce the needs attention error message for direct scrape companies.
+instead of a folder for each run, folder for each day makes more sense. 
+same goes for run dashboard/csv, instead of a dashboard for each run, dashboard for each day orchestrate was trigered more sense.
+
+
+option for a single run in the orchestrate. currently it reccurs everytime.
+
+reduce the recommended polling duration just 
 
 
 Smart apply:
