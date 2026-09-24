@@ -4,6 +4,15 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.15.1] — 2026-09-24
+
+### Changed
+
+- **Auto-apply no longer answers questions meant to catch bots.** If an application
+  form asks whether you are a bot or an AI, or tells an AI to type a particular word,
+  the applier stops without submitting. The job moves to Needs Attention with
+  "Manual application required." so you can apply to it yourself.
+
 ## [0.15.0] — 2026-09-24
 
 ### Added

@@ -827,6 +827,13 @@ Four things about the applier that are easy to break:
   did for every one of them before they existed. They are never inferred from the
   name or the resume. Essays are written from the resume and the job description,
   never from the search profile, for the same reason the scorer never sees it.
+- **A form question aimed at bots is never answered, followed or evaded.** When a
+  field asks whether the applicant is a bot or AI, or tells an AI to type something,
+  `apply_one.md` stops before submitting and reports `error` with exactly `Manual
+  application required.`, so the job lands under Needs Attention. Obeying gets the
+  application flagged; answering as a human is a misrepresentation made in the user's
+  name. It is a verdict — the form asks the same thing next sweep — and it is checked
+  in-session only, because the question lives in the form, not the description.
 - **`applied_ids` is re-read before every launch**, so a job recorded since the queue
   was built is never applied to twice.
 - **The session loads the browser server itself** (`--mcp-config <ROOT>/.mcp.json
