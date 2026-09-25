@@ -1,7 +1,7 @@
 """Country normalisation for direct career-portal locations.
 
 `scraper.py` filters jobs with a case-insensitive substring match of
-`settings.location_filter` against `job.location.name`. The configured terms are
+`settings.location_filter` against `job.location.name`. Filter terms are often
 country-level ("united states", "india"), but these portals print city+state
 with no country at all:
 
@@ -13,43 +13,51 @@ None of those contain "united states", so an unnormalised pass drops *every* US
 job. Rather than special-case the filter, each handler runs its raw location
 through `normalize_location`, which appends the inferred country. The existing
 filter in `scraper.py` then works untouched.
+
+Countries, regions and cities come from `portal_locations.COUNTRIES`, the same
+table the portals are scoped from — a country the sweep can search for is one
+this module can name. Every name is matched as a whole word: a plain substring
+test read "Indianapolis, Indiana" as India and "Busan" (which contains "usa") as
+the United States.
 """
 
 from __future__ import annotations
 
 import re
 
-US_STATES = (
-    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
-    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
-    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine",
-    "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
-    "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey",
-    "new mexico", "new york", "north carolina", "north dakota", "ohio",
-    "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina",
-    "south dakota", "tennessee", "texas", "utah", "vermont", "virginia",
-    "washington", "west virginia", "wisconsin", "wyoming",
-    "district of columbia", "puerto rico",
+from hireshire.direct.portal_locations import (
+    BY_NAME, COUNTRIES, INDIA_CITIES, US_STATE_ABBREVS, US_STATES,
 )
 
-# "City, ST" / "City, ST +3 locations". Anchored on a comma so it can't fire on
-# a bare two-letter word elsewhere in the string.
-_US_ABBREV = re.compile(
-    r",\s*(A[KLRZ]|C[AOT]|D[CE]|FL|GA|HI|I[ADLN]|K[SY]|LA|M[ADEINOST]|"
-    r"N[CDEHJMVY]|O[HKR]|PA|RI|S[CD]|T[NX]|UT|V[AT]|W[AIVY])(?=\b|\s|,|$)"
-)
-
-INDIA_CITIES = (
-    "bengaluru", "bangalore", "hyderabad", "mumbai", "new delhi", "delhi",
-    "noida", "gurgaon", "gurugram", "pune", "chennai", "kolkata", "ahmedabad",
-)
+__all__ = ["INDIA", "INDIA_CITIES", "UNITED_STATES", "US_STATES",
+           "infer_country", "normalize_location"]
 
 UNITED_STATES = "United States"
 INDIA = "India"
 
-# Already-present country markers — never append a duplicate.
+# "City, ST" / "City, ST +3 locations". Anchored on a comma so it can't fire on
+# a bare two-letter word elsewhere in the string.
+_US_ABBREV = re.compile(r",\s*(" + "|".join(US_STATE_ABBREVS) + r")(?=\b|\s|,|$)")
+
+# Already-present US spellings — a string carrying one needs no inference.
 _US_MARKERS = ("united states", "usa", "u.s.a", "u.s.")
-_IN_MARKERS = ("india",)
+
+
+def _words(terms) -> re.Pattern:
+    """One pattern matching any of `terms` as a whole word, on lowercased text."""
+    alternation = "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True))
+    return re.compile(r"(?<![a-z])(?:" + alternation + r")(?![a-z])")
+
+
+_US = BY_NAME[UNITED_STATES]
+_US_MARKER_RE = _words(_US_MARKERS)
+_US_REGION_RE = _words(_US.regions)
+_US_CITY_RE = _words(_US.cities)
+_INDIA_RE = _words(("india",) + BY_NAME[INDIA].regions + INDIA_CITIES)
+_OTHERS = tuple(
+    (c.name, _words((c.name.lower(),) + c.regions + c.cities))
+    for c in COUNTRIES if c.name not in (UNITED_STATES, INDIA)
+)
 
 
 def infer_country(raw: str) -> str | None:
@@ -58,38 +66,32 @@ def infer_country(raw: str) -> str | None:
         return None
     low = raw.lower()
 
-    if any(m in low for m in _IN_MARKERS) or any(c in low for c in INDIA_CITIES):
+    if _INDIA_RE.search(low):
         return INDIA
-    if any(m in low for m in _US_MARKERS):
+    if _US_MARKER_RE.search(low) or _US_REGION_RE.search(low):
         return UNITED_STATES
-    if any(s in low for s in US_STATES):
+    if _US_ABBREV.search(raw) or _US_CITY_RE.search(low):
         return UNITED_STATES
-    if _US_ABBREV.search(raw):
-        return UNITED_STATES
+    for name, pattern in _OTHERS:
+        if pattern.search(low):
+            return name
     return None
 
 
 def normalize_location(raw: str) -> str:
-    """Append the inferred country when the portal omitted it.
+    """Append the inferred country when the portal did not spell it out.
 
-    Leaves the string alone when the country is already named, when it cannot be
-    inferred (so genuinely foreign locations like "Dublin, Ireland" stay
-    unmatched and get filtered out), or when the input is empty.
+    Leaves the string alone when the country's own name is already in it, when
+    it cannot be inferred (so a location outside the table stays unmatched and
+    gets filtered out), or when the input is empty. "Mountain View, CA, USA"
+    still gains ", United States": it reads as US to a human, but a filter term
+    of "united states" is not a substring of "usa".
     """
     raw = (raw or "").strip()
     if not raw:
         return ""
 
     country = infer_country(raw)
-    if country is None:
+    if country is None or country.lower() in raw.lower():
         return raw
-
-    low = raw.lower()
-    if country == INDIA and any(m in low for m in _IN_MARKERS):
-        return raw
-    if country == UNITED_STATES and any(m in low for m in _US_MARKERS):
-        # "Mountain View, CA, USA" already reads as US to a human, but the
-        # configured filter term is "united states" — spell it out.
-        return f"{raw}, {UNITED_STATES}"
-
     return f"{raw}, {country}"

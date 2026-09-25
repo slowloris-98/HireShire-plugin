@@ -13,11 +13,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import quote_plus
 
 from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
 from hireshire.direct.locations import normalize_location
+from hireshire.direct.scope import EVERYWHERE, Scope
 from hireshire.direct.staging import SOURCE, make_job_id
 from hireshire.models.job import Job, Location
 
@@ -30,16 +32,43 @@ BASE = "https://jobs.intuit.com"
 # params yields an empty `results` string with a 200 status.
 LIST_URL = (
     BASE + "/search-jobs/results"
-    "?ActiveFacetID=0&CurrentPage={page}&RecordsPerPage=15"
+    "?ActiveFacetID={active}&CurrentPage={page}&RecordsPerPage=15"
     "&Distance=50&RadiusUnitType=0&Keywords=&Location=&ShowRadius=False"
     "&IsPagination=True&SearchResultsModuleName=Search+Results"
     "&SearchFiltersModuleName=Search+Filters"
     "&SortCriteria=1&SortDirection=1&SearchType=5&ResultsType=0"
 )
 PAGE_SIZE = 15
+SCOPE_COLUMN = "intuit"
+
+# The free-text `Location=` above is IGNORED by the portal — India, Canada and
+# blank all return the same result set. Location is scoped through the country
+# facet instead (FacetType 2, keyed on GeoNames ids), one indexed group per
+# country, the same shape the site's own filter panel sends.
+_FACET = (
+    "&FacetFilters%5B{i}%5D.ID={id}&FacetFilters%5B{i}%5D.FacetType=2"
+    "&FacetFilters%5B{i}%5D.Count=0&FacetFilters%5B{i}%5D.Display={display}"
+    "&FacetFilters%5B{i}%5D.IsApplied=true&FacetFilters%5B{i}%5D.FieldName="
+)
+
+# What the list prints for a posting open in several cities. It names no
+# country, so without the scope placeholder every one of them failed the
+# location filter — none had ever been saved on a real install.
+_UNPLACED = {"", "multiple locations"}
 
 
-def _parse_job(anchor, scraped_at: datetime) -> Optional[Job]:
+def list_url(scope: Optional[Scope], page: int) -> str:
+    ids = scope.for_portal(SCOPE_COLUMN) if scope else None
+    if not ids:
+        return LIST_URL.format(active=0, page=page)
+    facets = "".join(
+        _FACET.format(i=i, id=fid, display=quote_plus(name))
+        for i, (fid, name) in enumerate(zip(ids, scope.ordered))
+    )
+    return LIST_URL.format(active=ids[0], page=page) + facets
+
+
+def _parse_job(anchor, scraped_at: datetime, scope: Optional[Scope] = None) -> Optional[Job]:
     try:
         native_id = anchor.get("data-job-id")
         href = anchor.get("href") or ""
@@ -47,7 +76,14 @@ def _parse_job(anchor, scraped_at: datetime) -> Optional[Job]:
             return None
 
         loc_el = anchor.select_one("span.job-location")
-        location = normalize_location(loc_el.get_text(strip=True) if loc_el else "")
+        raw_location = loc_el.get_text(strip=True) if loc_el else ""
+        placeholder = raw_location.lower() in _UNPLACED
+        if placeholder:
+            # The country facet guarantees it is inside the scope, so say so.
+            where = (scope or EVERYWHERE).placeholder(SCOPE_COLUMN)
+            location = f"{raw_location or 'Unlisted'} ({where})"
+        else:
+            location = normalize_location(raw_location)
 
         title = anchor.get("data-title") or anchor.get_text(strip=True)
 
@@ -57,6 +93,7 @@ def _parse_job(anchor, scraped_at: datetime) -> Optional[Job]:
             job_id=make_job_id(TOKEN, native_id),
             title=title,
             location=Location(name=location or "N/A"),
+            location_is_placeholder=placeholder,
             absolute_url=BASE + href if href.startswith("/") else href,
             updated_at=scraped_at,   # portal exposes no posting date
             detail_path=href,
@@ -74,7 +111,7 @@ async def fetch_list(ctx, token: str) -> list[Job]:
 
     for page in range(1, ctx.max_pages + 1):
         response = await ctx.get(
-            LIST_URL.format(page=page),
+            list_url(ctx.scope, page),
             headers={"X-Requested-With": "XMLHttpRequest"},
         )
         try:
@@ -90,7 +127,7 @@ async def fetch_list(ctx, token: str) -> list[Job]:
 
         new = 0
         for anchor in anchors:
-            job = _parse_job(anchor, scraped_at)
+            job = _parse_job(anchor, scraped_at, ctx.scope)
             if job is None or job.job_id in seen:
                 continue
             seen.add(job.job_id)

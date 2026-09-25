@@ -79,6 +79,13 @@ _SCRIPTS: dict[str, frozenset[str] | None] = {
     # narrowing the calibration to one run can answer one prompt.
     "scripts/calibrate_cutoffs.py": frozenset(),
     "scripts/setup_cli.py": None,
+    # Records an outcome the user reached by hand: one job moved to Jobs Applied, or
+    # retired as one they are not pursuing. It writes to the plugin's own database and
+    # nothing else, and it is reached from a button on the user's own dashboard — so
+    # prompting for it would put a dialog between the click and the thing it asks for.
+    # The ids it carries are opaque data on argv, which the operator and substitution
+    # rules above already keep from meaning anything to a shell.
+    "scripts/jobs_cli.py": None,
 }
 _SUBCOMMANDS = {
     "scripts/setup_cli.py": frozenset({
@@ -86,6 +93,7 @@ _SUBCOMMANDS = {
         "resume-text", "get", "field-docs", "set", "write-profile", "warm-models",
         "codex-check",
     }),
+    "scripts/jobs_cli.py": frozenset({"list", "applied", "declined"}),
 }
 
 _SHELLS = frozenset({"sh", "bash", "sh.exe", "bash.exe"})

@@ -27,7 +27,8 @@ from typing import Any
 import yaml
 
 from hireshire import paths
-from hireshire.storage.db import PHASE_MATCH, PHASE_PIPELINE, PHASE_SCRAPE, Database
+from hireshire.storage.db import (DECLINED_BY_USER, PHASE_MATCH, PHASE_PIPELINE,
+                                 PHASE_SCRAPE, Database)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,11 @@ REASON_LABELS = {
     # outside `scraper.location_filter`. The job keeps its LLM score — it was judged,
     # then found to be somewhere the user will not work.
     "location_mismatch": "Outside your search locations",
+    # Written by the user, not the engine: they read the posting and decided against it.
+    # Keyed off the constant rather than the literal so the writer and the label cannot
+    # drift apart. Same shape as `location_mismatch` — judged, then retired on a verdict
+    # reached afterwards, so the row keeps its LLM score.
+    DECLINED_BY_USER: "You decided not to pursue this one",
     "no_content_text": "No description text to score",
     "api_error": "Scoring call failed",
 }

@@ -18,7 +18,7 @@ from hireshire import paths
 
 ROOT = paths.ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
-SKILLS = ("setup", "start-orchestration")
+SKILLS = ("setup", "start-orchestration", "mark-applied")
 
 
 def _json(rel: str):
@@ -400,9 +400,11 @@ def test_no_browser_tool_is_routed_to_the_guard():
         assert "playwright" not in entry.get("matcher", "")
 
 
-def test_start_orchestration_is_the_only_command_besides_setup():
-    """`/hireshire:find-jobs` and `/hireshire:apply` were removed: a recurring sweep
-    scrapes, matches and applies, and setup is the one-time step before it."""
+def test_the_shipped_skills_are_exactly_the_three_we_mean_to_ship():
+    """`/hireshire:find-jobs` and `/hireshire:apply` were removed and must not come
+    back: a recurring sweep scrapes, matches and applies, and setup is the one-time step
+    before it. `/hireshire:mark-applied` is not a third route into the pipeline — it only
+    records an outcome the user reached by hand, which nothing else can do."""
     shipped = sorted(p.name for p in (ROOT / "skills").iterdir() if p.is_dir())
     assert shipped == sorted(SKILLS)
 

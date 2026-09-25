@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from hireshire.applier import config as applier_config
+from hireshire.applier import reasons
 from hireshire.applier import worker
 from hireshire.applier.config import ApplierSettings
 from hireshire.storage.db import Database
@@ -444,6 +445,35 @@ def test_submitted_and_error_outcomes_are_recorded(tmp_path, launcher):
     assert stats["submitted"] == 1 and stats["error"] == 1
 
 
+def test_a_question_aimed_at_bots_is_handed_to_the_user():
+    """A form that asks "are you a bot?" or tells an AI to type a word is asking who is
+    filling it in. Answering either way misrepresents the application or gets it
+    flagged, so the session stops and the job lands under Needs Attention with one
+    fixed line. The rule is prose, so what is pinned is that the prompt carries it."""
+    prompt = " ".join(worker.PROMPT_PATH.read_text(encoding="utf-8").split())
+
+    assert "Manual application required." in prompt
+    assert "whether you are a bot, an AI" in prompt
+    assert "do not submit" in prompt
+
+
+def test_the_prompt_spells_every_needs_attention_label_exactly():
+    """Needs Attention prints one fixed label per cause, and the session writes most of
+    them. `reasons` is where they are spelled, so the prompt must carry each one
+    verbatim — a label reworded in one place and not the other would put two wordings
+    of one cause back on the page."""
+    prompt = " ".join(worker.PROMPT_PATH.read_text(encoding="utf-8").split())
+
+    for label in (reasons.HUMAN_VERIFICATION, reasons.MANUAL_REQUIRED,
+                  reasons.SUBMIT_UNCONFIRMED, reasons.POSTING_CLOSED, reasons.REJECTED,
+                  reasons.NOT_A_JOB, reasons.COVER_LETTER_OFF,
+                  f"{reasons.REQUIRED_QUESTION}: <topic>"):
+        assert f"`{label}`" in prompt, label
+    for topic, _ in reasons.TOPICS:
+        assert f"`{topic}`" in prompt, topic
+    assert "verification code" in prompt and "CAPTCHA" in prompt
+
+
 def test_a_location_skip_retires_the_job(tmp_path, launcher):
     """It used to be counted and dropped on the floor: no `applied` row and still
     shortlisted, so `load_pending_applications` re-queued it every sweep for the whole
@@ -635,7 +665,7 @@ def test_a_timeout_is_recorded_as_an_unconfirmed_error_and_kills_the_session(
 
     (row,) = db.load_applied()
     assert row["status"] == "error"
-    assert "check whether it was submitted" in row["error"]
+    assert row["error"] == reasons.SUBMIT_UNCONFIRMED
     assert "\n" not in row["error"], "Needs Attention prints this as one line"
     assert killed, "the timed-out browser session was left running"
 
@@ -646,7 +676,7 @@ def test_an_unreadable_result_is_recorded_rather_than_retried(tmp_path, launcher
     _, db = _run(tmp_path, [_job("j1")])
     assert _statuses(db) == {"j1": "error"}
     (row,) = db.load_applied()
-    assert "check whether it was submitted" in row["error"]
+    assert row["error"] == reasons.SUBMIT_UNCONFIRMED
 
 
 def test_the_prompt_carries_the_screening_answers_and_links(tmp_path):
@@ -669,6 +699,26 @@ def test_the_prompt_carries_the_screening_answers_and_links(tmp_path):
     assert applicant["work_authorized"] is True
     assert applicant["requires_sponsorship"] is False
     assert applicant["willing_to_relocate"] is None
+
+
+def test_the_prompt_carries_github_and_self_identification(tmp_path):
+    """GitHub has its own box on many forms, and the EEO section is answered from the
+    user's own setup answers. Unset answers go through as "" — decline."""
+    settings = _settings(
+        tmp_path, github_url="https://github.com/ada", gender="female",
+        veteran_status="not_protected_veteran",
+    )
+    dirs = worker.SessionDirs(cwd=tmp_path, out_dir=tmp_path,
+                              resume_path=tmp_path / "resume.pdf")
+    prompt = worker.build_prompt(_job("j1"), settings, dirs, "RESUME")
+    inputs = json.loads(prompt.split("```json\n", 1)[1].split("\n```", 1)[0])
+
+    applicant = inputs["applicant"]
+    assert applicant["github_url"] == "https://github.com/ada"
+    assert applicant["self_identification"] == {
+        "gender": "female", "race_ethnicity": "", "disability": "",
+        "veteran_status": "not_protected_veteran",
+    }
 
 
 def test_cancelling_the_worker_kills_the_session_in_flight(tmp_path, launcher):

@@ -7,7 +7,7 @@ settings:
   max_age_hours: 24  # only keep jobs updated in the last N hours; remove this line to fetch all
   location_filter: []  # case-insensitive substring match; empty = every location. Set at setup.
   db_path: hireshire.db  # shared SQLite datastore — scraper writes the jobs + run_companies tables
-  poll_interval_hours: 4  # how often /hireshire:start-orchestration re-sweeps
+  poll_interval_hours: 3  # how often /hireshire:start-orchestration re-sweeps
 
   # Your job-search folder, set by /hireshire:setup. Everything you look at lives
   # under it:
@@ -39,7 +39,7 @@ settings:
     ashby: 10
     bamboohr: 50
     workday: 20
-    direct: 3      # only 3 companies (apple/google/intuit) — one worker each
+    direct: 6      # 6 companies (amazon/apple/google/intuit/meta/microsoft) — one worker each
 
   # Per-tenant detail-fetch fan-out (shared by the Workday + BambooHR list->detail boards):
   # caps concurrent detail requests per tenant and jitters them to avoid tripping per-tenant throttles.

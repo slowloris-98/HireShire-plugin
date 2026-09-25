@@ -173,7 +173,7 @@ rather than one call per question:
 | `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `poll_interval_hours`, `workspace_dir` |
 | `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
 | `funnel` | `targets`, `top_k`, `rerank_min_score` |
-| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `portfolio_url`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate` |
+| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `github_url`, `portfolio_url`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate`, `gender`, `race_ethnicity`, `disability`, `veteran_status` |
 
 So it is `set matcher --json '{"exclude_keywords": [...]}'` — **not**
 `'{"title_filter": {"exclude_keywords": [...]}}'`, which is rejected.
@@ -228,7 +228,10 @@ Three things that trip people up:
    match, so `["united states"]`, `["remote"]`, `["london", "berlin"]` all work. One
    location is still a list. Empty list means everywhere.
 
-3. **Posting age**, in days → `scraper.max_age_hours` (multiply by 24).
+3. **Posting age, in hours** → `scraper.max_age_hours`. Offer **6 hours
+   (recommended)**, 12 hours and 24 hours, in that order; "Other" takes any number of
+   hours, and an answer given in days is multiplied by 24. It has to be wide enough to
+   cover the gap between sweeps — see question 9, which checks the two together.
 
 4. **Match threshold, as a number from 0 to 100** → `threshold` on the **`matcher`**
    phase. Offer numbers — 75 recommended, plus a couple either side — and let "Other"
@@ -566,15 +569,25 @@ Three things that trip people up:
    > board types adds roughly 24,000 more, but each run takes considerably
    > longer.
 
-   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~15,868 companies. Adding
-   `workday` and `bamboohr` takes it to 40,068. Do not quote a specific
+   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~15,871 companies. Adding
+   `workday` and `bamboohr` takes it to 40,071. Do not quote a specific
    multiplier for the extra time — nobody has timed it yet. Say "considerably
    longer" until a real timed run exists.
 
 9. **How often to re-run**, in hours → `poll_interval_hours` on the **`scraper`**
-   phase, default 4. This is what `/hireshire:start-orchestration` sweeps on; the
-   monitor cannot read `${user_config.*}`, so this value is the only way the user's
+   phase. Offer **3 hours (recommended)**, 2 hours and 4 hours, in that order; "Other"
+   takes any number of hours. This is what `/hireshire:start-orchestration` sweeps on;
+   the monitor cannot read `${user_config.*}`, so this value is the only way the user's
    answer reaches it.
+
+   **Check it against the posting age from question 3.** The age cutoff is fixed when a
+   sweep starts, and the wait only begins once a sweep finishes, so the gap between two
+   sweeps is the poll interval *plus* the sweep itself — which can take up to about an
+   hour. If poll interval + 1 hour is longer than the posting age, postings published in
+   between are never seen. When that happens, raise `max_age_hours` to at least poll
+   interval + 2 hours, rounded up to the next of 6, 12 or 24, and tell the user you did
+   and why. Extra sweeps are cheap: jobs an earlier sweep already judged are skipped, so
+   a shorter interval adds scraping time, not scoring calls.
 
 10. **Scoring backend** → `matcher.provider`.
    - **Their Claude subscription** (`claude_code`) — the default, and the reason
@@ -614,8 +627,8 @@ Three things that trip people up:
     on if they ask for it. If yes, gather two things before writing anything.
 
     **Contact details and links, read off the resume.** You already have its text
-    from question 6. Pull out first name, last name, email, phone, a LinkedIn URL and
-    one portfolio-type URL (GitHub, personal site, portfolio). Show them back on one
+    from question 6. Pull out first name, last name, email, phone, a LinkedIn URL, a
+    GitHub URL and one portfolio-type URL (personal site, portfolio). Show them back on one
     line and let the user correct them, as free text; do not ask for each one
     separately. Leave a link empty when the resume has none, and never construct
     one from their name: a guessed URL on a real application points at a stranger.
@@ -631,12 +644,33 @@ Three things that trip people up:
     Each is yes/no. Offer no recommended option, because only the user knows the
     answer.
 
+    **Four self-identification questions, as a second `AskUserQuestion` call.** Most
+    US forms end with a voluntary EEO section. Say first, in one sentence, that these
+    are optional, never affect which jobs are found or how they are scored, and are
+    used only to fill that section; "Prefer not to say" is always a fine answer. Offer
+    no recommended option, and never pre-fill or guess any of these from the resume or
+    the user's name. Map each answer to the stored value:
+
+    | question | options → value |
+    |---|---|
+    | Gender → `gender` | Male → `male`, Female → `female`, Non-binary → `non_binary`, Prefer not to say → `decline` |
+    | Race/ethnicity → `race_ethnicity` | Asian → `asian`, Black or African American → `black`, Hispanic or Latino → `hispanic_latino`, White → `white` |
+    | Disability → `disability` | Yes → `yes`, No → `no`, Prefer not to say → `decline` |
+    | Veteran status → `veteran_status` | Protected veteran → `protected_veteran`, Not a protected veteran → `not_protected_veteran`, Prefer not to say → `decline` |
+
+    `AskUserQuestion` holds four options at most, so race/ethnicity offers the four
+    above and the question text says to use "Other" for anything else, including
+    prefer not to say. Map what they type there: American Indian or Alaska Native →
+    `american_indian_alaska_native`, Native Hawaiian or Other Pacific Islander →
+    `native_hawaiian_pacific_islander`, two or more races → `two_or_more`, prefer not to
+    say → `decline`. If what they type fits none of these, write `decline`.
+
     Once they have heard the warning below, write it all in one call, alongside the
     gate:
 
     ```bash
     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
-        set applier --json '{"enable_applier": true, "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "linkedin_url": "...", "portfolio_url": "...", "work_authorized": true, "requires_sponsorship": false, "willing_to_relocate": false}'
+        set applier --json '{"enable_applier": true, "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "linkedin_url": "...", "github_url": "...", "portfolio_url": "...", "work_authorized": true, "requires_sponsorship": false, "willing_to_relocate": false, "gender": "decline", "race_ethnicity": "decline", "disability": "decline", "veteran_status": "decline"}'
     ```
 
     Tell them what the applier does with the rest, in two sentences: essay questions

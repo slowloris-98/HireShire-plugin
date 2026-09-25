@@ -38,6 +38,16 @@ PHASE_MATCH = "match"
 PHASE_TUNE = "tune"
 PHASE_PIPELINE = "pipeline"
 
+#: `skip_reason` for a job the user decided by hand not to pursue. Shaped exactly like
+#: `location_mismatch`: a verdict reached *after* the job was scored, so it keeps its LLM
+#: score and is un-shortlisted rather than written an `applied` row.
+#:
+#: It must not become an `applied` status. `data.overview_snapshot` sends `submitted` to
+#: Jobs Applied and every other status to Needs Attention — deliberately, so a status
+#: nobody has named yet cannot silently disappear — which means a "not pursuing" status
+#: would sit in the one section this exists to clear.
+DECLINED_BY_USER = "declined_by_user"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -1246,6 +1256,111 @@ class Database:
                 (job_id, board_token, title, absolute_url, applied_at, status,
                  screenshot, error),
             )
+
+    # -- outcomes the user records by hand -----------------------------------
+    #
+    # The applier reaches a verdict for most jobs, but three of its verdicts hand the
+    # job back: `error` (a session stopped short), `excluded` (the portal needs an
+    # account login) and `EXPIRED_STATUS` (the backlog's window closed). All three mean
+    # "do this one yourself", and until these two methods existed there was no way to
+    # say that it had been done — the row sat under Needs Attention for good, and a
+    # shortlisted job applied to by hand was applied to again by the next sweep.
+    #
+    # The two outcomes are deliberately asymmetric, and the asymmetry is the whole
+    # design: an application is a row in `applied`, and a decision not to apply is not.
+    # See `DECLINED_BY_USER`.
+
+    def mark_applied_by_hand(self, job_id: str, applied_at: str) -> str:
+        """Record that the user applied to this job themselves. Idempotent.
+
+        Returns `"updated"` when an existing attempt was promoted, `"inserted"` when a
+        shortlisted job had no `applied` row yet, or `"unknown"` when nothing on record
+        names this job — which is the only honest answer to a job_id the database has
+        never seen, and is why this does not blindly insert.
+
+        **A narrow `UPDATE`, not `record_applied`.** That writer is `INSERT OR REPLACE`
+        on the `job_id` primary key, so re-recording through it would blank
+        `board_token`, `title` and `absolute_url` — the three columns
+        `load_applied_matches` falls back on when the job's `matches` rows have been
+        pruned, i.e. exactly the old applications this feature exists to tidy up.
+
+        `error` is cleared because it is the reason the job needed attention and that
+        reason is now discharged; `screenshot` is kept, because a partial capture of the
+        form is still the user's own record of the attempt.
+
+        The status written is plain `submitted`, which makes a hand-marked application
+        indistinguishable from an automatic one on the page. That is accepted rather
+        than overlooked: a second "counts as applied" status would have to be added to
+        every site that tests the literal — `overview_counts`, `run_progress`,
+        `lifetime_progress`, `data.overview_snapshot` — and each omission would be a
+        silent undercount. Provenance, if it is ever wanted, belongs in a new column.
+        """
+        with self._lock, self._conn:
+            changed = self._conn.execute(
+                "UPDATE applied SET status = 'submitted', applied_at = ?, error = NULL "
+                "WHERE job_id = ?",
+                (applied_at, job_id),
+            ).rowcount
+            if changed:
+                return "updated"
+            # No attempt on record, so this is a shortlisted job the user got to first.
+            # Its identity comes from the canonical match row for the same reason every
+            # other lifetime read uses that rule: `matches` is keyed `(run_id, job_id)`
+            # and a job that was deferred once carries more than one row.
+            canonical = self._canonical_matches_sql(
+                "m.job_id, m.board_token, m.title, m.raw_json"
+            )
+            row = self._conn.execute(
+                f"SELECT * FROM ({canonical}) WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return "unknown"
+            try:
+                url = (json.loads(row["raw_json"]) or {}).get("absolute_url") or ""
+            except (TypeError, ValueError):
+                url = ""
+            self._conn.execute(
+                "INSERT OR REPLACE INTO applied"
+                "(job_id, board_token, title, absolute_url, applied_at, status, "
+                " dry_run, screenshot, error) "
+                "VALUES (?, ?, ?, ?, ?, 'submitted', 0, NULL, NULL)",
+                (job_id, row["board_token"] or "", row["title"] or "", url, applied_at),
+            )
+        return "inserted"
+
+    def decline_job(self, job_id: str) -> dict:
+        """Record that the user is not pursuing this job. Idempotent.
+
+        Returns `{"deleted": bool, "unshortlisted": int}` — what actually changed, so
+        the caller can tell a real decision from a repeat.
+
+        Two writes, and both are needed:
+
+        * **Delete any `applied` row.** A failed attempt is what puts the job under
+          Needs Attention, and `applied_ids` is what keeps it out of every other
+          section. Leaving the row and giving it a new status would not work: any status
+          that is not `submitted` renders under Needs Attention by design.
+        * **Un-shortlist it** with `DECLINED_BY_USER`, which is what stops
+          `load_pending_applications` handing it to the applier again and what files it
+          under Jobs Filtered with a reason the user can read. `mark_not_shortlisted`
+          leaves `skipped` at 0, so the LLM score it earned survives.
+
+        The two run in sequence and **must not be nested**: `mark_not_shortlisted` takes
+        `self._lock` itself and the lock is a plain `threading.Lock`, so holding it
+        across that call would deadlock. Nothing depends on the pair being atomic — each
+        write is independently idempotent, and a crash between them leaves a job that is
+        un-shortlisted but still attention-listed, which the next call finishes.
+
+        `mark_not_shortlisted` matches only `shortlisted = 1`, so it returns 0 for a job
+        already retired. That is reported rather than treated as a failure: deleting the
+        `applied` row is on its own enough to clear Needs Attention.
+        """
+        with self._lock, self._conn:
+            deleted = self._conn.execute(
+                "DELETE FROM applied WHERE job_id = ?", (job_id,)
+            ).rowcount
+        unshortlisted = self.mark_not_shortlisted(job_id, DECLINED_BY_USER)
+        return {"deleted": bool(deleted), "unshortlisted": unshortlisted}
 
     def _unapplied(self, having: str, stamp_iso: str) -> list[dict]:
         """Shortlisted representatives with no `applied` row, split on their age.

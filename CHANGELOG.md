@@ -6,8 +6,106 @@ All notable changes to this plugin are documented here. Versions follow
 
 ## [Unreleased]
 
+### Changed
+
+- **Needs Attention is shorter and easier to scan.** Each reason a job needs you now
+  appears as one short label instead of a sentence the applier wrote. Examples:
+  "Requires human verification", "Required question: zip code", "Posting closed" and
+  "Submit not confirmed — check before reapplying". Jobs at Google, Apple, Meta,
+  Microsoft, Intuit and Amazon, and forms that email you a verification code, now read
+  "Requires human verification". Jobs already on your dashboard switch to the new
+  labels too. Hover over a label to see the full original message.
+- **Setup now asks how recent a posting must be in hours, not days, and sweeps more
+  often by default.** It offers 6 hours (recommended), 12 hours or 24 hours for posting
+  age, and 3 hours (recommended), 2 hours or 4 hours for how often to sweep. If the two
+  answers would leave a gap between sweeps that postings could fall through, setup
+  widens the posting age and tells you. New installs sweep every 3 hours instead of 4.
+  Your current settings are unchanged; re-run `/hireshire:setup` to pick new ones.
+
+## [0.15.1] — 2026-09-24
+
+### Changed
+
+- **Auto-apply no longer answers questions meant to catch bots.** If an application
+  form asks whether you are a bot or an AI, or tells an AI to type a particular word,
+  the applier stops without submitting. The job moves to Needs Attention with
+  "Manual application required." so you can apply to it yourself.
+
+## [0.15.0] — 2026-09-24
+
+### Added
+
+- **Auto-apply can now fill in more of each application form.** When you turn on
+  auto-apply, `/hireshire:setup` also asks four optional self-identification
+  questions: gender, race/ethnicity, disability and veteran status. It uses your
+  answers to fill the voluntary EEO section of each form. These answers are never
+  used to find or score jobs, "Prefer not to say" is always an option, and if you
+  skip them the applier declines on every form, as it did before.
+- **Your GitHub link has its own field.** Setup reads your GitHub URL off your resume
+  separately from your portfolio or personal site, so a form that asks for both gets
+  both.
+
+## [0.14.0] — 2026-09-24
+
+### Added
+
+- **You can now tell HireShire what you did about a job yourself.** Every job under
+  Needs Attention or Jobs Shortlisted on the dashboard carries two buttons: *I applied
+  to this* and *Not pursuing this*. Clicking one copies a command; paste it into Claude
+  and the job moves, and the dashboard is rewritten straight away. You can also just run
+  `/hireshire:mark-applied` and pick from a list.
+
+  Until now those jobs were stuck. When an application stopped short of submitting, when
+  an employer's portal needed an account login, or when the retry window closed, the job
+  sat under Needs Attention for good — however many times you went and applied yourself.
+  And a shortlisted job you applied to before the sweep reached it would be applied to
+  a second time.
+
+  The two answers do different things. *I applied to this* counts toward Jobs applied.
+  *Not pursuing this* records no application at all: the job moves to Jobs Filtered,
+  labelled, and HireShire stops offering it to the applier. Neither can be undone, so
+  the list shows you what you are about to mark before it writes anything.
+
+- **Amazon, Meta and Microsoft jobs are now part of every sweep.** HireShire now reads
+  their career sites directly, as it already did for Apple, Google and Intuit. It runs
+  quietly in the background like the rest of the sweep: no browser window opens and no
+  extra Claude usage is spent fetching them. Amazon and Microsoft are searched in the
+  countries your location list covers. Meta publishes its whole job board at once, so
+  HireShire reads all of it and your location filter keeps the jobs in your places.
+  Meta's listings carry no posting date, so your first sweep after updating reads
+  through Meta's open jobs once, however old they are. Later sweeps only look at
+  what is new. There is nothing to set up.
+- **Amazon is skipped when applying, as Meta and Microsoft already were**, because its
+  application forms need an account login. This applies to new installs only. If you
+  set HireShire up before this update, it will still try to apply to Amazon jobs, and
+  they will land under Needs Attention.
+
+### Changed
+
+- **Apple, Google and Intuit are now searched in the countries you chose.** The three
+  company career sites HireShire reads directly were searched for the United States
+  and India whatever your locations said — Intuit for everywhere — so if you were
+  looking in London or Berlin, their jobs there were never fetched. Each site is now
+  asked for the countries your location list covers, worked out from the cities,
+  states and countries you gave at setup; nothing new to set. If your list includes a
+  place HireShire cannot pin to a country, those sites are searched everywhere
+  instead and your location filter narrows the results, so nothing you asked for is
+  left out. If you are searching the United States and India, the searches are
+  exactly what they were.
+
 ### Fixed
 
+- **Intuit jobs open in several cities are no longer thrown away.** Intuit lists those
+  as "Multiple Locations", which names no country, so the location filter discarded
+  every one — on the install this was found on, not one had ever been saved, and they
+  were 18 of the first 30 jobs Intuit returned in a check. They are now kept, since
+  Intuit is only searched in your countries to begin with.
+- **Google's jobs are no longer all dropped when your locations are cities or states
+  only.** Google's search results do not say where a job is until its page is opened,
+  and a list like `california` or `remote` never matched the stand-in location they
+  carried, so the whole of Google was filtered out before a single job was read.
+- **Indianapolis is no longer read as India**, nor Busan as the United States: place
+  names on these three sites are now matched as whole words.
 - **The lifetime dashboard now shows each job once, as it stands today.** A job the
   sweep could not get to — the call budget ran out, or the scorer failed — comes back
   on a later sweep, and the record of that later sweep was being added beside the old

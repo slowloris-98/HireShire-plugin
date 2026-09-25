@@ -24,7 +24,7 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 588 tests, no network, no model weights
+pytest                                # 772 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_only_jobs_reaching_the_cutoff_are_judged
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
@@ -479,13 +479,61 @@ A bare `Dashboard.html` would not, since Windows paths are case-insensitive.
 **Needs Attention sits between Jobs Applied and Jobs Shortlisted, and the `applied`
 table feeds both.** `overview_snapshot` splits it on `status`: `submitted` goes to
 Jobs Applied, and every other status goes to Needs Attention (`error`, `excluded`,
-plus any status nobody has named yet, so a new one cannot disappear). The row's
-`error` text is printed as a one-line `.job-sub` (`_attention_reason` clips it to its
-first sentence). `apply_one.md` asks the session for exactly that line, and
-`worker.EXCLUDED_REASON` is the one the engine writes itself. The `Jobs applied` tile
+plus any status nobody has named yet, so a new one cannot disappear). The row is
+printed as a one-line `.job-sub` holding a **fixed label per cause**
+(`Requires human verification`, `Required question: <topic>`, `Posting closed`…).
+`hireshire/applier/reasons.py` is the only place those labels are spelled. The engine
+writes them (`worker.EXCLUDED_REASON`, the ambiguous endings, the expiry), and
+`apply_one.md` tells the session to copy them exactly. `tests/test_apply_worker.py`
+fails if the prompt and the module drift apart. The session used to write free text,
+which put one cause on the page in six wordings.
+
+`_attention_reason` maps the **stored** text onto a label with `reasons.short_label`,
+at render time. That is what shortens rows written before the labels existed, and
+what absorbs a model that ignores the instruction. It never rewrites the row: the
+stored text stays whole as the `title=` tooltip, which is the only place its detail
+(which question, which employer) survives. Text no rule accounts for gets `None` and
+is word-clipped as before, because a label must never stand in for a message it cannot
+explain. The regexes are ordered and first-match wins: a verification code is also
+"required", so the specific causes come before the `Required question` fallback. The
+`Jobs applied` tile
 counts **`submitted` only**. It used to count every attempt, which is how known issue
 A4 hid: a form stuck on a question read as a finished application. Both halves stay
 in `applied_ids`, so a needs-attention job never also appears under Shortlisted.
+
+**The user can record either outcome by hand, and the two are deliberately
+asymmetric.** `/hireshire:mark-applied` over `scripts/jobs_cli.py` writes what the
+applier could not: `Database.mark_applied_by_hand` promotes the row to `submitted`,
+and `Database.decline_job` **deletes** it and un-shortlists the job with
+`DECLINED_BY_USER`. A declined job gets no `applied` row at all, and that is forced
+rather than chosen — every status that is not `submitted` renders under Needs
+Attention by design, so a "not pursuing" status would sit in the one section the
+feature exists to clear. It is the `location_mismatch` shape exactly: a verdict
+reached after scoring, so `skipped` stays 0 and the job keeps its LLM score in Jobs
+Filtered. Three consequences:
+
+- **The promotion is a narrow `UPDATE`, never `record_applied`.** That writer is
+  `INSERT OR REPLACE` on the primary key, so it would blank `board_token`, `title`
+  and `absolute_url` — the columns `load_applied_matches` falls back on once a job's
+  `matches` rows are pruned, which is exactly the old application being tidied up.
+- **A hand-marked application is indistinguishable from an automatic one**, because
+  the status written is plain `submitted`. A second "counts as applied" status would
+  have to be added to `overview_counts`, `run_progress`, `lifetime_progress` and
+  `data.overview_snapshot`, and each omission would be a silent undercount.
+  Provenance belongs in a new column, not a new status.
+- **The CLI rebuilds both pages itself**, from `last_run.json`. The pages are static
+  files only the engine rewrites, and between sweeps nothing rewrites them at all — so
+  without that call the user pastes the command, the database changes, and the page in
+  front of them does not. The same limit as everywhere else applies: `refresh` writes
+  the lifetime page and the newest run's page, so an older sweep's dashboard keeps
+  showing what was true when it ran.
+
+The buttons that carry this live in the row **body**, beside `Open posting →`, not in
+the `<summary>`: a `<button>` there fights the `<details>` element's own activation,
+and the six-column grid has no free cell. A `file://` page cannot write to SQLite, so
+the button copies the command rather than pretending to record anything — with an
+`execCommand` fallback and then a selectable `<code>`, because a local file is not
+reliably a secure context and `navigator.clipboard` can simply be absent.
 
 **All five sections read the same way, and the rows stay `<details>` for one
 load-bearing reason.** Each section is a filter box over a sticky six-column header
@@ -787,8 +835,19 @@ Four things about the applier that are easy to break:
   invented. Do not widen the exception, and do not "restore" the strict rule without
   asking. Screening answers (`work_authorized`, `requires_sponsorship`,
   `willing_to_relocate`) come from setup, and `null` means never asked, which is
-  different from "no". Essays are written from the resume and the job description,
+  different from "no". The EEO self-identification answers (`gender`,
+  `race_ethnicity`, `disability`, `veteran_status`) come from setup too, as `Literal`
+  strings where `""` means never asked and the session **declines**, which is what it
+  did for every one of them before they existed. They are never inferred from the
+  name or the resume. Essays are written from the resume and the job description,
   never from the search profile, for the same reason the scorer never sees it.
+- **A form question aimed at bots is never answered, followed or evaded.** When a
+  field asks whether the applicant is a bot or AI, or tells an AI to type something,
+  `apply_one.md` stops before submitting and reports `error` with exactly `Manual
+  application required.`, so the job lands under Needs Attention. Obeying gets the
+  application flagged; answering as a human is a misrepresentation made in the user's
+  name. It is a verdict — the form asks the same thing next sweep — and it is checked
+  in-session only, because the question lives in the form, not the description.
 - **`applied_ids` is re-read before every launch**, so a job recorded since the queue
   was built is never applied to twice.
 - **The session loads the browser server itself** (`--mcp-config <ROOT>/.mcp.json
@@ -834,12 +893,46 @@ suppresses Rich in favour of `logging` — required under the monitor.
 ## Things that are easy to get wrong
 
 - **Board defaults.** Workday and BambooHR default **off**, and they are the two
-  biggest lists: 24,200 companies held back against 15,868 swept (greenhouse 8,333,
-  lever 4,369, ashby 3,163, direct 3), out of 40,068 shipped. `docs/SPECS.md` leads with
-  40,000+ but must state plainly that the default sweep is ~15,868. Setup presents it
+  biggest lists: 24,200 companies held back against 15,871 swept (greenhouse 8,333,
+  lever 4,369, ashby 3,163, direct 6), out of 40,071 shipped. `docs/SPECS.md` leads with
+  40,000+ but must state plainly that the default sweep is ~15,871. Setup presents it
   as a time trade-off — and **no specific multiplier has been measured yet**, so say
   "considerably longer", not "3x". These counts come from `config/*_companies.json`
   and grow between releases; re-derive them rather than copying this paragraph.
+- **The direct portals are searched for the user's countries, derived from
+  `scraper.location_filter`.** `hireshire/direct/scope.py` resolves each term (country,
+  state, city, `remote - us`) against `portal_locations.COUNTRIES`, and each handler
+  builds its list URL from the result. Three rules, each learned from the portals:
+  - **The portal codes are a checked-in table, never looked up at sweep time.** Apple and
+    Google answer an unknown location with **zero results and a 200**, so a bad code
+    empties the board silently every sweep. Apple's codes are irregular (`USA`, `GBR`
+    but `INDC`, `CANC`, `AUSC`) and its lookup answers `georgia` with the Republic of
+    Georgia. `scripts/refresh_direct_locations.py` re-derives the columns by hand.
+    Intuit's free-text `Location=` is ignored outright; it scopes by a GeoNames country
+    facet, which exists only where Intuit has openings, so its column is sparse.
+  - **Anything unresolvable widens to everywhere; nothing narrows.** One unknown term,
+    a bare `remote`, or a country missing from one portal's column leaves that portal
+    unscoped. A narrowed scope hides jobs with no sign; a wide one only spends pages.
+  - **A job whose list entry names no place carries `location_is_placeholder`**, and
+    `scraper._matches_location` passes it. Google's list has no locations and Intuit's
+    says "Multiple Locations"; a filter of cities or states never contains the country
+    placeholder, which is how Google's whole board was once dropped and every Intuit
+    multi-city job with it. The price, accepted: such a job reaches scoring unchecked
+    until the applier's location verdict (`mark_not_shortlisted`) retires it.
+
+  **Every direct portal is plain HTTP, including the two once thought browser-only.**
+  Do not bring back a browser path for either:
+  - **Microsoft** is `/api/pcsx/search`. The 403 "Not authorized for PCSX" comes from
+    `/api/apply/v2/jobs` only. Its page is fixed at 10 and `location=` takes one
+    country (a second is silently ignored), so it walks one series per country.
+  - **Meta** answers 400 until a request carries browser fetch metadata (`Sec-Fetch-*`,
+    `Origin`, `Referer`). With it, one GraphQL POST returns the whole board (~1,000
+    jobs), so Meta has **no scope column** and `scraper.py` filters afterwards. Its
+    `offices` filter wants exact names and empties the board on a wrong one.
+    `meta.DOC_ID` is **checked in**: it is in neither the page nor its eager bundles.
+    Meta rotates it, and a stale one answers 404, an error row rather than an empty
+    board. The module docstring says how to refresh it. Its list has no date, so the
+    first sweep takes in Meta's whole backlog once and `seen_jobs` handles the rest.
 - **Interpreter discovery lives in exactly one place: `scripts/hireshire.sh`.**
   Two traps make this worth centralising. macOS has no bare `python` — Apple
   removed `/usr/bin/python` in 12.3 and Homebrew installs `python3` only. And

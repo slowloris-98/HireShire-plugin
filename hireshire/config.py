@@ -18,8 +18,8 @@ class CompanyConfig(BaseModel):
     ashby_token: Optional[str] = None
     bamboohr_token: Optional[str] = None
     workday_token: Optional[str] = None
-    # Single-tenant career portals (Apple/Google/Intuit). The "token" is just the
-    # company name — see hireshire/scrapers/direct.py.
+    # Single-tenant career portals (Amazon/Apple/Google/Intuit/Meta/Microsoft). The
+    # "token" is just the company name — see hireshire/scrapers/direct.py.
     direct_token: Optional[str] = None
     tags: list[str] = []
 
@@ -54,7 +54,7 @@ _DEFAULT_COMPANY_CONCURRENCY = {
     "ashby": 4,
     "bamboohr": 5,
     "workday": 5,
-    "direct": 3,
+    "direct": 6,
 }
 
 
@@ -76,7 +76,7 @@ class ScraperSettings(BaseModel):
     # the monitor rather than substituting — so the value has to come from here).
     # Bounded below: a zero or negative interval turns the monitor into a continuous
     # sweep, which is how you get rate-limited off the boards the plugin depends on.
-    poll_interval_hours: float = Field(4.0, gt=0)
+    poll_interval_hours: float = Field(3.0, gt=0)
 
     # The user's own job-search folder, captured ONCE by /hireshire:setup. Results
     # go to <workspace_dir>/hireshire_run_results/ and their resume is kept in
@@ -117,8 +117,9 @@ class ScraperSettings(BaseModel):
     # fetch only adds application `questions` (used by Phase 4). Off by default to
     # skip one HTTP call per job; enable when the applier needs question metadata.
     greenhouse_fetch_questions: bool = False
-    # Pages to walk per direct career portal (Apple/Google/Intuit). They are all
-    # sorted newest-first, so a small cap plus the age cutoff keeps runs cheap.
+    # Pages to walk per direct career portal. They are all sorted newest-first, so
+    # a small cap plus the age cutoff keeps runs cheap. Microsoft's page is half the
+    # size, so it walks twice this; Meta returns its whole board in one response.
     direct_max_pages: int = 5
 
     @field_validator("request_timeout_s")

@@ -27,6 +27,7 @@ from hireshire.config import load_config
 from hireshire.http_client import build_client
 from hireshire.scrapers.ashby import AshbyScraper
 from hireshire.scrapers.bamboohr import BambooHRScraper
+from hireshire.direct.scope import resolve_scope
 from hireshire.scrapers.direct import DirectScraper
 from hireshire.scrapers.exceptions import BoardBlockedError, SlugNotFoundError
 from hireshire.scrapers.greenhouse import GreenhouseScraper
@@ -94,6 +95,10 @@ def _save_bad_slugs(bad: dict[str, set[str]]) -> None:
 
 
 def _matches_location(job, terms: list[str]) -> bool:
+    # A direct-portal job whose list entry named no place carries the search it
+    # came from instead; the portal was already scoped to the user's countries.
+    if getattr(job, "location_is_placeholder", False):
+        return True
     haystack = [job.location.name.lower()]
     haystack += [o.location.lower() for o in job.offices if o.location]
     return any(term in loc for term in terms for loc in haystack)
@@ -215,6 +220,7 @@ async def main(
             direct_scraper = DirectScraper(
                 client, settings.make_limiter("direct"), settings.retry_attempts,
                 max_pages=settings.direct_max_pages, cutoff=cutoff,
+                scope=resolve_scope(settings.location_filter) if direct_companies else None,
             )
 
             total_companies = (

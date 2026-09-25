@@ -38,6 +38,11 @@ class Job(BaseModel):
 
     title: str
     location: Location
+    # True while `location` names the search a direct portal was scoped to rather
+    # than where this job is: Google's list gives no location at all, and Intuit's
+    # prints "Multiple Locations". The scraper's location filter passes such a job
+    # instead of dropping it for not naming a place (see `hireshire/direct/scope.py`).
+    location_is_placeholder: bool = False
     departments: list[Department] = []
     offices: list[Office] = []
     absolute_url: HttpUrl

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional, get_args
 
 import yaml
 from pydantic import BaseModel
@@ -10,6 +10,20 @@ from pydantic import BaseModel
 from hireshire import paths
 
 logger = logging.getLogger(__name__)
+
+# Self-identification answers. "" is never-asked; `config_writer` offers the rest.
+Gender = Literal["", "male", "female", "non_binary", "decline"]
+RaceEthnicity = Literal[
+    "", "american_indian_alaska_native", "asian", "black", "hispanic_latino",
+    "native_hawaiian_pacific_islander", "white", "two_or_more", "decline",
+]
+Disability = Literal["", "yes", "no", "decline"]
+VeteranStatus = Literal["", "protected_veteran", "not_protected_veteran", "decline"]
+
+
+def answer_options(kind: Any) -> list[str]:
+    """The values a self-identification field accepts, never-asked included."""
+    return list(get_args(kind))
 
 
 class ApplierSettings(BaseModel):
@@ -52,7 +66,8 @@ class ApplierSettings(BaseModel):
     phone: str = ""
     # Read off the resume at setup and confirmed by the user; empty when it has none.
     linkedin_url: str = ""
-    portfolio_url: str = ""
+    github_url: str = ""
+    portfolio_url: str = ""  # personal site or portfolio, not GitHub
 
     # Screening answers the resume cannot give, asked once at setup. None means the
     # user was never asked — an install predating these — and `apply_one.md` falls
@@ -60,6 +75,14 @@ class ApplierSettings(BaseModel):
     work_authorized: Optional[bool] = None
     requires_sponsorship: Optional[bool] = None
     willing_to_relocate: Optional[bool] = None
+
+    # Voluntary self-identification (the US EEO section), asked at setup and never
+    # inferred from the name or the resume. "" means never asked, and the session then
+    # declines — the same answer it gave before these existed.
+    gender: Gender = ""
+    race_ethnicity: RaceEthnicity = ""
+    disability: Disability = ""
+    veteran_status: VeteranStatus = ""
 
     generate_cover_letter: bool = True
     model: str = "gpt-4o-mini"

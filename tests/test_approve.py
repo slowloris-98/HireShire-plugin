@@ -45,6 +45,11 @@ APPROVED = [
     'scripts/setup_cli.py set matcher --json \'{"threshold": 75}\'',
     'scripts/setup_cli.py write-profile --text "Senior account manager, SaaS renewals"',
     "scripts/verify_bad_slugs.py --prune",
+    # The hand-recorded outcomes. Reached from a button on the user's own dashboard,
+    # so a prompt would sit between the click and what it asks for.
+    "scripts/jobs_cli.py list",
+    "scripts/jobs_cli.py applied --job-id 4f9c21a8",
+    "scripts/jobs_cli.py declined --job-id 4f9c21a8 --job-id 7b02ee31",
 ]
 
 
@@ -75,6 +80,10 @@ REFUSED = [
     # Real entrypoints, arguments that are not the ones we vouched for.
     "orchestrate.py --interval 1",
     "scripts/setup_cli.py rm-rf",
+    "scripts/jobs_cli.py drop-tables",
+    # A job id is data, but only while it cannot end the command it rides on.
+    "scripts/jobs_cli.py applied --job-id j1; whoami",
+    "scripts/jobs_cli.py applied --job-id $(whoami)",
     # The manual-apply CLI was removed with `/hireshire:apply`; a file of that name
     # must not inherit its old approval.
     "scripts/applied_cli.py list",
@@ -195,7 +204,7 @@ def _skill_commands(skill: str) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("skill", ["setup", "start-orchestration"])
+@pytest.mark.parametrize("skill", ["setup", "start-orchestration", "mark-applied"])
 def test_every_command_the_skills_run_is_one_the_guard_approves(skill):
     """The end the whole change is for: a user who installs this plugin and runs
     setup should not be asked to approve anything.

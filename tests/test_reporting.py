@@ -20,6 +20,7 @@ import pytest
 import orchestrate
 from hireshire import reporting
 from hireshire.reporting import data, overview
+from hireshire.storage.db import DECLINED_BY_USER
 
 
 def snapshot(**over) -> dict:
@@ -423,6 +424,9 @@ def test_a_crashed_run_also_leaves_pages_that_stop_reloading(tmp_path, monkeypat
     ("rerank_below_top_k", "Over budget — lost the top-K race"),
     ("duplicate_of_cluster", "Duplicate requisition — verdict copied from its cluster"),
     ("", "Scored by the LLM"),
+    # Written by the user rather than the engine, and keyed off the constant the writer
+    # uses, so the two cannot drift into a raw key on the page.
+    (DECLINED_BY_USER, "You decided not to pursue this one"),
 ])
 def test_known_skip_reasons_get_a_readable_label(reason, expected):
     assert data.reason_label(reason) == expected

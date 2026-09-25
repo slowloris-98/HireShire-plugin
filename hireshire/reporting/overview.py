@@ -47,6 +47,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from hireshire.applier import reasons
 from hireshire.reporting import data
 from hireshire.reporting.render import (
     SHOW_COST,
@@ -59,6 +60,7 @@ from hireshire.reporting.render import (
     rubric_rows,
     usd,
 )
+from hireshire.storage.db import DECLINED_BY_USER
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +164,28 @@ OVERVIEW_CSS = """
   text-transform: uppercase; color: var(--accent); text-decoration: none;
 }
 .job-body a.src:hover { text-decoration: underline; }
+/* The two outcomes the user can record by hand, on the footer line beside the
+   posting link. Deliberately not in the summary row: a <button> inside <summary>
+   fights the element's own activation behaviour, and the six-column grid has no free
+   cell — a seventh would have to be added to all five sections to hold them. */
+.job-act { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: 1.4rem; }
+.job-mark {
+  font-family: "IBM Plex Mono", monospace; font-size: .7rem; letter-spacing: .08em;
+  text-transform: uppercase; cursor: pointer; color: var(--ink-soft);
+  background: none; border: 1px solid var(--rule); border-radius: 3px;
+  padding: .35rem .6rem;
+}
+.job-mark:hover { color: var(--ink); border-color: var(--ink-faint); }
+.job-mark[data-mark="applied"]:hover { color: var(--accent); border-color: var(--accent); }
+.job-mark[data-mark="declined"]:hover { color: var(--warn); border-color: var(--warn); }
+.job-mark.done { color: var(--accent); border-color: var(--accent); }
+/* The fallback when neither clipboard route is available: the command itself, so the
+   user can select it by hand. Selected for them by the script. */
+.job-cmd {
+  font-family: "IBM Plex Mono", monospace; font-size: .72rem; color: var(--ink-soft);
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 3px;
+  padding: .3rem .45rem; user-select: all; word-break: break-all;
+}
 @media (max-width: 34rem) {
   /* The header is a desktop affordance: at this width the row wraps to three lines
      and six column labels would line up with nothing. */
@@ -257,26 +281,58 @@ _REASON_CHARS = 140
 #: whether to print a reason label under the title. The two used to be one tuple, and
 #: merging them again silently breaks one of them. `location_mismatch` needs both — the
 #: score, because the judge really did read the posting, and the label, because Jobs
-#: Filtered is the section whose entire question is why a job is there.
-_SCORED_REASONS = ("", "duplicate_of_cluster", "location_mismatch")
+#: Filtered is the section whose entire question is why a job is there. A job the user
+#: declined by hand needs both for the same two reasons.
+_SCORED_REASONS = ("", "duplicate_of_cluster", "location_mismatch", DECLINED_BY_USER)
 
 
 def _attention_reason(job: dict) -> tuple[str, str]:
     """`(line, full)`: the one line saying why an application needs the user, and the
     whole message for its tooltip.
 
-    `apply_one.md` asks the session for a single short line, but rows recorded before
-    that rule carry paragraph-length messages, and a model can ignore an instruction.
-    Cut at a word, not at a sentence: on the first real render, splitting on ". "
-    cut "can you get a U.S. security clearance" at "U.S.".
+    The line is the cause's fixed label from `reasons` whenever the stored text maps
+    onto one — rows written before the labels existed carry free-form and even
+    paragraph-length messages, and a model can ignore an instruction. The stored text
+    is never rewritten: it stays whole in `full`, the only place its detail survives.
+
+    Text no label accounts for is cut at a word, not at a sentence: on the first real
+    render, splitting on ". " cut "can you get a U.S. security clearance" at "U.S.".
     """
     full = " ".join((job.get("applied_error") or "").split())
+    label = reasons.short_label(job.get("applied_status"), full)
+    if label:
+        return label, full
     if not full:
         return "Not submitted — open the posting to finish it.", ""
     if len(full) <= _REASON_CHARS:
         return full, full
     cut = full[:_REASON_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:—-")
     return cut + "…", full
+
+
+#: The slash command the buttons put on the clipboard. A `file://` page cannot write to
+#: SQLite — browsers give a local document no database and no socket — so the page hands
+#: the user a command instead of pretending to record anything itself. `/hireshire:mark-applied`
+#: then does the write and rebuilds this page.
+_MARK_COMMAND = "/hireshire:mark-applied"
+
+#: The two outcomes, as (action, label). `applied` counts toward the Jobs applied tile;
+#: `declined` writes no application at all and files the job under Jobs Filtered.
+_MARK_ACTIONS = (
+    ("applied", "I applied to this"),
+    ("declined", "Not pursuing this"),
+)
+
+
+def _mark_buttons(job_id: str | None) -> str:
+    """The two hand-recorded outcomes, as buttons carrying data and no inline script."""
+    if not job_id:
+        return ""
+    return "".join(
+        f'<button type="button" class="job-mark" data-mark="{action}" '
+        f'data-job="{e(job_id)}">{label}</button>'
+        for action, label in _MARK_ACTIONS
+    )
 
 
 def _job_entry(job: dict, rank: int, applied: bool = False,
@@ -347,8 +403,15 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
         + listing(job, "match_reasons", "What matched", "good")
         + listing(job, "disqualifiers", "What counted against it", "bad")
     )
+    # The footer line: the posting, and — where the user is the one who has to act —
+    # the two outcomes they can record about it.
+    actions = ""
     if url:
-        body += f'<p style="margin-top:1.4rem"><a class="src" href="{e(url)}" target="_blank" rel="noopener">Open posting →</a></p>'
+        actions += f'<a class="src" href="{e(url)}" target="_blank" rel="noopener">Open posting →</a>'
+    if attention or (shortlisted and not applied):
+        actions += _mark_buttons(job.get("job_id"))
+    if actions:
+        body += f'<div class="job-act">{actions}</div>'
 
     return (
         f'<details class="job" id="j:{e(job.get("job_id"))}" data-hay="{e(hay)}">'
@@ -558,6 +621,83 @@ _FILTER_SCRIPT = """
 })();
 </script>
 """
+
+
+# The two hand-recorded outcomes. A `file://` document has no database and no socket, so
+# the button cannot write the verdict — it copies the command that does, and the user
+# pastes it into Claude. One delegated listener rather than a handler per row: a lifetime
+# page can carry MAX_JOB_ROWS of each section, and this way the markup stays data.
+#
+# Every step is guarded. `navigator.clipboard` is missing or throws on a `file://` origin
+# in some browsers (it is not reliably a secure context), `execCommand` is deprecated and
+# may be gone, and if both fail the command is printed for the user to select — which is
+# the one route that cannot fail. Same posture as _STATE_SCRIPT's guarded sessionStorage,
+# and for the same reason: this page is opened as a local file, where the usual web
+# platform guarantees do not all hold.
+_MARK_SCRIPT = """
+<script>
+(function () {
+  var LABELS = {};
+  function copy(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* fall through */ }
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      // Off-screen rather than hidden: a display:none textarea cannot be selected.
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (ok) return true;
+    } catch (e) { /* fall through */ }
+    return false;
+  }
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest ? ev.target.closest(".job-mark") : null;
+    if (!btn) return;
+    var job = btn.getAttribute("data-job");
+    var action = btn.getAttribute("data-mark");
+    if (!job || !action) return;
+    var text = "%(command)s " + action + " " + job;
+    if (!LABELS[action]) LABELS[action] = btn.textContent;
+    if (copy(text)) {
+      btn.textContent = "Copied — paste into Claude";
+      btn.classList.add("done");
+      // Put the label back rather than leaving a button that lies about what it does.
+      // A meta refresh mid-timer simply re-renders the original markup.
+      window.setTimeout(function () {
+        btn.textContent = LABELS[action];
+        btn.classList.remove("done");
+      }, 2500);
+      return;
+    }
+    // Neither clipboard route worked. Show the command and select it, so copying is
+    // still one keystroke away.
+    var out = btn.parentNode.querySelector(".job-cmd");
+    if (!out) {
+      out = document.createElement("code");
+      out.className = "job-cmd";
+      btn.parentNode.appendChild(out);
+    }
+    out.textContent = text;
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(out);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (e) { /* the text is on the page either way */ }
+  });
+})();
+</script>
+""" % {"command": _MARK_COMMAND}
 
 
 # Every `<details>` on the page carries a stable id, and this puts the open ones back
@@ -790,11 +930,14 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     # rendered a list — but there is no point shipping it when none of them did.
     listed = bool(snapshot["applied"] or attention or snapshot["shortlisted"]
                   or snapshot["filtered"])
+    # Only the two sections where the user is the one who has to act carry buttons, so
+    # only they call for the script.
+    markable = bool(attention or snapshot["shortlisted"])
 
     return document(
         f"{TITLE} — {stamp}" if per_run and stamp else TITLE,
         body + (_SCRIPT if seen else "") + (_FILTER_SCRIPT if listed else "")
-        + _STATE_SCRIPT,
+        + (_MARK_SCRIPT if markable else "") + _STATE_SCRIPT,
         refresh_s=REFRESH_S if snapshot["live"] else None,
         extra_css=OVERVIEW_CSS,
     )

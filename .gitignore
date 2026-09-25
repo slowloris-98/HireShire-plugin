@@ -20,10 +20,13 @@ analysis/cache/
 # Personal scratch notes. Same reason: anything tracked ships to every install.
 notes
 
+# Snapshots, console logs and screenshots the Playwright MCP server drops beside
+# whatever directory it is driven from. Debris from testing a page by hand, and the
+# same rule as the rest of this file: anything tracked ships to every install.
+.playwright-mcp/
+
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
 docs/Live_Demo.mp4
-docs/notes.txt
-docs/notes.txt
