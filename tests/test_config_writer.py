@@ -261,3 +261,39 @@ def test_shipped_defaults_carry_no_personal_or_role_specific_data():
     # the packager's own machine, so it is the likeliest thing to ship by accident.
     s = yaml.safe_load(scraper_yaml)
     assert s["settings"]["workspace_dir"] == ""
+
+
+def test_a_yes_no_answer_survives_the_engines_own_reader(data_dir):
+    """ruamel writes YAML 1.2, where `no` is a string, so it emitted `disability: no`
+    bare — and every engine reader is PyYAML (YAML 1.1), which reads that as False.
+    The applier settings then failed to load and auto-apply went off for the sweep.
+    Read back through `load_applier_config`, the reader that failed, not `read_config`."""
+    from hireshire.applier.config import load_applier_config
+
+    cw.write_config("applier", {"disability": "no"})
+    path = data_dir / "config" / "applier.yaml"
+    assert 'disability: "no"' in path.read_text(encoding="utf-8")
+    assert load_applier_config(path).settings.disability == "no"
+
+
+@pytest.mark.parametrize("word", ["yes", "no", "on", "off", "null", "1.0", "~"])
+def test_strings_yaml_1_1_would_retype_are_quoted(data_dir, word):
+    """Not only the disability answer: a title keyword `on` or `off` would be
+    retyped the same way, so the writer asks PyYAML about every string it writes."""
+    import yaml
+
+    cw.write_config("matcher", {"exclude_keywords": [word, "senior"]})
+    raw = yaml.safe_load((data_dir / "config" / "matcher.yaml").read_text(encoding="utf-8"))
+    assert raw["title_filter"]["exclude_keywords"] == [word, "senior"]
+
+
+def test_ordinary_strings_are_not_quoted():
+    """Only what PyYAML would retype gets forced quotes, so an ordinary answer keeps
+    whatever style the line already had and a one-key edit stays a one-line diff."""
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+    for plain in ("female", "https://github.com/ada", "united states", ""):
+        assert not isinstance(cw._quote_ambiguous(plain), DoubleQuotedScalarString)
+    assert isinstance(cw._quote_ambiguous("no"), DoubleQuotedScalarString)
+    assert [type(v) for v in cw._quote_ambiguous(["on", "senior"])] == [
+        DoubleQuotedScalarString, str]

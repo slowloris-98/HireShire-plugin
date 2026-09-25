@@ -1015,3 +1015,16 @@ def test_every_tracked_result_is_handed_to_the_applier(tmp_path, monkeypatch):
 def test_the_applier_gets_its_sentinel_even_when_tracking_fails(tmp_path, monkeypatch):
     got = _track(tmp_path, monkeypatch, _RecordingDB(fail=True), [_job("a")])
     assert got == [None], "the apply worker would wait forever"
+
+
+def test_a_bare_disability_no_written_by_0_15_0_still_loads(tmp_path, monkeypatch):
+    """Installs that saved through 0.15.0 carry `disability: no` unquoted, which
+    PyYAML reads as False. It must load as the word, not switch auto-apply off."""
+    applier = _write_configs(tmp_path, "settings:\n  location_filter: []\n")
+    applier.write_text(
+        "settings:\n  enable_applier: true\n  disability: no\n", encoding="utf-8")
+    monkeypatch.setattr(applier_config.paths, "config_file", lambda name: tmp_path / name)
+
+    settings = applier_config.load_applier_config(applier).settings
+    assert settings.disability == "no"
+    assert settings.enable_applier is True
