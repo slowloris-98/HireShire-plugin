@@ -130,6 +130,15 @@ def _loop(once: bool = False) -> int:
         logging.exception("Could not read applier config; continuing without it")
         applier_unreadable = True
 
+    # No sweep is running (the guard above just established it), so any run still
+    # without its pipeline `runs` row was killed before its `finally` — a shell task
+    # killed directly, Task Manager, a power cut. Close it out now, or its dashboards
+    # read "running" for good. `--stop` does the same thing straight after its kill.
+    try:
+        asyncio.run(orchestrate.finalise_abandoned_runs())
+    except Exception:  # noqa: BLE001 - never worth refusing a sweep over
+        logging.exception("Could not finalise abandoned runs")
+
     sweep_pid.write(os.getpid())
     print(
         "HireShire: sweeping once." if once

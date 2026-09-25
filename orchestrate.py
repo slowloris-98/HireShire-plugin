@@ -275,6 +275,108 @@ async def _finalise_pipeline(run_id: str, results_dir: Path, started_at: str,
     await asyncio.to_thread(reporting.refresh, run_id, results_dir, stamp, True)
 
 
+def _write_current_run(run_id: str, stamp: str, results_dir: Path, started_at: str) -> None:
+    """Record the sweep in flight, for `finalise_abandoned_runs` to find if it is killed.
+
+    The folder cannot be re-derived afterwards: `make_run_dir` may have fallen back
+    to the data dir. Losing this file only costs that fallback, so it never raises.
+    """
+    try:
+        paths.CURRENT_RUN_PATH.write_text(
+            json.dumps({"run_id": run_id, "stamp": stamp,
+                        "results_dir": str(results_dir), "started_at": started_at}),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("Could not write %s: %s", paths.CURRENT_RUN_PATH, exc)
+
+
+def _read_current_run() -> dict:
+    try:
+        return json.loads(paths.CURRENT_RUN_PATH.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _clear_current_run(run_id: str) -> None:
+    """Remove the marker, but only if it still names this run."""
+    if _read_current_run().get("run_id") != run_id:
+        return
+    try:
+        paths.CURRENT_RUN_PATH.unlink()
+    except OSError:
+        pass
+
+
+def _run_started_at(run_id: str) -> datetime | None:
+    try:
+        return datetime.strptime(run_id, "%Y-%m-%dT%H-%M-%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+async def finalise_abandoned_runs() -> list[str]:
+    """Close out every sweep that was killed before its `finally` could, and return
+    their stamps.
+
+    A forced kill — `--stop` is `taskkill /F` on Windows, and a killed shell task is
+    no gentler — runs no `finally`, so the pipeline `runs` row is never written and
+    both dashboards keep their `running` chip and meta refresh forever. This writes
+    what that `finally` would have, in the same order: the outputs, then the row
+    (`completed: False, stopped: True`), then a final refresh.
+
+    Only the **newest** orphan gets `_write_run_outputs`, because that is what writes
+    `last_run.json`, and repointing it at an older run would be a lie. Older orphans
+    get the row and the refresh only.
+
+    The caller must have established that no sweep is running: the in-flight one is
+    an orphan by this definition, and finalising it would disarm its live page.
+    Never raises.
+    """
+    try:
+        db = get_db()
+        orphans = await asyncio.to_thread(db.abandoned_runs)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not look for abandoned runs")
+        return []
+
+    marker = _read_current_run()
+    done: list[str] = []
+    for i, orphan in enumerate(orphans):
+        run_id = orphan["run_id"]
+        try:
+            began = _run_started_at(run_id)
+            if marker.get("run_id") == run_id and marker.get("stamp"):
+                stamp = marker["stamp"]
+                results_dir = Path(marker.get("results_dir") or paths.results_root() / stamp)
+                started_at = marker.get("started_at") or (began.isoformat() if began else None)
+            else:
+                stamp = _run_stamp(began) if began else run_id
+                results_dir = paths.results_root() / stamp
+                started_at = began.isoformat() if began else None
+
+            total_results = 0
+            if i == len(orphans) - 1:
+                results_dir.mkdir(parents=True, exist_ok=True)
+                total_results = await _write_run_outputs(
+                    run_id, results_dir, stamp, complete=False
+                )
+            await asyncio.to_thread(
+                db.finalise_run, run_id, PHASE_PIPELINE, started_at,
+                orphan.get("updated_at"),
+                {"total_results": total_results, "completed": False, "stopped": True},
+            )
+            # After the row, as in `_finalise_pipeline`: the row is what disarms the
+            # pages' meta refresh.
+            await asyncio.to_thread(reporting.refresh, run_id, results_dir, stamp, True)
+            _clear_current_run(run_id)
+            logger.info("Finalised stopped run %s", run_id)
+            done.append(stamp)
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not finalise stopped run %s", run_id)
+    return done
+
+
 # Quarters, not a percentage every company. Anyone tailing the log for progress
 # gets a readable line per quarter rather than a flood — so there are four of them for a sweep that visits ~10,000 employers, and
 # they are worded to be readable on their own.
@@ -388,6 +490,7 @@ async def run_pipeline(
     # Never raises while a workspace is configured, so an unreachable output
     # folder cannot take down a sweep that has not started yet.
     results_dir = paths.make_run_dir(stamp)
+    _write_current_run(run_id, stamp, results_dir, started_at)
 
     logger.info("=" * 60)
     logger.info("Pipeline starting — run %s → %s", run_id, results_dir)
@@ -548,6 +651,7 @@ async def run_pipeline(
                         run_id, results_dir, started_at, stamp,
                         total_results, complete=finished,
                     )
+                    _clear_current_run(run_id)
                 except Exception:  # noqa: BLE001
                     # A `finally` that raises replaces the real traceback with its
                     # own, which would hide the failure this exists to survive.

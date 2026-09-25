@@ -252,6 +252,41 @@ def test_a_location_list_in_applier_yaml_loses_to_the_scraper(tmp_path, monkeypa
     assert applier_config.load_applier_config(applier).settings.location_filter == ["india"]
 
 
+_PORTALS = ["amazon", "apple", "google", "intuit", "meta", "microsoft"]
+
+
+def _exclusions(tmp_path, monkeypatch, user_list: str, portals: str | None) -> list[str]:
+    shipped = tmp_path / "shipped"
+    shipped.mkdir()
+    if portals is not None:
+        (shipped / "direct_companies.json").write_text(portals, encoding="utf-8")
+    applier = tmp_path / "applier.yaml"
+    applier.write_text(f"settings:\n  exclude_companies: {user_list}\n", encoding="utf-8")
+    monkeypatch.setattr(applier_config.paths, "config_file", lambda name: tmp_path / name)
+    monkeypatch.setattr(applier_config.paths, "SHIPPED_CONFIG", shipped)
+    return applier_config.load_applier_config(applier).settings.exclude_companies
+
+
+def test_every_direct_portal_is_excluded_whatever_the_users_copy_says(tmp_path, monkeypatch):
+    """The user's `applier.yaml` survives updates and never receives a shipped default,
+    so an install written before `amazon` was listed kept driving Amazon's login wall."""
+    got = _exclusions(tmp_path, monkeypatch, "[google, apple]", json.dumps(_PORTALS))
+    assert {c.lower() for c in got} == set(_PORTALS)
+
+
+def test_the_users_own_exclusions_survive_and_are_not_repeated(tmp_path, monkeypatch):
+    got = _exclusions(tmp_path, monkeypatch, "[workday-co, Google]", json.dumps(_PORTALS))
+    assert got[:2] == ["workday-co", "Google"]
+    assert [c.lower() for c in got].count("google") == 1
+    assert {c.lower() for c in got} == set(_PORTALS) | {"workday-co"}
+
+
+@pytest.mark.parametrize("portals", [None, "not json", '{"a": 1}'])
+def test_an_unreadable_portal_list_leaves_the_users_exclusions_alone(tmp_path, monkeypatch,
+                                                                     portals):
+    assert _exclusions(tmp_path, monkeypatch, "[acme]", portals) == ["acme"]
+
+
 def test_the_session_is_given_the_users_own_location_list(tmp_path, launcher):
     """`apply_one.md` used to hardcode six strings and never read config, so a job
     scraped as `Arlington, VA, United States` and rendered as `Arlington, VA` was

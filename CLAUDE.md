@@ -452,6 +452,16 @@ Three consequences that should not be re-derived:
   finished run reloading itself forever, and skipping `finalise_run` on a crash
   leaves a dead one doing the same.
 
+  A forced kill skips it too — `--stop` is `taskkill /F`, and a killed shell task
+  runs no `finally` either. So `orchestrate.finalise_abandoned_runs` writes that row
+  from outside (`completed: false, stopped: true`, which renders a `stopped` chip)
+  for every `run_progress` row lacking one. `--stop` runs it right after the kill via
+  `scripts/finalise_stopped.py`, and `run_orchestration` runs it at start-up for every
+  other kind of kill. Only the newest orphan gets `_write_run_outputs`, since that
+  repoints `last_run.json`. Its folder comes from `DATA/current_run.json`, written as
+  a run starts, because `make_run_dir` may have fallen back. **It must only run when
+  no sweep is alive**: the in-flight run matches the same query.
+
 **`overview.py` ships at two scopes.** `Dashboard_Lifetime.html` at the results root
 covers every sweep the install has done; `Dashboard_<stamp>.html` in a run folder
 covers that sweep and adds how long it took. Both are complete local documents.
@@ -788,6 +798,12 @@ Four things about the applier that are easy to break:
   Recording it retires the job, so lifting an exclusion later does **not** bring it
   back — the same open half of known issue A4, accepted for the same reason the
   ambiguous-ending rule accepts it.
+
+  **Every direct portal is unioned in by `load_applier_config`, not listed in a
+  default.** It reads ROOT's `direct_companies.json`, because a user's `applier.yaml`
+  sits in DATA and never receives a shipped default: an install set up before `amazon`
+  was listed kept driving Amazon's login wall. So removing a portal from the YAML does
+  not opt it back in, by design.
 - **A location skip is a verdict too, and is the one that retires a job with no
   `applied` row.** The posting page states a location outside the user's list, which
   reads the same on every future sweep, so `Database.mark_not_shortlisted` clears

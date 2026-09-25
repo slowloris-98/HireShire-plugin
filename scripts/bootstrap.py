@@ -336,6 +336,9 @@ def stop() -> int:
     if pid is None:
         sweep_pid.clear(DATA)
         print("HireShire: no sweep on record; nothing to stop.")
+        # Still worth running: a sweep killed some other way (the shell task, Task
+        # Manager) left its dashboards reading "running", and this is how to fix them.
+        _finalise_stopped_runs()
         return 0
 
     killed = False
@@ -373,6 +376,8 @@ def stop() -> int:
     sweep_pid.clear(DATA)
     if killed:
         print(f"HireShire: sweep stopped (pid {pid}).")
+        _wait_for_exit(pid)
+        _finalise_stopped_runs()
         return 0
     print(
         f"HireShire: could not stop pid {pid}; the record was cleared anyway.\n"
@@ -380,6 +385,46 @@ def stop() -> int:
         "`kill` it directly."
     )
     return 1
+
+
+def _wait_for_exit(pid: int, timeout_s: float = 10.0) -> None:
+    """Give a killed sweep a moment to actually go, so its SQLite handle is released
+    before the finaliser opens the same database."""
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and is_alive(pid):
+        time.sleep(0.25)
+
+
+def _finalise_stopped_runs() -> None:
+    """Write what the killed sweep's `finally` never did, so both dashboards stop
+    reading "running" — see `scripts/finalise_stopped.py`.
+
+    Runs in the venv, because it needs the engine; this file stays stdlib-only. A
+    failure is reported, never raised: the sweep is already stopped, which is what
+    the user asked for, and the next sweep's start-up retries the same finalisation.
+    """
+    python = venv_python()
+    if not python.exists():
+        return
+    env = dict(os.environ)
+    env.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    env.setdefault("PYTHONIOENCODING", "utf-8:replace")
+    try:
+        result = subprocess.run(
+            [str(python), str(ROOT / "scripts" / "finalise_stopped.py")],
+            cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    if result is not None and result.returncode == 0:
+        if result.stdout.strip():
+            print(result.stdout.strip())
+        return
+    print("HireShire: could not update the dashboards for the stopped run; "
+          "the next sweep will (see logs/orchestration.log).")
 
 
 def check() -> int:
