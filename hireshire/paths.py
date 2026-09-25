@@ -55,6 +55,10 @@ RESULTS_DIR = DATA / "results"     # fallback results root; see results_root()
 LOGS_DIR = DATA / "logs"
 DB_PATH = DATA / "hireshire.db"
 LAST_RUN_PATH = DATA / "last_run.json"  # pointer to the newest run, read by /apply
+# The sweep in flight: written as a run starts, removed once its `finally` has
+# finalised it. Left behind only when the process was killed, and then it is how
+# `orchestrate.finalise_abandoned_runs` finds that run's folder and stamp.
+CURRENT_RUN_PATH = DATA / "current_run.json"
 # The `codex` judge's files — its output schema and instructions — and its working
 # root. Deliberately otherwise empty: Codex reads AGENTS.md and git state from cwd.
 CODEX_DIR = DATA / "codex"

@@ -149,6 +149,9 @@ def run_snapshot(db: Database, run_id: str) -> dict[str, Any]:
         # is written once at the end — so a live page simply shows no cost figure
         # rather than a figure that climbs and then stops meaning anything.
         "usage": (phases.get(PHASE_MATCH) or {}).get("usage"),
+        # Written by `orchestrate.finalise_abandoned_runs` for a sweep that was
+        # killed — `--stop`, a killed shell task — rather than one that ended itself.
+        "stopped": bool((phases.get(PHASE_PIPELINE) or {}).get("stopped")),
     }
 
 
@@ -491,6 +494,7 @@ def overview_snapshot(
         snapshot["started_at"] = run.get("started_at")
         snapshot["finished_at"] = run.get("finished_at")
         snapshot["usage"] = run.get("usage")
+        snapshot["stopped"] = bool(run.get("stopped"))
         snapshot["live"] = run.get("in_progress") if live is None else live
     else:
         # The lifetime page has no run of its own to ask about, and scanning every

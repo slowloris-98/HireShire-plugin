@@ -72,6 +72,10 @@ Tell the user, plainly:
   ```bash
   sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" --stop
   ```
+  When they ask *you* to stop it, run that command — do not only kill the background
+  task. `--stop` also closes out the sweep it stopped, so its dashboards stop showing
+  it as running; a task killed on its own leaves them reading "running" until the
+  next sweep starts.
 - **Where to watch it** without waiting on you: the dashboard at
   `<results root>/Dashboard_Lifetime.html`. It is local, covers every sweep the install has
   done, rewrites itself continuously while a sweep runs, and costs them nothing. Each

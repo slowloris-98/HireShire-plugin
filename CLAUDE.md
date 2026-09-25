@@ -452,6 +452,16 @@ Three consequences that should not be re-derived:
   finished run reloading itself forever, and skipping `finalise_run` on a crash
   leaves a dead one doing the same.
 
+  A forced kill skips it too — `--stop` is `taskkill /F`, and a killed shell task
+  runs no `finally` either. So `orchestrate.finalise_abandoned_runs` writes that row
+  from outside (`completed: false, stopped: true`, which renders a `stopped` chip)
+  for every `run_progress` row lacking one. `--stop` runs it right after the kill via
+  `scripts/finalise_stopped.py`, and `run_orchestration` runs it at start-up for every
+  other kind of kill. Only the newest orphan gets `_write_run_outputs`, since that
+  repoints `last_run.json`. Its folder comes from `DATA/current_run.json`, written as
+  a run starts, because `make_run_dir` may have fallen back. **It must only run when
+  no sweep is alive**: the in-flight run matches the same query.
+
 **`overview.py` ships at two scopes.** `Dashboard_Lifetime.html` at the results root
 covers every sweep the install has done; `Dashboard_<stamp>.html` in a run folder
 covers that sweep and adds how long it took. Both are complete local documents.

@@ -882,7 +882,9 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
 
     heading = (f"Dashboard Run: {stamp}" if per_run and stamp
                else "Lifetime Dashboard")
-    live_chip = '<span class="chip live">running</span>' if snapshot["live"] else ""
+    live_chip = ('<span class="chip live">running</span>' if snapshot["live"]
+                 else '<span class="chip">stopped</span>' if snapshot.get("stopped")
+                 else "")
 
     # The third accordion. Its rows are built by script rather than written out as
     # markup, but that is orthogonal to being collapsed: the script runs on load and

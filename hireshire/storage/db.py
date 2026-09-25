@@ -811,6 +811,27 @@ class Database:
         out["attention"] = applied["bad"] or 0
         return out
 
+    def abandoned_runs(self) -> list[dict]:
+        """Orchestrated sweeps that never wrote their pipeline `runs` row, oldest first.
+
+        Only a sweep killed outright (`--stop`, a killed shell task, Task Manager)
+        leaves one: the row is written from `run_pipeline`'s `finally`, which a
+        forced kill never reaches. Its pages then read as live for good, because
+        that row is their only signal the sweep is over. `run_progress` is written by
+        orchestrated sweeps only, so a phase run standalone is never mistaken for one.
+
+        The caller must know no sweep is running — the in-flight sweep matches too.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT p.run_id, p.updated_at FROM run_progress p "
+                "WHERE NOT EXISTS (SELECT 1 FROM runs r "
+                "  WHERE r.run_id = p.run_id AND r.phase = ?) "
+                "ORDER BY p.run_id",
+                (PHASE_PIPELINE,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def lifetime_progress(self) -> dict:
         """The lifetime page's bars: two sums and one backlog.
 
