@@ -75,3 +75,40 @@ def test_the_sweep_never_reads_a_session_pid():
             f"{forbidden} must not reach the sweep: it is not published on every host, "
             "and its absence used to read as 'stop every sweep on this machine'"
         )
+
+
+# --- an unreadable applier config is said out loud -----------------------------------
+
+def test_a_broken_applier_config_is_announced_not_only_logged(monkeypatch, tmp_path,
+                                                              capsys):
+    """The applier config is read once per start, so a file that fails to load turns
+    auto-apply off for every cycle until a restart. It used to be log-only, which is
+    how a bare `disability: no` silently stopped a sweep applying to anything."""
+    import logging
+    from types import SimpleNamespace
+
+    import orchestrate
+    from hireshire import sweep_pid
+    from hireshire import config as scraper_config
+    from hireshire.applier import config as applier_config
+    from hireshire.storage import db as storage_db
+
+    def _broken(*_a, **_k):
+        raise ValueError("disability: input_value=False")
+
+    async def _no_run(**_k):
+        return None
+
+    monkeypatch.setattr(logging, "basicConfig", lambda **_k: None)
+    monkeypatch.setattr(paths, "ensure_data_dirs", lambda: None)
+    monkeypatch.setattr(sweep_pid, "read", lambda *_a: None)
+    monkeypatch.setattr(sweep_pid, "write", lambda *_a: None)
+    monkeypatch.setattr(sweep_pid, "clear", lambda *_a: None)
+    monkeypatch.setattr(scraper_config, "load_config", lambda *_a: SimpleNamespace(
+        settings=SimpleNamespace(poll_interval_hours=4, db_path=str(tmp_path / "x.db"))))
+    monkeypatch.setattr(storage_db, "get_db", lambda *_a: None)
+    monkeypatch.setattr(applier_config, "load_applier_config", _broken)
+    monkeypatch.setattr(orchestrate, "run_pipeline", _no_run)
+
+    assert run_orchestration._loop(once=True) == 0
+    assert "auto-apply is OFF" in capsys.readouterr().out

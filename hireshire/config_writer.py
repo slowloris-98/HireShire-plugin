@@ -25,8 +25,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import yaml as pyyaml
 from pydantic import ValidationError
 from ruamel.yaml import YAML
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 from hireshire import paths
 from hireshire.applier.config import (
@@ -327,7 +329,7 @@ def _load_doc(path: Path):
     return _yaml.load(path.read_text(encoding="utf-8"))
 
 
-def _dump_doc(doc, path: Path) -> None:
+def _render(doc, path: Path) -> str:
     buf = io.StringIO()
     _yaml.dump(doc, buf)
     text = buf.getvalue()
@@ -336,7 +338,28 @@ def _dump_doc(doc, path: Path) -> None:
     # one-line diff instead of rewriting every line.
     if path.exists() and b"\r\n" in path.read_bytes():
         text = text.replace("\r\n", "\n").replace("\n", "\r\n")
-    path.write_bytes(text.encode("utf-8"))
+    return text
+
+
+def _quote_ambiguous(value: Any) -> Any:
+    """Double-quote any string the engine's reader would not read back as that string.
+
+    ruamel writes YAML 1.2, where `no` is a string, so it emits it bare. Every reader
+    in the engine is PyYAML, which is YAML 1.1, where a bare `no` is False — so
+    `disability: no` loaded as a bool, failed validation, and switched auto-apply off
+    for a whole sweep. Asking PyYAML itself, rather than keeping a word list, means
+    this cannot drift from the readers it protects. Ordinary strings stay bare.
+    """
+    if isinstance(value, list):
+        return [_quote_ambiguous(v) for v in value]
+    if isinstance(value, str) and value:
+        try:
+            reads_back = pyyaml.safe_load(value) == value
+        except pyyaml.YAMLError:
+            reads_back = False
+        if not reads_back:
+            return DoubleQuotedScalarString(value)
+    return value
 
 
 def _get_path(doc, path: tuple[str, ...]) -> Any:
@@ -448,14 +471,20 @@ def write_config(phase: str, values: dict[str, Any]) -> dict[str, Any]:
         coerce = _COERCIONS.get(fs.type)
         if coerce is not None:
             value = coerce(value)
-        _set_path(doc, fs.path, fs.normalise(value) if fs.normalise else value)
+        if fs.normalise:
+            value = fs.normalise(value)
+        _set_path(doc, fs.path, _quote_ambiguous(value))
 
+    # Validate the text as the engine will read it — PyYAML, YAML 1.1 — not ruamel's
+    # in-memory tree. The tree passed on `disability: no` while the file on disk could
+    # not be loaded; this is what makes any such disagreement fail here, at setup.
+    text = _render(doc, path)
     try:
-        spec.validate(_plain(doc))
+        spec.validate(pyyaml.safe_load(text) or {})
     except ValidationError as exc:
         raise ConfigError(f"Invalid config for {phase}: {exc}") from exc
 
-    _dump_doc(doc, path)
+    path.write_bytes(text.encode("utf-8"))
     return {name: _plain(_get_path(doc, fs.path)) for name, fs in spec.fields.items()}
 
 

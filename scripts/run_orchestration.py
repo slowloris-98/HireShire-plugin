@@ -122,11 +122,13 @@ def _loop(once: bool = False) -> int:
     db = get_db(settings.db_path)
 
     apply_enabled = False
+    applier_unreadable = False
     try:
         from hireshire.applier.config import load_applier_config
         apply_enabled = load_applier_config().settings.enable_applier
     except Exception:
         logging.exception("Could not read applier config; continuing without it")
+        applier_unreadable = True
 
     sweep_pid.write(os.getpid())
     print(
@@ -135,6 +137,12 @@ def _loop(once: bool = False) -> int:
              " It runs until you run --stop.",
         flush=True,
     )
+    # Said on stdout, not only logged: this is read once per start, so an unreadable
+    # file turns off the feature the user enabled for every cycle until a restart —
+    # and a log line alone is how a bare `disability: no` did exactly that unnoticed.
+    if applier_unreadable:
+        print("HireShire: auto-apply is OFF — the applier settings could not be read "
+              "(see logs/orchestration.log).", flush=True)
 
     async def cycles() -> None:
         while True:

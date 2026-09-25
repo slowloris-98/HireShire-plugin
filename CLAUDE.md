@@ -154,7 +154,13 @@ Consequences already worked out, which should not be re-derived:
     `SessionEnd` hook reappears.
 - **Setup never shows YAML.** `hireshire/config_writer.py` is a whitelisted,
   ruamel-based writer that preserves comments and CRLF and validates the patched
-  document against the phase's pydantic model *before* writing.
+  document against the phase's pydantic model *before* writing. **The writer is
+  YAML 1.2 and every reader is PyYAML, which is YAML 1.1**, so a string like `no`,
+  `on` or `off` is written bare and read back as a bool. That shipped in 0.15.0:
+  `disability: no` failed `ApplierSettings`, and `run_orchestration` turned auto-apply
+  off for the whole sweep. So `_quote_ambiguous` asks PyYAML about every string it
+  writes, and validation runs on the **PyYAML re-parse of the rendered text**, never
+  on ruamel's tree — the tree is what passed that file. Do not "simplify" either back.
 
 ### The funnel is the interesting part
 

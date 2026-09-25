@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional, get_args
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from hireshire import paths
 
@@ -83,6 +83,16 @@ class ApplierSettings(BaseModel):
     race_ethnicity: RaceEthnicity = ""
     disability: Disability = ""
     veteran_status: VeteranStatus = ""
+
+    @field_validator("disability", mode="before")
+    @classmethod
+    def _bare_yes_no(cls, v: Any) -> Any:
+        # 0.15.0's writer emitted a bare `disability: no`, which PyYAML (YAML 1.1)
+        # reads as False; the file then failed to load and auto-apply went off for the
+        # whole sweep. Read the bool back as the word it was written as.
+        if isinstance(v, bool):
+            return "yes" if v else "no"
+        return v
 
     generate_cover_letter: bool = True
     model: str = "gpt-4o-mini"

@@ -4,7 +4,7 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
-## [Unreleased]
+## [0.16.0] — 2026-09-24
 
 ### Changed
 
@@ -21,6 +21,17 @@ All notable changes to this plugin are documented here. Versions follow
   answers would leave a gap between sweeps that postings could fall through, setup
   widens the posting age and tells you. New installs sweep every 3 hours instead of 4.
   Your current settings are unchanged; re-run `/hireshire:setup` to pick new ones.
+
+### Fixed
+
+- **Answering "No" to the disability question no longer switches auto-apply off.**
+  Setup saved the answer in a form that HireShire then misread when it loaded your
+  settings. The sweep turned auto-apply off without saying so, even though you had
+  turned it on. Settings saved this way now load correctly, and setup no longer saves
+  them like that. Another answer, keyword or location could have tripped the same
+  thing (for example `yes`, `on` or `off`), and those are now saved safely too. If a
+  sweep is running now, stop it and start it again so it picks up auto-apply. If the
+  applier's settings can't be read, the sweep now says so when it starts.
 
 ## [0.15.1] — 2026-09-24
 
