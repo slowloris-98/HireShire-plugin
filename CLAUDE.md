@@ -855,7 +855,10 @@ Four things about the applier that are easy to break:
   covers tools, languages, frameworks and platforms only. Employers, titles, degrees,
   dates, certifications, licences, clearances and background answers are never
   invented. Do not widen the exception, and do not "restore" the strict rule without
-  asking. Screening answers (`work_authorized`, `requires_sponsorship`,
+  asking. Graduation dates are answerable because the user states them:
+  setup reads each degree off the resume, the user confirms the month, and it is stored
+  in `education` as `YYYY-MM`, so a degree with no confirmed date is omitted, never
+  guessed. `postal_code` is asked the same way and stays a string. Screening answers (`work_authorized`, `requires_sponsorship`,
   `willing_to_relocate`) come from setup, and `null` means never asked, which is
   different from "no". The EEO self-identification answers (`gender`,
   `race_ethnicity`, `disability`, `veteran_status`) come from setup too, as `Literal`

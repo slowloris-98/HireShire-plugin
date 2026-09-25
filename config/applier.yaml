@@ -30,6 +30,11 @@ settings:
   linkedin_url: ""        # read off your resume at setup; empty if it has none
   github_url: ""          # GitHub profile, likewise
   portfolio_url: ""       # personal site or portfolio, likewise
+  postal_code: ""         # ZIP / postal code, asked at setup
+  # Every degree, read off your resume and confirmed at setup. One entry each:
+  #   - {school: "...", degree: "B.S.", field: "Computer Science", graduation: "2024-05"}
+  # graduation is YYYY-MM; a future month means the degree is still expected.
+  education: []
 
   # Screening questions your resume cannot answer, asked once at setup.
   # Empty means never asked: authorization then defaults to yes and sponsorship to no.

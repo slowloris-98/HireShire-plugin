@@ -756,6 +756,27 @@ def test_the_prompt_carries_github_and_self_identification(tmp_path):
     }
 
 
+def test_the_prompt_carries_postal_code_and_education(tmp_path):
+    """Both were `Required question` endings before setup asked for them. Unset they
+    go through empty, which `apply_one.md` reads as never asked."""
+    dirs = worker.SessionDirs(cwd=tmp_path, out_dir=tmp_path,
+                              resume_path=tmp_path / "resume.pdf")
+    degree = {"school": "Georgia Tech", "degree": "M.S.", "field": "CS",
+              "graduation": "2026-12"}
+    settings = _settings(tmp_path, postal_code="02139", education=[degree])
+    prompt = worker.build_prompt(_job("j1"), settings, dirs, "RESUME")
+    applicant = json.loads(prompt.split("```json\n", 1)[1].split("\n```", 1)[0])["applicant"]
+    assert applicant["postal_code"] == "02139"
+    assert applicant["education"] == [degree]
+
+    prompt = worker.build_prompt(_job("j1"), _settings(tmp_path), dirs, "RESUME")
+    applicant = json.loads(prompt.split("```json\n", 1)[1].split("\n```", 1)[0])["applicant"]
+    assert applicant["postal_code"] == "" and applicant["education"] == []
+
+    rules = worker.PROMPT_PATH.read_text(encoding="utf-8")
+    assert "`postal_code`" in rules and "`education`" in rules
+
+
 def test_cancelling_the_worker_kills_the_session_in_flight(tmp_path, launcher):
     calls, script, killed = launcher
     script.append(_Proc(hang=True))
