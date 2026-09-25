@@ -788,6 +788,12 @@ Four things about the applier that are easy to break:
   Recording it retires the job, so lifting an exclusion later does **not** bring it
   back — the same open half of known issue A4, accepted for the same reason the
   ambiguous-ending rule accepts it.
+
+  **Every direct portal is unioned in by `load_applier_config`, not listed in a
+  default.** It reads ROOT's `direct_companies.json`, because a user's `applier.yaml`
+  sits in DATA and never receives a shipped default: an install set up before `amazon`
+  was listed kept driving Amazon's login wall. So removing a portal from the YAML does
+  not opt it back in, by design.
 - **A location skip is a verdict too, and is the one that retires a job with no
   `applied` row.** The posting page states a location outside the user's list, which
   reads the same on every future sweep, so `Database.mark_not_shortlisted` clears

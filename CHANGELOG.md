@@ -32,6 +32,11 @@ All notable changes to this plugin are documented here. Versions follow
   thing (for example `yes`, `on` or `off`), and those are now saved safely too. If a
   sweep is running now, stop it and start it again so it picks up auto-apply. If the
   applier's settings can't be read, the sweep now says so when it starts.
+- **Auto-apply now skips every company with its own careers site.** That means Amazon,
+  Apple, Google, Intuit, Meta and Microsoft, whose forms need you to sign in first.
+  Installs set up before Amazon was on that list kept trying Amazon's sign-in page. Jobs
+  at all six now appear under Needs Attention as "Requires human verification", so you
+  can apply to them yourself.
 
 ## [0.15.1] — 2026-09-24
 

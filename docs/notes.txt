@@ -12,3 +12,5 @@
         - leave it, we want users to use reccuring runs
 
 
+stopping the run should reflect on the dashboard. 
+currently it shows running even when the run is stoped

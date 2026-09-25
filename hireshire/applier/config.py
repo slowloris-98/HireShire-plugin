@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Literal, Optional, get_args
@@ -49,6 +50,9 @@ class ApplierSettings(BaseModel):
     # Companies whose application forms sit behind an account login, so the
     # applier cannot complete them. Matched case-insensitively against a job's
     # board_token. Their tuned resumes are still generated for manual use.
+    # `load_applier_config` always adds every direct portal: the user's copy of
+    # `applier.yaml` survives updates and never receives a shipped default, so this
+    # list only ever needs the user's own additions.
     exclude_companies: list[str] = []
 
     # DERIVED, never user-set: copied from `scraper.location_filter` by
@@ -130,6 +134,36 @@ def _scraper_location_filter() -> list[str]:
     return [str(v).strip() for v in value if str(v).strip()]
 
 
+def _direct_portals() -> list[str]:
+    """The shipped direct-portal names, read from ROOT so a release that adds one
+    reaches every install. Every one of them sits behind an account login.
+
+    Never raises: an unreadable list leaves `exclude_companies` as the user wrote it.
+    Read whether or not the direct board is enabled — the backlog can still hold
+    jobs from a sweep made while it was.
+    """
+    try:
+        value = json.loads(
+            (paths.SHIPPED_CONFIG / "direct_companies.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.debug("Could not read direct_companies.json for the exclusions: %s", exc)
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _with_direct_portals(companies: list[str]) -> list[str]:
+    """`companies` in order, then every direct portal not already named in any case."""
+    merged = list(companies)
+    seen = {c.strip().lower() for c in companies}
+    for portal in _direct_portals():
+        if portal.lower() not in seen:
+            seen.add(portal.lower())
+            merged.append(portal)
+    return merged
+
+
 def load_applier_config(path: str | Path | None = None) -> ApplierConfig:
     path = Path(path) if path is not None else paths.config_file("applier.yaml")
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -137,4 +171,7 @@ def load_applier_config(path: str | Path | None = None) -> ApplierConfig:
     # Overwritten, not defaulted: whatever `applier.yaml` happens to carry loses to
     # the live scraper setting, because there is only one list and the scraper owns it.
     settings.location_filter = _scraper_location_filter()
+    # Unioned, not defaulted: a shipped default never reaches a user's existing copy,
+    # which is how an install predating `amazon` kept driving Amazon's login wall.
+    settings.exclude_companies = _with_direct_portals(settings.exclude_companies)
     return ApplierConfig(settings=settings)
