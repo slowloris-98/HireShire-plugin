@@ -4,6 +4,18 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.17.0] — 2026-09-25
+
+### Added
+
+- **Auto-apply can now fill in your ZIP code and graduation dates.** If you turn on
+  auto-apply, setup now asks for your ZIP or postal code. It also reads each degree off
+  your resume, with the school, the degree and the graduation month and year, and asks
+  you to confirm them. Before this, a form that required either one stopped the
+  application and put it under Needs Attention as "Required question: zip code" or
+  "Required question: education". Setup never guesses a date you have not confirmed. To
+  add these to an existing install, re-run `/hireshire:setup`.
+
 ## [0.16.0] — 2026-09-24
 
 ### Changed

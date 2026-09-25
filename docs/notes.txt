@@ -1,4 +1,6 @@
 
+setup ask for zip code
+
 smart applier:
 
     1. should not apply to more than 2-3 positions for the same company

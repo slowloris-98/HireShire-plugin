@@ -173,7 +173,7 @@ rather than one call per question:
 | `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `poll_interval_hours`, `workspace_dir` |
 | `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
 | `funnel` | `targets`, `top_k`, `rerank_min_score` |
-| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `github_url`, `portfolio_url`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate`, `gender`, `race_ethnicity`, `disability`, `veteran_status` |
+| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `github_url`, `portfolio_url`, `postal_code`, `education`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate`, `gender`, `race_ethnicity`, `disability`, `veteran_status` |
 
 So it is `set matcher --json '{"exclude_keywords": [...]}'` — **not**
 `'{"title_filter": {"exclude_keywords": [...]}}'`, which is rejected.
@@ -633,6 +633,28 @@ Three things that trip people up:
     separately. Leave a link empty when the resume has none, and never construct
     one from their name: a guessed URL on a real application points at a stranger.
 
+    Ask for their **ZIP / postal code** (`postal_code`) in the same line. Many forms
+    require one and a resume rarely shows it. Propose it only if the resume states one;
+    never work it out from a city. Write it as a string, leading zeros kept.
+
+    **Education and graduation dates, read off the resume and confirmed.** List every
+    degree the resume shows, one per line: school, degree, field, graduation month and
+    year. For example:
+
+    > - University of Michigan — B.S. Computer Science — **May 2024**
+    > - Georgia Tech — M.S. Computer Science — **Dec 2026 (expected)**
+    >
+    > Are these right? Forms ask for the graduation month, so correct any I got wrong.
+
+    **Propose, never assume**, as with years of experience in question 7. Call out
+    anything you are unsure of, such as a year with no month, "Expected", a date
+    range, or no date at all, and ask for exactly that. The applier states these dates
+    on real applications, so a date the user has not confirmed is not written: leave that
+    degree out rather than guess its month. One confirmation, as elsewhere; do not ask a
+    second time. Store each as `{"school", "degree", "field", "graduation"}` with
+    `graduation` as `YYYY-MM`. A future month is how "expected" is recorded. If the resume
+    shows no degree, write `[]`.
+
     **Three screening questions, as one `AskUserQuestion` call.** Forms ask these
     constantly, the resume never answers them, and an unanswered required one used to
     stop the application:
@@ -670,7 +692,7 @@ Three things that trip people up:
 
     ```bash
     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
-        set applier --json '{"enable_applier": true, "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "linkedin_url": "...", "github_url": "...", "portfolio_url": "...", "work_authorized": true, "requires_sponsorship": false, "willing_to_relocate": false, "gender": "decline", "race_ethnicity": "decline", "disability": "decline", "veteran_status": "decline"}'
+        set applier --json '{"enable_applier": true, "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "linkedin_url": "...", "github_url": "...", "portfolio_url": "...", "postal_code": "02139", "education": [{"school": "...", "degree": "B.S.", "field": "Computer Science", "graduation": "2024-05"}], "work_authorized": true, "requires_sponsorship": false, "willing_to_relocate": false, "gender": "decline", "race_ethnicity": "decline", "disability": "decline", "veteran_status": "decline"}'
     ```
 
     Tell them what the applier does with the rest, in two sentences: essay questions

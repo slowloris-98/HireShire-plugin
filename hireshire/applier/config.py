@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional, get_args
 
 import yaml
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from hireshire import paths
 
@@ -25,6 +25,18 @@ VeteranStatus = Literal["", "protected_veteran", "not_protected_veteran", "decli
 def answer_options(kind: Any) -> list[str]:
     """The values a self-identification field accepts, never-asked included."""
     return list(get_args(kind))
+
+
+class Education(BaseModel):
+    """One degree, read off the resume at setup and confirmed by the user.
+
+    `graduation` is month precision, `YYYY-MM`, because that is what forms ask for;
+    a date in the future means the degree is still expected.
+    """
+    school: str
+    degree: str
+    field: str = ""
+    graduation: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 class ApplierSettings(BaseModel):
@@ -72,6 +84,12 @@ class ApplierSettings(BaseModel):
     linkedin_url: str = ""
     github_url: str = ""
     portfolio_url: str = ""  # personal site or portfolio, not GitHub
+    # A string, never an int: `02139` keeps its zero and non-US codes fit. Asked at
+    # setup; empty means never asked.
+    postal_code: str = ""
+    # Every degree with its graduation month, confirmed by the user at setup. The
+    # session may state these dates; it may never invent one. Empty means never asked.
+    education: list[Education] = []
 
     # Screening answers the resume cannot give, asked once at setup. None means the
     # user was never asked — an install predating these — and `apply_one.md` falls

@@ -96,6 +96,41 @@ def test_self_identification_ships_unasked_and_rejects_unknown_answers(data_dir)
     assert cw.read_config("applier")["gender"] == "non_binary"
 
 
+def test_a_postal_code_round_trips_as_a_string(data_dir):
+    """Bare, `02139` and `10001` are not strings to PyYAML, which is every reader."""
+    import yaml
+    for code in ("02139", "10001", "SW1A 1AA"):
+        cw.write_config("applier", {"postal_code": code})
+        text = (data_dir / "config" / "applier.yaml").read_text(encoding="utf-8")
+        assert yaml.safe_load(text)["settings"]["postal_code"] == code
+        assert cw.read_config("applier")["postal_code"] == code
+
+
+def test_education_ships_unasked_and_takes_only_a_month_precision_date(data_dir):
+    """The applier states these dates on real applications, so a malformed one must
+    never reach disk — the session would then have to guess the month."""
+    import yaml
+    from hireshire.applier.config import load_applier_config
+    assert cw.read_config("applier")["education"] == []
+
+    degree = {"school": "Georgia Tech", "degree": "M.S.",
+              "field": "Computer Science", "graduation": "2026-12"}
+    cw.write_config("applier", {"education": [degree]})
+    path = data_dir / "config" / "applier.yaml"
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["settings"]["education"] == [degree]
+    assert load_applier_config(path).settings.education[0].graduation == "2026-12"
+
+    for bad in ("2024", "May 2024", "2024-13"):
+        with pytest.raises(cw.ConfigError):
+            cw.write_config("applier", {"education": [{**degree, "graduation": bad}]})
+    assert cw.read_config("applier")["education"] == [degree]
+
+
+def test_ambiguous_strings_inside_a_record_are_quoted():
+    assert isinstance(cw._quote_ambiguous([{"field": "no"}])[0]["field"],
+                      cw.DoubleQuotedScalarString)
+
+
 def test_a_bare_string_is_accepted_for_a_list_field(data_dir):
     """Setup asks for locations in plain English, so "united states" is the natural
     answer — and pydantic can reject that but never clean it."""

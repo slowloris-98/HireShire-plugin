@@ -46,7 +46,8 @@ skip costs one form; a wrong skip retires the job permanently.
 ## 3. Identity fields
 
 Fill first name, last name, email and phone from the applicant's details. No reasoning
-needed.
+needed. Fill a ZIP or postal code field from `postal_code`; leave it blank when that is
+empty and the field is optional.
 
 Fill LinkedIn from `linkedin_url`, GitHub from `github_url`, and portfolio or personal
 website from `portfolio_url`. When the form has one generic "website" or "portfolio"
@@ -85,6 +86,14 @@ posting page (open its description tab if the form hides it). The rules that mat
   degree, a graduation date, a certification, a licence, a security clearance, or an
   answer to a background or criminal-history question. A wrong answer here is a lie
   told in the user's name, on a real application.
+- **Education** (school, degree, discipline, graduation month/year): answer from
+  `education` first — the applicant confirmed those entries, dates included — and from
+  the resume second. `graduation` is `YYYY-MM`; a month still in the future means the
+  degree is expected, so answer "expected" or pick that option where the form offers
+  one. A graduation date in neither is never invented: if it is required, the outcome is
+  `error` with `Required question: education`.
+- ZIP / postal code: `postal_code`. If it is empty and the field is required, the
+  outcome is `error` with `Required question: zip code`.
 - **A tool or technology the resume does not show** is the one deliberate exception,
   chosen by the user. Find the closest thing the resume *does* show — RabbitMQ for
   Kafka, Vue for React, Tableau for Power BI — and:

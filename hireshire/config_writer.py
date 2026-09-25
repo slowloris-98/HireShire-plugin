@@ -48,7 +48,7 @@ EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 @dataclass
 class FieldSpec:
     path: tuple[str, ...]          # key path into the YAML document
-    type: str                      # bool | int | float | str | str_list | enum
+    type: str                      # bool | int | float | str | str_list | enum | record_list
     doc: str                       # human-readable description
     options: Optional[list[str]] = None
     # Applied to the incoming value before it is written, after the `type`-driven
@@ -270,6 +270,17 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 ("settings", "portfolio_url"), "str",
                 "Personal site or portfolio URL, read off the resume.",
             ),
+            "postal_code": FieldSpec(
+                ("settings", "postal_code"), "str",
+                "ZIP / postal code, as a string. Asked at setup.",
+            ),
+            # A list of {school, degree, field, graduation: "YYYY-MM"}; pydantic's
+            # Education model does the checking on the re-parse, so no coercion here.
+            "education": FieldSpec(
+                ("settings", "education"), "record_list",
+                "Every degree with its graduation month, read off the resume and "
+                "confirmed by the user — never inferred.",
+            ),
             "work_authorized": FieldSpec(
                 ("settings", "work_authorized"), "bool",
                 "Legally authorized to work where the user is applying.",
@@ -352,6 +363,8 @@ def _quote_ambiguous(value: Any) -> Any:
     """
     if isinstance(value, list):
         return [_quote_ambiguous(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _quote_ambiguous(v) for k, v in value.items()}
     if isinstance(value, str) and value:
         try:
             reads_back = pyyaml.safe_load(value) == value
