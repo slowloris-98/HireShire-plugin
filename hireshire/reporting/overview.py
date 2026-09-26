@@ -390,6 +390,12 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
         sub = " · ".join(
             x for x in (sub, f"{status} {local_time(job.get('applied_at'))}") if x
         )
+    elif shortlisted and job.get("hold_until"):
+        # Held by the per-company cap (`data.mark_holds`). Without this line a held job
+        # reads exactly like one the applier simply has not reached yet.
+        sub = f"{reasons.COMPANY_LIMIT} · retries after {local_time(job['hold_until'])}"
+        tip = ' title="{}"'.format(e(reasons.company_limit_detail(
+            job.get("hold_count") or 0, company, job.get("hold_window_h") or 0)))
     sub_cls = "job-sub warn" if attention else "job-sub"
     sub_html = f'<span class="{sub_cls}"{tip}>{e(sub)}</span>' if sub else ""
 

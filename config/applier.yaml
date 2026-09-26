@@ -16,6 +16,8 @@ settings:
   inter_job_delay_s: 10   # seconds to wait between applications
   apply_timeout_s: 900    # give up on one application after this long (recorded as an error to check)
   backlog_hours: 72       # each sweep also applies to jobs shortlisted this recently but never applied to
+  max_per_company: 2      # at most this many applications to one company...
+  company_window_hours: 72  # ...in this many hours; later jobs wait for a slot (0 = no cap)
 
   # Career portals that require an account login before showing the form. The
   # applier cannot get past those, so skip them rather than burn a browser

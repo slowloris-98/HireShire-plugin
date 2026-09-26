@@ -106,6 +106,24 @@ def test_a_postal_code_round_trips_as_a_string(data_dir):
         assert cw.read_config("applier")["postal_code"] == code
 
 
+def test_the_company_limit_ships_on_and_setup_can_change_it(data_dir):
+    """Setup asks for the per-company cap; the shipped default is the recommended
+    option, so an install that never answers is still capped."""
+    import yaml
+    before = cw.read_config("applier")
+    assert (before["max_per_company"], before["company_window_hours"]) == (2, 72)
+
+    cw.write_config("applier", {"max_per_company": 1, "company_window_hours": 168})
+    text = (data_dir / "config" / "applier.yaml").read_text(encoding="utf-8")
+    settings = yaml.safe_load(text)["settings"]
+    assert (settings["max_per_company"], settings["company_window_hours"]) == (1, 168)
+    assert "at most this many applications to one company" in text
+
+    with pytest.raises(cw.ConfigError):
+        cw.write_config("applier", {"max_per_company": -1})
+    assert cw.read_config("applier")["max_per_company"] == 1
+
+
 def test_education_ships_unasked_and_takes_only_a_month_precision_date(data_dir):
     """The applier states these dates on real applications, so a malformed one must
     never reach disk — the session would then have to guess the month."""
