@@ -1,11 +1,4 @@
-
-setup ask for zip code
-
 smart applier:
-
-    1. should not apply to more than 2-3 positions for the same company
-
-1. Option to move jobs from needs attention / shortlisted / filtered / etc section into the jobs applied section. Basically if a user applis on a job manually then they should have a option to update it in the db and move those jobs into the applied section.
     - a human check to approve before applying into jobs
 
 2. introduce resume tuning.
@@ -15,7 +8,3 @@ smart applier:
 4. setup recommendations:
     option for a single run in the orchestrate. currently it reccurs everytime 
         - leave it, we want users to use reccuring runs
-
-
-stopping the run should reflect on the dashboard. 
-currently it shows running even when the run is stoped

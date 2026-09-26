@@ -63,7 +63,7 @@ from typing import Callable, Literal, Optional
 from pydantic import BaseModel, ValidationError
 
 from hireshire import claude_cli, paths
-from hireshire.applier import reasons
+from hireshire.applier import limits, reasons
 from hireshire.applier.config import ApplierSettings
 from hireshire.storage.db import Database, get_db
 
@@ -443,10 +443,14 @@ async def run_apply_worker(
     """
     db = db or get_db()
     stats = {"submitted": 0, "error": 0, "skipped_location": 0,
-             "excluded": 0, "deferred": 0, "expired": 0}
+             "excluded": 0, "deferred": 0, "expired": 0, "held": 0}
     excluded = {c.strip().lower() for c in settings.exclude_companies}
     attempted: set[str] = set()
     state = {"consecutive": 0, "tripped": False, "launched": False}
+    # Widened past `backlog_hours` while the per-company cap is on, so a job held on
+    # the day it was scored is still in the backlog when its slot frees. One number for
+    # both loaders below, which must partition the shortlist exactly.
+    backlog_h = limits.backlog_window_hours(settings)
 
     resume_path = paths.resolve_data(settings.resume_path) if settings.resume_path else None
     blocked = None
@@ -492,6 +496,23 @@ async def run_apply_worker(
             return
         if job_id in await asyncio.to_thread(db.applied_ids):
             return
+        if limits.enabled(settings):
+            # The per-company cap, re-read before every launch for the same reason
+            # `applied_ids` is: a submission earlier in this sweep must count. A hold is
+            # a deferral — "this employer had two applications this week" changes with
+            # time — so nothing is written and the backlog hands the job back next sweep.
+            now = datetime.now(timezone.utc)
+            key = limits.company_key(company)
+            stamps = await asyncio.to_thread(
+                db.recent_submissions, limits.window_start(settings, now).isoformat(), key)
+            until = limits.hold_until(stamps.get(key, []), settings, now)
+            if until is not None:
+                stats["held"] += 1
+                log = logger.debug if from_backlog else logger.info
+                log("Holding: %s — %s (company limit: %d in %dh; retried after %s)",
+                    company, title, settings.max_per_company,
+                    settings.company_window_hours, until.isoformat(timespec="minutes"))
+                return
 
         if state["launched"] and settings.inter_job_delay_s > 0:
             await asyncio.sleep(settings.inter_job_delay_s)
@@ -575,7 +596,7 @@ async def run_apply_worker(
             await asyncio.to_thread(db.bump_progress, run_id, apply_handled=1)
 
     if include_backlog and not blocked:
-        since = datetime.now(timezone.utc) - timedelta(hours=settings.backlog_hours)
+        since = datetime.now(timezone.utc) - timedelta(hours=backlog_h)
         try:
             backlog = await asyncio.to_thread(db.load_pending_applications, since.isoformat())
         except Exception:  # noqa: BLE001
@@ -607,7 +628,7 @@ async def run_apply_worker(
     # leaves it: the job stays in the shortlist tile and moves from the lifetime bar's
     # "not yet applied" share to its "need attention" share.
     if include_backlog and not blocked and not state["tripped"]:
-        before = datetime.now(timezone.utc) - timedelta(hours=settings.backlog_hours)
+        before = datetime.now(timezone.utc) - timedelta(hours=backlog_h)
         try:
             gone = await asyncio.to_thread(
                 db.load_expired_applications, before.isoformat()
@@ -615,7 +636,7 @@ async def run_apply_worker(
         except Exception:  # noqa: BLE001 - never worth the sweep, same as the backlog
             logger.exception("Could not load the expired shortlist")
             gone = []
-        reason = expired_reason(settings.backlog_hours)
+        reason = expired_reason(backlog_h)
         for job in gone:
             job_id = job.get("job_id")
             # Cannot overlap today — anything handled this sweep is either inside the
@@ -642,13 +663,14 @@ async def run_apply_worker(
             logger.warning(
                 "Applier: gave up on %d job(s) never applied to within %dh — they are "
                 "under Needs Attention on the overview page, to apply to by hand.",
-                stats["expired"], settings.backlog_hours,
+                stats["expired"], backlog_h,
             )
 
     logger.info(
         "Applier done: %d submitted, %d error, %d skipped for location, "
-        "%d at excluded companies, %d deferred to a later sweep, %d given up on",
+        "%d at excluded companies, %d held by the company limit, "
+        "%d deferred to a later sweep, %d given up on",
         stats["submitted"], stats["error"], stats["skipped_location"],
-        stats["excluded"], stats["deferred"], stats["expired"],
+        stats["excluded"], stats["held"], stats["deferred"], stats["expired"],
     )
     return stats

@@ -4,6 +4,29 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.18.0] — 2026-09-26
+
+### Added
+
+- **Auto-apply now sends at most 2 applications to one company in 3 days.** Before
+  this, a sweep that shortlisted five jobs at one employer applied to all five. Now the
+  third job waits. It stays under Jobs Shortlisted with the line "Company limit reached
+  · retries after …", which gives the date and time the next slot opens, and HireShire
+  applies to it on the first sweep after that. Hover over the line to see how many
+  applications went to that company. Applications you marked as applied yourself
+  count toward the limit, and ones that stopped with an error do not. Setup now asks
+  what the limit should be: 2 every 3 days, 1 per week, 3 every 3 days, no limit, or
+  your own. Existing installs get 2 every 3 days; re-run `/hireshire:setup` to change
+  it.
+
+### Changed
+
+- **Jobs waiting on the applier are retried for 4 days instead of 3.** While the
+  company limit is on, a job that could not be applied to yet stays in the retry queue
+  for `company_window_hours` plus one day (96 hours by default) instead of
+  `backlog_hours` (72). Without this, a job held by the company limit could expire into
+  Needs Attention a few minutes before its slot opened.
+
 ## [0.17.0] — 2026-09-25
 
 ### Added

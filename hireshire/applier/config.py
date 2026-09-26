@@ -9,6 +9,7 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 
 from hireshire import paths
+from hireshire.applier import limits
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,13 @@ class ApplierSettings(BaseModel):
     # matcher never streams a judged job twice.
     backlog_hours: int = 72
     max_steps: int = 40
+
+    # At most `max_per_company` submitted applications to one company (board_token)
+    # per `company_window_hours`; 0 turns the cap off. A job over the cap is held, not
+    # retired: it stays shortlisted and the backlog retries it every sweep until a
+    # slot frees. See `hireshire/applier/limits.py`.
+    max_per_company: int = Field(default=limits.DEFAULT_MAX_PER_COMPANY, ge=0)
+    company_window_hours: int = Field(default=limits.DEFAULT_WINDOW_H, ge=0)
 
     # Companies whose application forms sit behind an account login, so the
     # applier cannot complete them. Matched case-insensitively against a job's

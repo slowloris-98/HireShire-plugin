@@ -22,11 +22,14 @@ settings the reports actually want are read straight out of the YAML, exactly as
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
 
 from hireshire import paths
+from hireshire.applier import limits
 from hireshire.storage.db import (DECLINED_BY_USER, PHASE_MATCH, PHASE_PIPELINE,
                                  PHASE_SCRAPE, Database)
 
@@ -84,6 +87,54 @@ def _matcher_settings() -> dict[str, Any]:
         return out
     out["threshold"] = (raw.get("settings") or {}).get("threshold")
     out["top_k"] = (raw.get("funnel") or {}).get("top_k")
+    return out
+
+
+def _company_limit() -> SimpleNamespace | None:
+    """The per-company cap as the worker will apply it, or `None` when nothing holds.
+
+    Read straight out of `applier.yaml` for the reason the module docstring gives, with
+    the worker's own defaults behind it. `None` when the applier is off — a job nothing
+    will apply to is not being held — or when the cap is. Never raises.
+    """
+    try:
+        raw = yaml.safe_load(
+            paths.config_file("applier.yaml").read_text(encoding="utf-8")
+        ) or {}
+        s = raw.get("settings") or {}
+        limit = SimpleNamespace(
+            max_per_company=int(s.get("max_per_company", limits.DEFAULT_MAX_PER_COMPANY)),
+            company_window_hours=int(s.get("company_window_hours", limits.DEFAULT_WINDOW_H)),
+        )
+    except (OSError, yaml.YAMLError, TypeError, ValueError, AttributeError) as exc:
+        logger.debug("Could not read applier.yaml for the report: %s", exc)
+        return None
+    if s.get("enable_applier") is not True or not limits.enabled(limit):
+        return None
+    return limit
+
+
+def mark_holds(db: Database, rows: list[dict], limit: SimpleNamespace | None,
+               now: datetime | None = None) -> list[dict]:
+    """Copies of `rows` with `hold_until`/`hold_count` on those the cap will hold.
+
+    The same rule on the same table the worker reads before each launch, so the
+    shortlisted section's `Company limit reached` line says exactly what the next sweep
+    will do. Computed at render and never stored: a stored marker would have to be
+    cleared when the slot frees, and a missed clear would leave the label lying.
+    """
+    if not limit or not rows:
+        return rows
+    now = now or datetime.now(timezone.utc)
+    stamps = db.recent_submissions(limits.window_start(limit, now).isoformat())
+    out = []
+    for row in rows:
+        mine = stamps.get(limits.company_key(row.get("board_token")), [])
+        until = limits.hold_until(mine, limit, now)
+        if until is not None:
+            row = {**row, "hold_until": until.isoformat(), "hold_count": len(mine),
+                   "hold_window_h": limit.company_window_hours}
+        out.append(row)
     return out
 
 
@@ -460,6 +511,7 @@ def overview_snapshot(
         )
 
     shortlisted, filtered, seen = partition_jobs(rows, applied_ids)
+    shown_shortlisted = mark_holds(db, shortlisted[:MAX_JOB_ROWS], _company_limit())
 
     # The title-gate rejections, which live only in `jobs` — nothing wrote them a
     # `matches` row. They carry no score, so appending them after the rows that do
@@ -476,7 +528,7 @@ def overview_snapshot(
         "applied_total": len(applied),
         "attention": attention[:MAX_JOB_ROWS],
         "attention_total": len(attention),
-        "shortlisted": shortlisted[:MAX_JOB_ROWS],
+        "shortlisted": shown_shortlisted,
         "shortlisted_total": len(shortlisted),
         "filtered": filtered[:MAX_JOB_ROWS],
         "filtered_total": len(filtered),

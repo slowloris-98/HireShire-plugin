@@ -150,14 +150,19 @@ shortlisted rather than after the sweep ends. There is deliberately no rehearsal
 a `dry_run` setting used to fill forms without submitting, but a rehearsal left on
 indefinitely is indistinguishable from a broken applier, which is what it became.
 
-Two things still limit the blast radius. `exclude_companies` skips employers whose
+Three things still limit the blast radius. The applier sends at most
+`max_per_company` applications (2 by default) to one employer in any
+`company_window_hours` (72): a further job there waits under **Jobs Shortlisted**,
+labelled with when the next slot opens, and is applied to on the first sweep after
+that. `exclude_companies` skips employers whose
 portals need an account login — those jobs go to **Needs Attention** on the overview
 page, for you to apply to by hand. And the applier will not invent experience you do
 not have: if a required question cannot be answered honestly from your resume, it
 records an error and moves on — which lands in the same place.
 
 A job it could not get to at all ends up there too. When a browser session fails to
-start, the job is retried on later sweeps for `backlog_hours` (72 by default); if the
+start, the job is retried on later sweeps for `backlog_hours` (72 by default, widened to
+`company_window_hours` plus a day — 96 — while the company limit is on); if the
 window closes with no application made, the job moves to **Needs Attention** with the
 posting link, rather than sitting in your shortlist waiting for something that is no
 longer coming.

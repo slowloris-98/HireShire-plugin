@@ -1243,6 +1243,29 @@ class Database:
             rows = self._conn.execute("SELECT job_id FROM applied").fetchall()
         return {r["job_id"] for r in rows}
 
+    def recent_submissions(self, since_iso: str,
+                           company: str | None = None) -> dict[str, list[str]]:
+        """`submitted` stamps since `since_iso`, keyed by lowercased, trimmed company.
+
+        What the per-company cap counts (`hireshire/applier/limits.py`). `company`
+        narrows it to one key, which is how the worker asks before each launch; the
+        overview page asks for every company at once. Only `submitted` counts, which
+        includes a job marked applied by hand — that writes plain `submitted` too.
+        Install-wide on purpose: an employer does not care which sweep applied.
+        """
+        sql = ("SELECT LOWER(TRIM(board_token)) AS company, applied_at FROM applied "
+               "WHERE status = 'submitted' AND applied_at >= ?")
+        args: tuple = (since_iso,)
+        if company is not None:
+            sql += " AND LOWER(TRIM(board_token)) = ?"
+            args += (company.strip().lower(),)
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        out: dict[str, list[str]] = {}
+        for r in rows:
+            out.setdefault(r["company"] or "", []).append(r["applied_at"])
+        return out
+
     def load_applied(self) -> list[dict]:
         # `dry_run` is deliberately not selected. The column survives in the schema
         # because rows written before the applier became on/off carry real values and

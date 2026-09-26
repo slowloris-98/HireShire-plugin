@@ -845,6 +845,27 @@ Four things about the applier that are easy to break:
   install) and a page rarely contains any of them verbatim — and an ambiguous location
   continues with the application, because a missed skip costs one form while a wrong
   skip retires the job for good.
+- **The per-company cap is a deferral, and the page predicts it rather than records
+  it.** `hireshire/applier/limits.py` holds the rule: at most `max_per_company` (2)
+  `submitted` rows per `board_token` per `company_window_hours` (72), re-read from
+  SQLite before every launch like `applied_ids`. A held job writes **nothing** — "this
+  employer had two applications this week" changes with time, so recording it would
+  retire a job on a deferral. It stays shortlisted and the backlog hands it back every
+  sweep. Only `submitted` counts, which includes hand-marked jobs; `error` does not,
+  including the ambiguous endings below — the user chose that.
+
+  Two consequences. **The backlog window is widened** to
+  `max(backlog_hours, company_window_hours + 24)` while the cap is on
+  (`limits.backlog_window_hours`), and both loaders use it so they still partition.
+  Without it, siblings of one employer's batch are scored together and applied minutes
+  later, so the third one's slot frees just *after* its `scored_at + 72h` and it
+  expired a moment before it could have gone. **The shortlisted row's
+  `Company limit reached · retries after …` line is computed at render**
+  (`data.mark_holds`, same rule, same table) and never stored, because a stored marker
+  would need clearing when the slot frees. The report reads the cap out of
+  `applier.yaml` directly, like `_matcher_settings`, falling back on the defaults in
+  `limits.py`; the pydantic model takes its defaults from there too, so the two cannot
+  drift.
 - **Ambiguous endings are recorded, deliberately.** A timeout or an unreadable result
   may come after the submit click, so it is written as an `error` telling the user to
   check. Retrying it would risk a second application to the same employer, which is

@@ -254,6 +254,14 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
                 ("settings", "resume_path"), "str", "Resume PDF to upload.",
                 normalise=_clean_path_value,
             ),
+            "max_per_company": FieldSpec(
+                ("settings", "max_per_company"), "int",
+                "Most applications to one company per company_window_hours. 0 = no cap.",
+            ),
+            "company_window_hours": FieldSpec(
+                ("settings", "company_window_hours"), "int",
+                "The window max_per_company counts over, in hours.",
+            ),
             "first_name": FieldSpec(("settings", "first_name"), "str", "Applicant first name."),
             "last_name": FieldSpec(("settings", "last_name"), "str", "Applicant last name."),
             "email": FieldSpec(("settings", "email"), "str", "Applicant email."),

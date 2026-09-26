@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from hireshire.applier import config as applier_config
+from hireshire.applier import limits
 from hireshire.applier import reasons
 from hireshire.applier import worker
 from hireshire.applier.config import ApplierSettings
@@ -937,7 +938,9 @@ def test_the_window_closing_records_the_job_instead_of_dropping_it(tmp_path, lau
     assert stats["expired"] == 1
     row = db.load_applied()[0]
     assert row["job_id"] == "stale" and row["status"] == "expired"
-    assert row["error"] == worker.expired_reason(72)
+    # 96, not the configured 72: the per-company cap is on by default and widens the
+    # window so a held job is still in the backlog when its slot frees.
+    assert row["error"] == worker.expired_reason(96)
     assert row["absolute_url"] == "https://example.com/jobs/stale"
     # Out of both halves for good: the record is what retires it.
     assert db.load_pending_applications(_window_start()) == []
@@ -1084,3 +1087,104 @@ def test_a_bare_disability_no_written_by_0_15_0_still_loads(tmp_path, monkeypatc
     settings = applier_config.load_applier_config(applier).settings
     assert settings.disability == "no"
     assert settings.enable_applier is True
+
+
+# --- the per-company cap ----------------------------------------------------
+
+def _ago(hours: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def test_a_third_job_at_one_company_is_held_and_writes_nothing(tmp_path, launcher):
+    """Two submissions, then a hold. A hold is a deferral — the company is only busy
+    this week — so no `applied` row is written and the job stays in the backlog."""
+    calls, _, _ = launcher
+    stats, db = _run(tmp_path, [_job("a1"), _job("a2", company=" ACME "), _job("a3"),
+                                _job("b1", company="beta")])
+
+    assert len(calls) == 3                        # a1, a2, b1
+    assert stats["submitted"] == 3 and stats["held"] == 1
+    assert "a3" not in _statuses(db)
+
+
+def test_the_hold_counts_only_recent_submissions(tmp_path, launcher):
+    calls, _, _ = launcher
+    db = Database(tmp_path / "test.db")
+    db.record_applied("old1", "acme", "t", "u", _ago(80), "submitted", None, None)
+    db.record_applied("old2", "acme", "t", "u", _ago(75), "submitted", None, None)
+    db.record_applied("err", "acme", "t", "u", _ago(1), "error", None, "x")
+    db.record_applied("exc", "acme", "t", "u", _ago(1), "excluded", None, "x")
+    db.record_applied("new", "acme", "t", "u", _ago(1), "submitted", None, None)
+
+    stats, _ = _run(tmp_path, [_job("j1"), _job("j2")], db=db)
+
+    # One recent submission counts, so one slot is left: j1 goes, j2 waits.
+    assert len(calls) == 1 and stats["held"] == 1
+
+
+def test_a_hand_marked_application_counts(tmp_path, launcher):
+    calls, _, _ = launcher
+    db = Database(tmp_path / "test.db")
+    for j in ("h1", "h2"):
+        db.record_applied(j, "acme", "t", "u", _ago(2), "error", None, "x")
+        db.mark_applied_by_hand(j, _ago(1))
+
+    stats, _ = _run(tmp_path, [_job("j1")], db=db)
+    assert calls == [] and stats["held"] == 1
+
+
+def test_a_cap_of_zero_turns_it_off(tmp_path, launcher):
+    calls, _, _ = launcher
+    stats, _ = _run(tmp_path, [_job(f"j{n}") for n in range(4)],
+                    settings=_settings(tmp_path, max_per_company=0))
+    assert len(calls) == 4 and stats["held"] == 0
+
+
+def test_a_held_job_is_applied_to_from_the_backlog_once_a_slot_frees(tmp_path, launcher):
+    calls, _, _ = launcher
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "held")
+    db.record_applied("x1", "acme", "t", "u", _ago(10), "submitted", None, None)
+    db.record_applied("x2", "acme", "t", "u", _ago(5), "submitted", None, None)
+
+    stats, _ = _run(tmp_path, [], db=db, backlog=True)
+    assert calls == [] and stats["held"] == 1
+    assert [r["job_id"] for r in db.load_pending_applications(_window_start())] == ["held"]
+
+    # A later sweep, after the older submission has aged out of the window.
+    db.record_applied("x1", "acme", "t", "u", _ago(73), "submitted", None, None)
+    stats, _ = _run(tmp_path, [], db=db, backlog=True)
+    assert len(calls) == 1 and stats["submitted"] == 1
+
+
+def test_a_job_held_past_backlog_hours_is_not_expired_before_its_slot_frees(
+        tmp_path, launcher):
+    """Scored 80h ago: past the configured 72h backlog, inside the widened window. The
+    slot a hold waits for frees up to `company_window_hours` after a submission that
+    may have come minutes after the job was scored, so a 72h backlog would expire it
+    a moment before it could have been applied to."""
+    calls, _, _ = launcher
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "held", scored_at=datetime.now(timezone.utc) - timedelta(hours=80))
+
+    stats, _ = _run(tmp_path, [], db=db, backlog=True)
+
+    assert stats["expired"] == 0
+    assert len(calls) == 1                        # retried, and the slot is free
+
+
+def test_the_backlog_window_widens_only_while_the_cap_is_on(tmp_path):
+    assert limits.backlog_window_hours(_settings(tmp_path)) == 96
+    assert limits.backlog_window_hours(_settings(tmp_path, backlog_hours=200)) == 200
+    assert limits.backlog_window_hours(_settings(tmp_path, max_per_company=0)) == 72
+
+
+def test_hold_until_is_when_the_count_drops_below_the_cap(tmp_path):
+    s = _settings(tmp_path)
+    now = datetime.now(timezone.utc)
+    stamps = [(now - timedelta(hours=h)).isoformat() for h in (50, 10, 70)]
+    until = limits.hold_until(stamps + ["garbage", _ago(100)], s, now)
+    # Three inside a cap of 2: the second-oldest (50h ago) has to age out.
+    assert abs((until - (now + timedelta(hours=22))).total_seconds()) < 1
+    assert limits.hold_until(stamps[:1], s, now) is None
+

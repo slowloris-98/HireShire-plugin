@@ -147,7 +147,7 @@ as a ten-item form. Confirm what you understood before writing.
 
 **Use `AskUserQuestion` for every question below that has a small set of sensible
 answers**: locations, posting age, match threshold, jobs per run, job boards, scoring
-backend, scoring effort, poll interval, auto-apply, and the title-exclusion list you
+backend, scoring effort, poll interval, auto-apply, the company limit, and the title-exclusion list you
 draft in question 6. This skill already names a default or a recommendation for almost
 all of them — put that option first and mark it recommended. The user gets one tap
 instead of typing, and "Other" is always there for anyone who wants something else, so
@@ -173,7 +173,7 @@ rather than one call per question:
 | `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `poll_interval_hours`, `workspace_dir` |
 | `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
 | `funnel` | `targets`, `top_k`, `rerank_min_score` |
-| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `github_url`, `portfolio_url`, `postal_code`, `education`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate`, `gender`, `race_ethnicity`, `disability`, `veteran_status` |
+| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `github_url`, `portfolio_url`, `postal_code`, `education`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate`, `gender`, `race_ethnicity`, `disability`, `veteran_status`, `max_per_company`, `company_window_hours` |
 
 So it is `set matcher --json '{"exclude_keywords": [...]}'` — **not**
 `'{"title_filter": {"exclude_keywords": [...]}}'`, which is rejected.
@@ -687,12 +687,30 @@ Three things that trip people up:
     `native_hawaiian_pacific_islander`, two or more races → `two_or_more`, prefer not to
     say → `decline`. If what they type fits none of these, write `decline`.
 
+    **The company limit, as one more `AskUserQuestion` call.** Ask:
+
+    > How many applications may go to one company? Employers notice a flood of
+    > applications from one person, so HireShire spaces them out. Extra jobs at that
+    > company wait under Jobs Shortlisted and go out once a slot frees up.
+
+    | option | `max_per_company` | `company_window_hours` |
+    |---|---|---|
+    | 2 every 3 days (Recommended) | 2 | 72 |
+    | 1 per week | 1 | 168 |
+    | 3 every 3 days | 3 | 72 |
+    | No limit | 0 | 72 |
+
+    For "Other" ("5 a week"), map it to a whole number of applications and a window in
+    hours (`5`, `168`). If what they typed cannot be read that way, ask once more; do
+    not guess. If they pick **No limit**, say in one sentence that every shortlisted
+    job at one employer will then go out in the same sweep.
+
     Once they have heard the warning below, write it all in one call, alongside the
     gate:
 
     ```bash
     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
-        set applier --json '{"enable_applier": true, "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "linkedin_url": "...", "github_url": "...", "portfolio_url": "...", "postal_code": "02139", "education": [{"school": "...", "degree": "B.S.", "field": "Computer Science", "graduation": "2024-05"}], "work_authorized": true, "requires_sponsorship": false, "willing_to_relocate": false, "gender": "decline", "race_ethnicity": "decline", "disability": "decline", "veteran_status": "decline"}'
+        set applier --json '{"enable_applier": true, "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "linkedin_url": "...", "github_url": "...", "portfolio_url": "...", "postal_code": "02139", "education": [{"school": "...", "degree": "B.S.", "field": "Computer Science", "graduation": "2024-05"}], "work_authorized": true, "requires_sponsorship": false, "willing_to_relocate": false, "gender": "decline", "race_ethnicity": "decline", "disability": "decline", "veteran_status": "decline", "max_per_company": 2, "company_window_hours": 72}'
     ```
 
     Tell them what the applier does with the rest, in two sentences: essay questions

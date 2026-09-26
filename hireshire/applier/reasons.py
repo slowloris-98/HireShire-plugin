@@ -66,6 +66,26 @@ def required(topic: str) -> str:
     return f"{REQUIRED_QUESTION}: {topic}"
 
 
+#: Not a Needs Attention label: the sub-line on a *shortlisted* job the per-company cap
+#: is holding (`limits.py`). It is spelled here because this is where labels live.
+COMPANY_LIMIT = "Company limit reached"
+
+
+def span(hours: int) -> str:
+    """`72` → `3 days`, `36` → `36h`: a window as a person would say it."""
+    if hours and hours % 24 == 0:
+        days = hours // 24
+        return f"{days} day" if days == 1 else f"{days} days"
+    return f"{hours}h"
+
+
+def company_limit_detail(count: int, company: str, hours: int) -> str:
+    """The tooltip behind `COMPANY_LIMIT`."""
+    noun = "application" if count == 1 else "applications"
+    return (f"{count} {noun} to {company} in the last {span(hours)}. HireShire applies "
+            f"again once the oldest is {span(hours)} old.")
+
+
 def expired(hours: int) -> str:
     """The line for a job the backlog gave up on after `hours`."""
     return f"Not applied within {hours}h — apply yourself"

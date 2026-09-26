@@ -1052,3 +1052,58 @@ def test_a_page_with_nothing_to_act_on_ships_no_mark_script(tmp_path):
     # The markup, not the attribute selector or the comment the stylesheet carries
     # either way.
     assert '<button type="button"' not in html
+
+
+# --- the per-company cap's hold line ----------------------------------------
+
+def _limit(cap=2, hours=72):
+    from types import SimpleNamespace
+    return SimpleNamespace(max_per_company=cap, company_window_hours=hours)
+
+
+def _held_db(tmp_path) -> Database:
+    """j1 shortlisted at acme, which has two submissions this week; j2 at beta, none."""
+    db = _db(tmp_path)
+    now = datetime.now(timezone.utc)
+    _match(db, RUN, "j1", shortlisted=True)
+    _match(db, RUN, "j2", shortlisted=True, board_token="beta")
+    for n, h in (("x1", 10), ("x2", 5)):
+        db.record_applied(n, "acme", "t", "u", (now - timedelta(hours=h)).isoformat(),
+                          "submitted", None, None)
+    return db
+
+
+def test_a_held_shortlisted_job_says_so_and_when(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "_company_limit", lambda: _limit())
+    html = overview.build(_snapshot(_held_db(tmp_path)), RUN)
+
+    held = _job_block(html, "j1")
+    assert "Company limit reached · retries after" in held
+    assert e("2 applications to acme in the last 3 days.") in held
+    assert "Company limit" not in _job_block(html, "j2")
+
+
+def test_no_hold_line_when_the_cap_or_the_applier_is_off(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "_company_limit", lambda: None)
+    html = overview.build(_snapshot(_held_db(tmp_path)), RUN)
+    assert "Company limit" not in html
+
+
+def test_the_report_reads_the_cap_the_worker_would(tmp_path, monkeypatch):
+    cfg = tmp_path / "applier.yaml"
+    monkeypatch.setattr(data.paths, "config_file", lambda name: cfg)
+
+    def write(*lines):
+        cfg.write_text("\n".join(("settings:",) + lines) + "\n", encoding="utf-8")
+
+    write("  enable_applier: true")
+    limit = data._company_limit()
+    assert (limit.max_per_company, limit.company_window_hours) == (2, 72)
+
+    write("  enable_applier: false")
+    assert data._company_limit() is None
+    write("  enable_applier: true", "  max_per_company: 0")
+    assert data._company_limit() is None
+    cfg.unlink()
+    assert data._company_limit() is None
+
