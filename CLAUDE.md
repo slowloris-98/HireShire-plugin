@@ -24,7 +24,7 @@ or a terminal.
 # Plugin
 claude plugin validate . --strict     # before every release
 claude --plugin-dir .                 # load this repo as a plugin locally
-pytest                                # 772 tests, no network, no model weights
+pytest                                # 899 tests, no network, no model weights
 pytest tests/test_budget.py           # single file
 pytest tests/test_budget.py::test_only_jobs_reaching_the_cutoff_are_judged
 sh scripts/hireshire.sh --paths       # where ROOT and DATA resolve to, right now
@@ -55,6 +55,17 @@ shipped, read-only content only: engine code, default YAMLs, company slug lists.
 **Putting mutable state in ROOT loses it on the next update.** `hireshire/paths.py`
 is the single place this is decided; nothing else may resolve a path against the
 working directory, because a plugin's cwd is whatever project the user is in.
+
+**One namer, one creator, for the day layout.** `paths.run_dir_for(stamp)` decides
+where a run folder goes and creates nothing; `make_run_dir` creates what it names, and
+`orchestrate.finalise_abandoned_runs` uses it to find a killed sweep's folder again. A
+flat `<root>/<stamp>` that **already exists wins**, which is what keeps run folders made
+before the day layout exactly where the user left them — there is no migration, nothing
+moves inside the user's own workspace, and no `file://` bookmark breaks. A stamp is
+second-resolution, so that probe can only ever match a genuinely older run. The day
+comes from `run_ids.day_of(stamp)`, which **validates** rather than slicing: an
+unparseable run id makes `finalise_abandoned_runs` fall back to `stamp = run_id`, and
+`""` is the signal to use the flat layout rather than build `<root>/""/<stamp>`.
 `paths.resolve_data()` passes absolute paths through (that is how the user's resume,
 which lives outside the plugin, is addressed) and anchors relative ones under DATA.
 
@@ -67,8 +78,9 @@ ROOT does not have the problem, and the derivation drops the version segment, wh
 is what carries the user's database across an update.
 
 The third root belongs to the user, not the plugin. **WORKSPACE** is the folder they
-made for their job search — resume in `resume/original/`, one directory per run in
-`hireshire_run_results/`. Its absolute path is captured **once** by
+made for their job search — resume in `resume/original/`, and inside
+`hireshire_run_results/` one directory per **calendar day**, each holding that day's
+run directories (`<YYYY-MM-DD>/<stamp>/`). Its absolute path is captured **once** by
 `/hireshire:setup` into `scraper.workspace_dir`; `paths.results_root()` is the only
 reader. This does not weaken the cwd rule above, it is what makes obeying it
 possible: the *skill* knows the working directory and records it, the engine only
@@ -449,7 +461,7 @@ Three consequences worth not re-deriving:
 
 ### The reports are written by the engine
 
-`hireshire/reporting/` renders the overview page, at two scopes, and nothing else.
+`hireshire/reporting/` renders the overview page, at three scopes, and nothing else.
 It exists because the reasoning had nowhere to go — it was written to
 `matches.raw_json` and rendered nowhere, so an empty shortlist was indistinguishable
 from a broken threshold.
@@ -457,7 +469,7 @@ from a broken threshold.
 **Nothing is published.** There used to be a `dashboard.html` and a per-run
 `<stamp>_matching.html`, the latter published as an Artifact from a fixed
 `latest_matching.html`; three pages answered overlapping questions and the overview
-is the one that answers *what have I got* at both scopes. With publishing gone,
+is the one that answers *what have I got* at every scope. With publishing gone,
 `render.artifact_page` went too: `document()` is the only envelope, which is what
 licenses the meta refresh.
 
@@ -503,16 +515,50 @@ Three consequences that should not be re-derived:
   a run starts, because `make_run_dir` may have fallen back. **It must only run when
   no sweep is alive**: the in-flight run matches the same query.
 
-**`overview.py` ships at two scopes.** `Dashboard_Lifetime.html` at the results root
-covers every sweep the install has done; `Dashboard_<stamp>.html` in a run folder
-covers that sweep and adds how long it took. Both are complete local documents.
+**`overview.py` ships at three scopes.** `Dashboard_Lifetime.html` at the results root
+covers every sweep the install has done; `Dashboard_Day_<YYYY-MM-DD>.html` in a day
+folder covers that day's sweeps; `Dashboard_<stamp>.html` in a run folder covers that
+sweep and adds how long it took. All are complete local documents.
 Four numbers — `Jobs in scope`, `Relevant jobs`, `Jobs shortlisted`, `Jobs applied` —
 over five `<details>` sections, under a `HireShire` heading and a `Lifetime Dashboard`
-/ `Dashboard Run: <stamp>` subtitle. It explains nothing: past one line naming the scope and telling
+/ `Dashboard Day: <YYYY-MM-DD>` / `Dashboard Run: <stamp>` subtitle. It explains
+nothing: past one line naming the scope and telling
 the reader the sections open and filter, the judge's rationales inside an opened job
-are the only sentences on it. **Both scopes are the same markup fed different data**,
+are the only sentences on it. **Every scope is the same markup fed different data**,
 and the `Took` tile is the single deliberate exception — how long it took is a fact
-about a sweep, not about an install.
+about a sweep, not about a day or an install. The day page therefore substitutes the
+two questions that *are* about a day, `Sweeps` and `Avg per sweep`, and the lifetime
+page has neither, because a mean over months is not a number anyone acts on. `Sweeps`
+is `len(run_ids)` — the scope itself, so nothing can disagree with the page it labels —
+while `data.day_summary` averages only the sweeps with **both** timestamps. A sweep in
+flight has no pipeline `runs` row, so it counts in `Sweeps` and not in the average: the
+two tiles deliberately do not multiply out to the day, and `measured` is what lets the
+tooltip say so. An unmeasured average is an em dash and **zero is `0s`** — a sweep that
+finished inside a second was measured — which is why `render.humanise_seconds` takes
+`float | None` and must never test the value for truthiness.
+
+**The day is the date in the run's *stamp*, which is local, and it is never a range.**
+`hireshire/run_ids.py` owns this. A UTC prefix or a UTC window over `run_id` would file
+a 9pm sweep under a date the user never sees, and a window recomputed at render time can
+silently exclude the very sweeps in the folder it names once the machine's offset
+changes — leaving a page that disagrees with its own directory and nothing saying why.
+So a day's scope is an **enumerated list of run ids**, bucketed by
+`run_ids.day_of_run_id`, which is by construction the same composition that produced the
+folder name. `Database.known_run_ids` is where that list comes from, and the union of
+`run_progress` and `runs` is not belt-and-braces: a sweep in flight is only in the
+first, a standalone phase run only in the second.
+
+Two things about the day scope in SQL that must not be reversed. The filter goes
+**inside** `_canonical_matches_sql`, which is the mirror of the rule below that state
+predicates go outside, and the two only look contradictory: inside, `MAX(m.scored_at)`
+picks each job's newest row *among the day's sweeps*, which is what a day page means;
+outside, the aggregate would pick the job's all-time newest row and the outer `WHERE`
+would then discard the job **entirely** whenever that row belonged to another day, so a
+job today judged would vanish from today's page the moment a later sweep touched it.
+And `run_ids=[]` means "a day with no sweeps" and must read **zero**: `IN ()` is a SQLite
+syntax error and a truthiness test (`if run_ids:`) falls through to *lifetime* scope, so
+the whole install's numbers would render under a heading naming one empty day. Every
+reader branches on `is not None`, and `refresh` skips the page as well.
 
 It had a second exception, an `Est. cost` tile, and `render.SHOW_COST` now ships
 **off**. The figure was the Claude CLI's own client-side estimate at list price, and a
@@ -525,9 +571,20 @@ one edit, and `tests/test_reporting.py::test_the_cost_display_is_one_switch` fli
 **on** to prove the wiring behind it has not rotted.
 
 The filenames are the only place the word "overview" ever reached a user, which is why
-the module, the `report_paths` keys (`overview`, `run_overview`) and `last_run.json`'s
-pointer fields (`overview_html`, `run_overview_html`) all keep their old names: those
-are wiring, and renaming them would break consumers to no one's benefit. Note that
+the module, the `report_paths` keys (`overview`, `day_overview`, `run_overview`) and
+`last_run.json`'s pointer fields (`overview_html`, `day_overview_html`,
+`run_overview_html`) all keep that name: those
+are wiring, and renaming them would break consumers to no one's benefit.
+
+**`day_overview` is taken off `results_dir.parent`, not resolved from `paths`, and the
+key is absent when that folder is not the run's day.** `run_dir_for(stamp).parent` would
+name the *configured* workspace even when `make_run_dir` had already fallen back to
+`DATA/results/` because the drive is unplugged — and `overview.write` swallows the
+`OSError` and returns `None`, so the page would be lost with only a warning. The absent
+key is also how a run folder predating the day layout says it has no day page: an
+unguarded `.parent` would drop one beside `Dashboard_Lifetime.html`, duplicating the one
+a new-layout sweep writes inside the day folder the same day with neither authoritative.
+`last_run.json` records `""` for it, the same blank-not-`None` rule the `csv` field uses. Note that
 `tests/test_reporting.py` asserts no `dashboard.html` exists (a guard against the
 deleted page) and `tests/test_plugin_shell.py` forbids that substring in any skill —
 both comparisons are case-sensitive, and `Dashboard_Lifetime.html` clears them.
@@ -634,7 +691,10 @@ representative.
 **What they must agree on is which row per job they read, and lifetime scope is where
 that has teeth.** `matches` is keyed `(run_id, job_id)`, so a job dropped on a
 *deferral* — the call cap, a scoring failure — comes back and its later sweep writes a
-**second row** beside the first. `Database._canonical_matches_sql` is the one place
+**second row** beside the first. Day scope needs the same rule for the same reason —
+two of a day's sweeps can each write a row for one job — with the scope filter *inside*
+the aggregate, as the reporting section above explains.
+`Database._canonical_matches_sql` is the one place
 that chooses between them: `MAX(m.scored_at)` with bare columns, the same trick and the
 same rule `_unapplied` uses for the backlog window. The lifetime sections, the
 `Relevant jobs` and `Jobs shortlisted` tiles and the lifetime applier bar all go
@@ -753,6 +813,12 @@ Three rules to keep:
   These queries group whole tables, so they ride `LIFETIME_INTERVAL_S` like the other
   lifetime reads.
 
+The day page rides the lifetime throttle and shares `_last_lifetime` with it, but for
+a different reason, and the difference matters: the day queries are
+`run_id IN (<a day's worth>)` and index-backed, so they are cheap. What costs is the
+**render** — a third full `build()` of the same rows. Verifying that the SQL is cheap is
+therefore not a reason to move it onto the fast tick.
+
 The lifetime page carries its own throttle (`LIFETIME_INTERVAL_S`, 60 s) because its
 queries group a table that has no `run_id` filter to narrow them; everything else in
 `refresh` is indexed on `run_id` and stays cheap however long the user has been at it —
@@ -789,7 +855,7 @@ a `finally`:
 scraper.main(out_queue=q1) → q1[(board_token, list[Job])] → matcher.main(q1→q2)
   → q2[(MatchResult, Job)] → _collect_results → q3 → _track_results → pipeline_results table
                                                           └→ q4 → run_apply_worker → applied table
-  → <workspace>/hireshire_run_results/<stamp>/<stamp>_results.{csv,json}
+  → <workspace>/hireshire_run_results/<YYYY-MM-DD>/<stamp>/<stamp>_results.{csv,json}
 ```
 
 Four things about the applier that are easy to break:
@@ -950,7 +1016,7 @@ Four things about the applier that are easy to break:
   `screenshot_path`. It was one folder shared by every sweep, which left the user's only
   record of each submitted form in a pile with nothing saying which run it came from.
   There is no setting for it: `applied_dir` is gone, and the fallback needs none because
-  `make_run_dir` already falls back to `DATA/results/<stamp>`.
+  `make_run_dir` already falls back to `DATA/results/<YYYY-MM-DD>/<stamp>`.
 
   cwd is the other question. Playwright MCP uploads and writes only inside the client's
   roots, which Claude Code sets to the cwd, and the resume is in the workspace — running

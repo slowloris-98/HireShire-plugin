@@ -29,7 +29,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 import matcher
 import scraper
-from hireshire import paths, reporting
+from hireshire import paths, reporting, run_ids
 from hireshire.results_export import results_name, write_results_csv
 from hireshire.storage.db import PHASE_PIPELINE, get_db
 
@@ -122,15 +122,14 @@ def _load_apply_inputs() -> "tuple[ApplierSettings, str] | None":
 
 
 def _run_stamp(now: datetime | None = None) -> str:
-    """The run's display stamp, used for the results folder and the files in it.
+    """The run's display stamp. See `hireshire.run_ids.run_stamp`, which owns it.
 
-    LOCAL time, unlike `run_id`, because this one is read by a human browsing
-    their own folder — a run at 14:30 filed under `090005` would be a bug report.
-    It is never a key: `run_id` stays UTC so it is monotonic and cannot collide
-    when the clock goes back an hour at the end of DST.
+    Kept as a name here because it reads as part of this module's vocabulary, and
+    because the stamp's local-vs-UTC rule now has to be shared with `paths` and the
+    reporting layer — both of which this module imports, so the rule cannot live
+    here.
     """
-    now = now or datetime.now(timezone.utc)
-    return now.astimezone().strftime("%Y-%m-%d_%H%M%S")
+    return run_ids.run_stamp(now)
 
 
 def _json_name(stamp: str) -> str:
@@ -229,10 +228,15 @@ async def _write_run_outputs(run_id: str, results_dir: Path, stamp: str,
                     # never builds a path out of the string "None".
                     "csv": str(csv_path) if csv_path else "",
                     "json": str(json_path),
-                    # The two overview pages. `overview_html` spans every sweep and
-                    # sits at the results root, `run_overview_html` covers this one
-                    # and sits beside its CSV. Local files — nothing is published.
+                    # The three overview pages. `overview_html` spans every sweep and
+                    # sits at the results root, `day_overview_html` covers this run's
+                    # calendar day and sits in the day folder, `run_overview_html`
+                    # covers this one and sits beside its CSV. Local files — nothing is
+                    # published. The day one is blank rather than None for a run folder
+                    # that predates the day layout and therefore has no day folder —
+                    # same reason as `csv` above.
                     "overview_html": str(report_targets["overview"]),
+                    "day_overview_html": str(report_targets.get("day_overview") or ""),
                     "run_overview_html": str(report_targets["run_overview"]),
                     # False when the sweep did not reach the end. The files above
                     # are still real, just partial, and /apply reads `json` either
@@ -309,10 +313,7 @@ def _clear_current_run(run_id: str) -> None:
 
 
 def _run_started_at(run_id: str) -> datetime | None:
-    try:
-        return datetime.strptime(run_id, "%Y-%m-%dT%H-%M-%SZ").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+    return run_ids.run_started_at(run_id)
 
 
 async def finalise_abandoned_runs() -> list[str]:
@@ -348,11 +349,14 @@ async def finalise_abandoned_runs() -> list[str]:
             began = _run_started_at(run_id)
             if marker.get("run_id") == run_id and marker.get("stamp"):
                 stamp = marker["stamp"]
-                results_dir = Path(marker.get("results_dir") or paths.results_root() / stamp)
+                results_dir = Path(marker.get("results_dir") or paths.run_dir_for(stamp))
                 started_at = marker.get("started_at") or (began.isoformat() if began else None)
             else:
                 stamp = _run_stamp(began) if began else run_id
-                results_dir = paths.results_root() / stamp
+                # `run_dir_for`, not `results_root() / stamp`: a run killed before
+                # the day layout existed still lives flat at the root, and this is
+                # what finds it there instead of writing a fresh day folder beside it.
+                results_dir = paths.run_dir_for(stamp)
                 started_at = began.isoformat() if began else None
 
             total_results = 0
@@ -483,7 +487,7 @@ async def run_pipeline(
     where every stdout line becomes a user-facing notification.
     """
     now = datetime.now(timezone.utc)
-    run_id = now.strftime("%Y-%m-%dT%H-%M-%SZ")   # DB key across five tables: UTC, monotonic
+    run_id = now.strftime(run_ids.RUN_ID_FMT)      # DB key across five tables: UTC, monotonic
     started_at = now.isoformat()
     stamp = _run_stamp(now)                       # display only — folder and file names
 

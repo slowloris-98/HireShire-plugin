@@ -248,6 +248,32 @@ def local_time(iso: str | None) -> str:
     return dt.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
+def humanise_seconds(total: float | None) -> str:
+    """A number of seconds as "18m 42s" / "1h 05m" / "9s".
+
+    ``None`` is an em dash and so is a negative, for the reason ``num`` uses one: an
+    unmeasured span is not a zero-length one. **Zero is "0s"**, because a sweep that
+    finished inside a second was still measured — which is why the None/zero
+    distinction has to be carried by the value itself and never by a truthiness test
+    here. ``if not total: return "—"`` would swallow the real zero.
+    """
+    if total is None:
+        return "—"
+    try:
+        total = int(total)
+    except (TypeError, ValueError):
+        return "—"
+    if total < 0:
+        return "—"
+    hours, rest = divmod(total, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
 def duration(start_iso: str | None, end_iso: str | None = None) -> str:
     """How long a span took, as "18m 42s" — or how long it has been going.
 
@@ -255,6 +281,10 @@ def duration(start_iso: str | None, end_iso: str | None = None) -> str:
     the figure climbs with each refresh of the page. An em dash when there is no
     start at all, for the same reason ``num`` uses one: an unmeasured span is not a
     zero-length one.
+
+    Parses; ``humanise_seconds`` formats. The split is what lets the day page print
+    an *average* of several sweeps in the same shape as one sweep's ``Took``, from a
+    figure that never existed as a pair of timestamps.
     """
     if not start_iso:
         return "—"
@@ -271,16 +301,7 @@ def duration(start_iso: str | None, end_iso: str | None = None) -> str:
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
 
-    total = int((end - start).total_seconds())
-    if total < 0:
-        return "—"
-    hours, rest = divmod(total, 3600)
-    minutes, seconds = divmod(rest, 60)
-    if hours:
-        return f"{hours}h {minutes:02d}m"
-    if minutes:
-        return f"{minutes}m {seconds:02d}s"
-    return f"{seconds}s"
+    return humanise_seconds((end - start).total_seconds())
 
 
 def rubric_rows(job: dict, rubric) -> str:

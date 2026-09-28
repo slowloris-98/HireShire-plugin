@@ -782,5 +782,5 @@ database starts empty and every posting is new.
 Name the workspace and show them where the first CSV will appear:
 
 > Everything lives in `<workspace>`. Your resume is in `resume/original/`, and
-> after the first search you'll find `hireshire_run_results/<date>_<time>/` with
-> the results CSV in it.
+> after the first search you'll find `hireshire_run_results/<date>/<date>_<time>/`
+> with the results CSV in it.

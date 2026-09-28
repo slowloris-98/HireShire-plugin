@@ -143,7 +143,7 @@ tuner/applier columns only when those stages are enabled. ~~Write under
 `${CLAUDE_PLUGIN_DATA}/results/`.~~
 
 > **Superseded (0.2.0).** Results are written into the user's own job-search folder
-> — `<workspace>/hireshire_run_results/<stamp>/<stamp>_results.csv` — recorded once
+> — `<workspace>/hireshire_run_results/<YYYY-MM-DD>/<stamp>/<stamp>_results.csv` — recorded once
 > at setup as `scraper.workspace_dir`. `${CLAUDE_PLUGIN_DATA}/results/` remains the
 > fallback for installs that predate the setting. Everything else (DB, logs, venv,
 > config, profile) still lives in the data directory. The cwd rule is untouched: the

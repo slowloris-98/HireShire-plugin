@@ -1,4 +1,4 @@
-"""HTML reports for a run: the overview page, at two scopes.
+"""HTML reports for a run: the overview page, at three scopes.
 
 The engine writes these, not the agent. That is the whole design decision, and
 three things follow from it:
@@ -30,7 +30,7 @@ import logging
 import time
 from pathlib import Path
 
-from hireshire import paths
+from hireshire import paths, run_ids as run_id_utils
 from hireshire.reporting import data, overview
 from hireshire.storage.db import get_db
 
@@ -53,17 +53,36 @@ _last_lifetime = 0.0
 
 
 def report_paths(results_dir: Path, stamp: str) -> dict[str, Path]:
-    """Where this run's report files go.
+    """Where this run's report files go. Two keys, or three.
 
     The lifetime page sits at the results root, which is what gives the skills a
     fixed path to hand the user run after run; the stamped one lives with the run
     it describes, beside that run's CSV.
+
+    The day page sits in the day folder — `results_dir.parent` — and the key is
+    **absent** unless that folder is really this run's day. Two reasons for taking it
+    off `results_dir` rather than resolving it from `paths`:
+
+    * `paths.run_dir_for(stamp).parent` would name the *configured* workspace even when
+      `make_run_dir` had already fallen back to `DATA/results/` because the drive is
+      unplugged. `overview.write` swallows the `OSError` and returns `None`, so the page
+      would be lost with nothing but a warning. Taking the parent of the folder the run
+      actually got follows the fallback for free.
+    * The absent key is how a run with no day folder says so, which is what keeps this
+      honest for the run folders that predate the day layout: they sit flat at the
+      results root, and an unguarded `.parent` would drop a day page beside
+      `Dashboard_Lifetime.html` — duplicating the one a new-layout sweep writes inside
+      the day folder the same day, with neither authoritative.
     """
     root = paths.results_root()
-    return {
+    targets = {
         "overview": root / overview.LIFETIME_NAME,
         "run_overview": results_dir / overview.run_overview_name(stamp),
     }
+    day = run_id_utils.day_of(stamp)
+    if day and results_dir.parent.name == day:
+        targets["day_overview"] = results_dir.parent / overview.day_overview_name(day)
+    return targets
 
 
 def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> None:
@@ -85,6 +104,13 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
     re-derived inside it. The overview used to load the identical rows a second
     time, which on a clock-driven refresh is the same query ~300 times a sweep for
     nothing.
+
+    The day page rides the lifetime throttle, and the reason is the **render**, not the
+    SQL: its queries are `run_id IN (<a day's worth>)` and index-backed, so they are
+    nothing like the lifetime ones. What costs is a third full `build()` of up to 5,300
+    rows. Verifying that the queries are cheap is therefore not a reason to move it onto
+    the fast tick. It shares `_last_lifetime` because the two are always written
+    together, so one timestamp is the honest record of when they last were.
     """
     global _last_refresh, _last_lifetime
 
@@ -109,8 +135,8 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
                                    progress=progress),
             targets["run_overview"], stamp,
         )
-        # The lifetime page rides its own, slower throttle — but never skips the
-        # final write, which is the only one that sees the completed run.
+        # The lifetime and day pages ride their own, slower throttle — but never skip
+        # the final write, which is the only one that sees the completed run.
         if final or now - _last_lifetime >= LIFETIME_INTERVAL_S:
             _last_lifetime = now
             overview.write(
@@ -118,6 +144,23 @@ def refresh(run_id: str, results_dir: Path, stamp: str, final: bool = False) -> 
                                        progress=db.lifetime_progress()),
                 targets["overview"],
             )
+            day_target = targets.get("day_overview")
+            if day_target is not None:
+                day = run_id_utils.day_of(stamp)
+                day_ids = data.day_run_ids(db, day)
+                # An empty list would render zeros under a heading naming a day that
+                # does have sweeps in it, so skip rather than publish that. It can only
+                # happen if this run is in neither `run_progress` nor `runs`, which a
+                # standalone phase run is not.
+                if day_ids:
+                    overview.write(
+                        data.overview_snapshot(
+                            db, None, run_ids=day_ids,
+                            live=snapshot.get("in_progress"),
+                            progress=db.lifetime_progress(run_ids=day_ids),
+                        ),
+                        day_target, day,
+                    )
     except Exception:  # noqa: BLE001
         # Never propagate. This is called from inside the pipeline's own callbacks
         # and from its finaliser; an exception here would fail a run whose real

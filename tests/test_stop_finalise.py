@@ -36,10 +36,17 @@ def env(tmp_path, monkeypatch):
     return db, tmp_path
 
 
-def _start(db, tmp_path, run_id, with_marker=True):
-    """What `run_pipeline` has done by the time a kill can land."""
+def _start(db, tmp_path, run_id, with_marker=True, day_layout=True):
+    """What `run_pipeline` has done by the time a kill can land.
+
+    `day_layout=False` leaves the run folder flat at the results root, which is where a
+    sweep started before the day layout existed still is. That case is the reason
+    `paths.run_dir_for` probes for an existing flat folder at all: a marker-less orphan
+    has to finalise into its own folder, not a fresh day folder beside it.
+    """
     stamp = orchestrate._run_stamp(orchestrate._run_started_at(run_id))
-    results_dir = tmp_path / "results" / stamp
+    root = tmp_path / "results"
+    results_dir = (root / stamp[:10] / stamp) if day_layout else (root / stamp)
     results_dir.mkdir(parents=True)
     if with_marker:
         orchestrate._write_current_run(run_id, stamp, results_dir, "started")
@@ -87,6 +94,44 @@ def test_only_the_newest_orphan_repoints_last_run(env):
     assert not (old_dir / f"{old_stamp}_results.csv").exists()
     # The old one is still closed out, found without a marker.
     assert 'http-equiv="refresh"' not in _page(old_dir, old_stamp)
+
+
+def test_a_killed_sweep_from_before_the_day_layout_finalises_where_it_lies(env):
+    """No migration, and this is where that has teeth: the orphan has no marker, so its
+    folder is re-derived — and the derivation has to find the flat folder it is actually
+    in. Writing the partial CSV into a new day folder would leave the user's real run
+    folder untouched and the recovered one somewhere they never looked."""
+    db, tmp_path = env
+    stamp, legacy_dir = _start(db, tmp_path, NEW, with_marker=False, day_layout=False)
+    assert legacy_dir == tmp_path / "results" / stamp
+
+    assert asyncio.run(orchestrate.finalise_abandoned_runs()) == [stamp]
+
+    assert (legacy_dir / f"{stamp}_results.csv").exists()
+    assert 'http-equiv="refresh"' not in _page(legacy_dir, stamp)
+    assert not (tmp_path / "results" / stamp[:10]).exists()
+    # No day folder means no day page, and the pointer says so with a blank.
+    last = json.loads(paths.LAST_RUN_PATH.read_text(encoding="utf-8"))
+    assert last["day_overview_html"] == ""
+    assert list((tmp_path / "results").glob("Dashboard_Day_*.html")) == []
+
+
+def test_a_killed_sweep_leaves_its_day_page_finalised_too(env):
+    """All three pages have to stop reloading, not two: a day page still meta-refreshing
+    makes a dead sweep look live, which is the whole reason `finalise_abandoned_runs`
+    exists."""
+    db, tmp_path = env
+    stamp, results_dir = _start(db, tmp_path, NEW)
+    day_page = results_dir.parent / overview.day_overview_name(stamp[:10])
+    assert day_page.exists()
+    assert 'http-equiv="refresh"' in day_page.read_text(encoding="utf-8")
+
+    assert asyncio.run(orchestrate.finalise_abandoned_runs()) == [stamp]
+
+    html = day_page.read_text(encoding="utf-8")
+    assert 'http-equiv="refresh"' not in html
+    assert "chip live" not in html
+    assert f"Dashboard Day: {stamp[:10]}" in html
 
 
 def test_a_sweep_that_finished_is_not_an_orphan(env):

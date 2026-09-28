@@ -28,7 +28,7 @@ from typing import Any
 
 import yaml
 
-from hireshire import paths
+from hireshire import paths, run_ids as run_id_utils
 from hireshire.applier import limits
 from hireshire.storage.db import (DECLINED_BY_USER, PHASE_MATCH, PHASE_PIPELINE,
                                  PHASE_SCRAPE, Database)
@@ -122,6 +122,12 @@ def mark_holds(db: Database, rows: list[dict], limit: SimpleNamespace | None,
     shortlisted section's `Company limit reached` line says exactly what the next sweep
     will do. Computed at render and never stored: a stored marker would have to be
     cleared when the slot frees, and a missed clear would leave the label lying.
+
+    Relative to *now*, not to the page's scope: a day page for a past day would compute
+    its holds from today's submissions. It never does in practice, because `refresh` is
+    only ever driven by a live run and `jobs_cli` rewrites only the run `last_run.json`
+    names — so every page is written "today". That is the assumption a "rebuild an old
+    day's page" command would break.
     """
     if not limit or not rows:
         return rows
@@ -252,10 +258,11 @@ def partition_jobs(
     shortlisted: list[dict] = []
     filtered: list[dict] = []
     seen: list[dict] = []
-    # Structural, not a fallback for a loader that misbehaves. Both loaders return one
-    # row per job — run scope because `(run_id, job_id)` is the primary key, lifetime
-    # scope because the query groups on `job_id` — but the page's one real promise
-    # should not rest on the shape of whichever query fed it.
+    # Structural, not a fallback for a loader that misbehaves. Every loader returns one
+    # row per job — run scope because `(run_id, job_id)` is the primary key, lifetime and
+    # day scope because the query groups on `job_id` (day scope within the day's runs) —
+    # but the page's one real promise should not rest on the shape of whichever query
+    # fed it.
     placed: set[str] = set()
 
     for record in records:
@@ -446,6 +453,71 @@ def lifetime_progress_bars(lp: dict | None, live: bool) -> list[dict]:
     return bars
 
 
+def day_run_ids(db: Database, day: str) -> list[str]:
+    """Every sweep that belongs to one calendar day, newest first.
+
+    The day is a *local* date, and `run_id` is UTC, so this cannot be a SQL prefix or
+    a range — it buckets each run id through `run_ids.day_of_run_id`, which is by
+    construction the same composition that named the run's folder. That is what makes
+    it impossible for a sweep to sit in the day folder and be missing from the day
+    page's numbers.
+
+    Returns `[]` for a day with no sweeps, and the callers below treat that as "a day
+    with nothing in it" rather than as "no scope" — see `overview_snapshot`.
+    """
+    if not day:
+        return []
+    return [r for r in db.known_run_ids() if run_id_utils.day_of_run_id(r) == day]
+
+
+def day_summary(db: Database, run_ids: list[str]) -> dict[str, Any]:
+    """What the day page prints where the run page prints `Took`.
+
+    `sweeps` is `len(run_ids)`, not a query: that list *is* the scope, so anything
+    else could disagree with the page it labels. (`lifetime_progress`'s own `sweeps`
+    counts `run_progress` rows only, so it can read lower — a phase run made
+    standalone has no row there. The bars want that one; the tile wants this one.)
+
+    `avg_seconds` is the mean over the sweeps that have **both** timestamps, and
+    `None` when none do — never 0, which `render.humanise_seconds` would print as a
+    measured `0s`. Three things it deliberately does not hide:
+
+    * A sweep still in flight has no pipeline `runs` row at all, so it counts in
+      `sweeps` and not in the average. The two tiles therefore do not multiply out to
+      the day, and `measured` is what lets the tooltip say so.
+    * A killed sweep's `finished_at` is its last progress heartbeat, not its real end,
+      so its span is an undercount.
+    * A marker-less orphan can have no `started_at`, so a row with a null on either
+      side is skipped rather than read as zero.
+
+    Parsed with the same tolerance `render.duration` uses, because these strings come
+    from three producers in three shapes — see `Database.pipeline_spans`.
+    """
+    spans = db.pipeline_spans(run_ids) if run_ids else []
+    seconds: list[float] = []
+    for row in spans:
+        start, end = row.get("started_at"), row.get("finished_at")
+        if not start or not end:
+            continue
+        try:
+            a = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+            b = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        if a.tzinfo is None:
+            a = a.replace(tzinfo=timezone.utc)
+        if b.tzinfo is None:
+            b = b.replace(tzinfo=timezone.utc)
+        delta = (b - a).total_seconds()
+        if delta >= 0:
+            seconds.append(delta)
+    return {
+        "sweeps": len(run_ids),
+        "measured": len(seconds),
+        "avg_seconds": (sum(seconds) / len(seconds)) if seconds else None,
+    }
+
+
 # Caps on what the overview page renders. A closed `<details>` still costs its full
 # DOM, so an uncapped lifetime page on a mature install would be tens of megabytes
 # reloading itself every fifteen seconds. The summaries print the true count either
@@ -461,18 +533,28 @@ def overview_snapshot(
     run: dict[str, Any] | None = None,
     records: list[dict] | None = None,
     progress: dict | None = None,
+    run_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Everything the overview page renders, at one scope or the other.
+    """Everything the overview page renders, at one of three scopes.
 
-    `run_id` selects the scope: a run id gives the per-sweep page beside that run's
-    CSVs, `None` gives the lifetime page at the results root. The two go through
-    different loaders — one run's rows are already indexed and cheap, the whole
-    install's need grouping and a cap — but come back in the same shape, so the
-    renderer is written once.
+    The scope is chosen by which of the two id arguments is given, and they are
+    mutually exclusive:
+
+    * `run_id` — the per-sweep page beside that run's CSVs.
+    * `run_ids` — one calendar day, inside that day's folder. A **list**, from
+      `day_run_ids`; `[]` means a day with no sweeps and must render zeros, which is
+      why every branch here tests `is not None` rather than truthiness.
+    * neither — the lifetime page at the results root.
+
+    They go through different loaders — one run's rows are already indexed and cheap,
+    a day's and the install's need grouping and a cap — but come back in the same
+    shape, so the renderer is written once.
 
     Applications are the one figure that cannot be scoped cleanly: `applied` has no
-    `run_id`. At run scope it means "applications to jobs this sweep saw", which is
-    the closest honest reading and is the same rule `overview_counts` applies.
+    `run_id`. At run scope it means "applications to jobs this sweep saw", and at day
+    scope "applications to jobs this day's sweeps saw" — which can include one made
+    weeks later or weeks earlier. That is the closest honest reading at every scope
+    and the same rule `overview_counts` applies.
 
     `run` lets a caller hand in a `run_snapshot` it already has, and `records` the
     rows from `load_all_matches`. `reporting.refresh` has both a few lines earlier and
@@ -483,16 +565,17 @@ def overview_snapshot(
     the bars are that sweep's, kept after it finishes as a record of where each stage
     ended. On the lifetime page it is `Database.lifetime_progress` and the bars are
     lifetime totals, shown always — live or not, because they describe the install
-    rather than any one sweep.
+    rather than any one sweep. The day page is the lifetime shape narrowed to the
+    day's runs: `lifetime_progress(run_ids=…)`, rendered by the same builder.
     """
-    counts = db.overview_counts(run_id)
+    counts = db.overview_counts(run_id, run_ids=run_ids)
     # The `applied` table feeds two sections. A submission goes under Jobs Applied;
     # every other status — `error`, `excluded`, or one nobody has named yet — is an
     # application that needs the user, so it goes under Needs Attention rather than
     # vanishing. `excluded` is the one no session produces: the applier wrote it
     # itself because the employer's portal needs an account login.
     # Both halves stay in `applied_ids`, so neither reappears under Shortlisted.
-    attempts = db.load_applied_matches(run_id)
+    attempts = db.load_applied_matches(run_id, run_ids=run_ids)
     applied = [r for r in attempts if r.get("applied_status") == "submitted"]
     attention = [r for r in attempts if r.get("applied_status") != "submitted"]
     applied_ids = {r.get("job_id") for r in attempts}
@@ -506,8 +589,14 @@ def overview_snapshot(
         # later verdict satisfied both and was listed twice, under contradicting
         # labels. The single limit covers both ends of the old pair because the
         # ordering puts the judged block first.
+        #
+        # Day scope is the same call with the day's runs, so the row it picks per job
+        # is that job's newest *within the day* — see `_canonical_matches_sql`. The
+        # limit is the lifetime one; over-generous for a day, which is the safe
+        # direction.
         rows = db.load_lifetime_matches(
-            limit=MAX_TAIL_ROWS + MAX_JOB_ROWS * 2 + len(attempts)
+            limit=MAX_TAIL_ROWS + MAX_JOB_ROWS * 2 + len(attempts),
+            run_ids=run_ids,
         )
 
     shortlisted, filtered, seen = partition_jobs(rows, applied_ids)
@@ -517,7 +606,7 @@ def overview_snapshot(
     # `matches` row. They carry no score, so appending them after the rows that do
     # keeps the blanks at the bottom of the last section.
     seen += [
-        r for r in db.load_unmatched_jobs(run_id, MAX_TAIL_ROWS)
+        r for r in db.load_unmatched_jobs(run_id, MAX_TAIL_ROWS, run_ids=run_ids)
         if r.get("job_id") not in applied_ids
     ]
 
@@ -541,6 +630,7 @@ def overview_snapshot(
     }
 
     if run_id:
+        snapshot["scope"] = "run"
         run = run if run is not None else run_snapshot(db, run_id)
         snapshot["progress"] = progress_bars(progress, run)
         snapshot["started_at"] = run.get("started_at")
@@ -549,10 +639,19 @@ def overview_snapshot(
         snapshot["stopped"] = bool(run.get("stopped"))
         snapshot["live"] = run.get("in_progress") if live is None else live
     else:
-        # The lifetime page has no run of its own to ask about, and scanning every
+        # Neither aggregate page has a run of its own to ask about, and scanning every
         # run for one still in progress would count a crashed sweep as live forever.
-        # Its caller knows — `reporting.refresh` is always driven by a live run — so
+        # The caller knows — `reporting.refresh` is always driven by a live run — so
         # it passes the answer in, and the default is the safe one.
         snapshot["live"] = bool(live)
         snapshot["progress"] = lifetime_progress_bars(progress, snapshot["live"])
+        if run_ids is not None:
+            # `started_at`, `finished_at`, `usage` and `stopped` stay as initialised
+            # above: every one of them is a fact about a single sweep, and leaving
+            # them is what keeps `Took` and `Est. cost` off this page without the
+            # renderer needing a second condition.
+            snapshot["scope"] = "day"
+            snapshot.update(day_summary(db, run_ids))
+        else:
+            snapshot["scope"] = "lifetime"
     return snapshot

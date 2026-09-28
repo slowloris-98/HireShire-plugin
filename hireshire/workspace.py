@@ -5,7 +5,7 @@ and always will. This module owns the one directory that belongs to the *user*: 
 folder they created, opened Claude Code in, and expect to find their search in.
 
     <workspace>/resume/original/<resume>.pdf
-    <workspace>/hireshire_run_results/<stamp>/<stamp>_results.csv
+    <workspace>/hireshire_run_results/<YYYY-MM-DD>/<stamp>/<stamp>_results.csv
 
 Everything here runs at setup time only. The absolute path is written to
 ``scraper.workspace_dir`` once; the engine reads it from there and never looks at

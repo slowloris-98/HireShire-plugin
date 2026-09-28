@@ -184,8 +184,8 @@ def session_dirs(resume_path: Path, run_dir: Path) -> SessionDirs:
     the same sweep writes. It used to be one folder shared by every sweep, which left
     the user's only record of each submitted form in a pile with no way to tell which
     run it came from. `run_dir` is whatever `paths.make_run_dir` returned, so the
-    fallback when no workspace is usable — `DATA/results/<stamp>/applied` — follows
-    the same rule and there is only one layout.
+    fallback when no workspace is usable — `DATA/results/<YYYY-MM-DD>/<stamp>/applied` —
+    follows the same rule and there is only one layout.
 
     `cwd` is a different question. Playwright MCP refuses to upload a file outside the
     client's roots, and Claude Code's root is the session's cwd; setup puts the resume

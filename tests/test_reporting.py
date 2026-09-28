@@ -14,6 +14,7 @@ import asyncio
 import json
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -235,13 +236,41 @@ def test_reports_go_to_the_results_root_and_nowhere_else(tmp_path):
     targets = reporting.report_paths(tmp_path, "2026-08-25_153432")
     root = paths.results_root()
 
-    # Two pages, and only two. The dashboard and the matching report are gone.
+    # `tmp_path` is not a day folder, so this is the legacy shape: two pages, and only
+    # two. The dashboard and the matching report are gone. The day-folder shape is
+    # `test_a_run_in_a_day_folder_gets_a_third_page` below.
     assert set(targets) == {"overview", "run_overview"}
     assert targets["overview"].parent == root
     # The stamped page goes with the run it describes, wherever that run dir is.
     assert targets["run_overview"].parent == tmp_path
     # And with no workspace set, the root itself stays inside DATA.
     assert root == paths.RESULTS_DIR and paths.DATA in root.parents
+
+
+def test_a_run_in_a_day_folder_gets_a_third_page(tmp_path):
+    """The day page sits in the day folder, named for the day — taken off the run
+    folder the sweep actually got, so it follows `make_run_dir`'s fallback rather than
+    pointing at a workspace that may be unplugged."""
+    results_dir = tmp_path / "2026-08-25" / "2026-08-25_153432"
+
+    targets = reporting.report_paths(results_dir, "2026-08-25_153432")
+
+    assert set(targets) == {"overview", "run_overview", "day_overview"}
+    assert targets["day_overview"] == tmp_path / "2026-08-25" / "Dashboard_Day_2026-08-25.html"
+    assert targets["day_overview"].parent == results_dir.parent
+
+
+def test_a_run_folder_outside_a_day_folder_names_no_day_page(tmp_path):
+    """Run folders made before the day layout sit flat at the results root, and the
+    absent key is how they say so. An unguarded `results_dir.parent` would drop a day
+    page beside `Dashboard_Lifetime.html` — duplicating the one a new-layout sweep
+    writes inside the day folder the same day, with neither authoritative."""
+    for results_dir, stamp in (
+        (tmp_path / "2026-08-25_153432", "2026-08-25_153432"),   # flat at the root
+        (tmp_path / "2026-08-24" / "2026-08-25_153432", "2026-08-25_153432"),  # wrong day
+        (tmp_path / "nonsense" / "nonsense", "nonsense"),        # no day at all
+    ):
+        assert "day_overview" not in reporting.report_paths(results_dir, stamp)
 
 
 # --- wiring: a real finalise must produce the files ---------------------------
@@ -287,13 +316,13 @@ class _ReportDB:
     # the other two. A fake missing a method the real path calls is a hole in the
     # test, not a simplification.
 
-    def overview_counts(self, run_id=None):
+    def overview_counts(self, run_id=None, run_ids=None):
         return {"seen": 8504, "relevant": 2, "shortlisted": 0, "applied": 0}
 
-    def load_applied_matches(self, run_id=None):
+    def load_applied_matches(self, run_id=None, run_ids=None):
         return []
 
-    def load_lifetime_matches(self, limit):
+    def load_lifetime_matches(self, limit, run_ids=None):
         # One row per job, judged first — the shape the real loader returns now that
         # the page reads each job's canonical row rather than two overlapping halves.
         return sorted(
@@ -302,7 +331,7 @@ class _ReportDB:
             reverse=True,
         )[:limit]
 
-    def load_unmatched_jobs(self, run_id, limit):
+    def load_unmatched_jobs(self, run_id, limit, run_ids=None):
         return [{"job_id": "direct:google:99", "board_token": "google",
                  "title": "Barista", "location": "Mountain View, CA",
                  "absolute_url": "https://example.com/j99"}]
@@ -313,16 +342,33 @@ class _ReportDB:
                 "apply_handled": 0, "jobs_in_scope": 8504, "submitted": 0,
                 "attention": 0}
 
-    def lifetime_progress(self):
+    def lifetime_progress(self, run_ids=None):
         return {"sweeps": 1, "companies_total": 9641, "companies_done": 9641,
                 "jobs_processed": 8504, "jobs_in_scope": 8504, "unique_jobs": 8504,
                 "shortlisted": 0,
                 "submitted": 0, "attention": 0}
 
+    # --- the day page's two extra reads ---------------------------------------
+    # Same warning as above, and this pair is why it is repeated: without them the
+    # day page is the thing that silently never gets written.
+
+    def known_run_ids(self):
+        return ["2026-08-25T22-34-32Z"]
+
+    def pipeline_spans(self, run_ids):
+        return [{"run_id": "2026-08-25T22-34-32Z",
+                 "started_at": "2026-08-25T22:34:32+00:00",
+                 "finished_at": "2026-08-25T23:41:36+00:00"}]
+
 
 def _finalise_with_reports(tmp_path, monkeypatch, stamp="2026-08-25_153432",
-                           complete=True):
-    """Drive the two halves the way `run_pipeline`'s `finally` does."""
+                           complete=True, day_layout=True):
+    """Drive the two halves the way `run_pipeline`'s `finally` does.
+
+    `day_layout=False` puts the run folder flat at the results root, which is where
+    every run folder made before the day layout still is — so the pair of calls covers
+    both shapes a real install can hand this path.
+    """
     from hireshire import paths
 
     db = _ReportDB([scored_record(), dropped_record()])
@@ -331,8 +377,8 @@ def _finalise_with_reports(tmp_path, monkeypatch, stamp="2026-08-25_153432",
     monkeypatch.setattr(orchestrate, "get_db", lambda: db)
     monkeypatch.setattr(reporting, "get_db", lambda: db)
 
-    results_dir = tmp_path / stamp
-    results_dir.mkdir(exist_ok=True)
+    results_dir = (tmp_path / stamp[:10] / stamp) if day_layout else (tmp_path / stamp)
+    results_dir.mkdir(parents=True, exist_ok=True)
 
     async def drive():
         total = await orchestrate._write_run_outputs(
@@ -360,6 +406,75 @@ def test_finalising_a_run_writes_both_pages_and_the_csv(tmp_path, monkeypatch):
     assert not (tmp_path / "latest_matching.html").exists()
     assert list(results_dir.glob("*_matching.html")) == []
     assert list(results_dir.glob("*_all_jobs.csv")) == []
+
+
+def test_finalising_a_run_writes_its_day_page_in_the_day_folder(tmp_path, monkeypatch):
+    """Three pages, each at its own scope, and the day one inside the day folder —
+    never at the results root, and never outside the run's own tree."""
+    _, results_dir = _finalise_with_reports(tmp_path, monkeypatch)
+    day_dir = results_dir.parent
+
+    day_page = day_dir / overview.day_overview_name("2026-08-25")
+    assert day_page.exists()
+    assert day_dir == tmp_path / "2026-08-25"
+    assert not (tmp_path / overview.day_overview_name("2026-08-25")).exists()
+    # The heading names the day, and the tiles are the pair that replaces `Took`.
+    html = day_page.read_text(encoding="utf-8")
+    assert "Dashboard Day: 2026-08-25" in html
+    assert ">Sweeps</span>" in html and ">Avg per sweep</span>" in html
+    assert ">Took<" not in html
+
+
+def test_a_legacy_run_folder_writes_no_day_page_anywhere(tmp_path, monkeypatch):
+    """A run folder from before the day layout has no day folder to put one in, and
+    nothing may invent one for it."""
+    _, results_dir = _finalise_with_reports(tmp_path, monkeypatch, day_layout=False)
+
+    assert results_dir == tmp_path / "2026-08-25_153432"
+    assert list(tmp_path.glob("Dashboard_Day_*.html")) == []
+    assert list(results_dir.glob("Dashboard_Day_*.html")) == []
+    pointer = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
+    # Blank, not the string "None" — a reader must never build a path out of it.
+    assert pointer["day_overview_html"] == ""
+
+
+def test_the_pointer_names_the_day_page_too(tmp_path, monkeypatch):
+    """The skills hand over paths the engine wrote; a page with no pointer is a page
+    no skill can mention."""
+    _, results_dir = _finalise_with_reports(tmp_path, monkeypatch)
+    pointer = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
+
+    assert pointer["day_overview_html"] == str(
+        results_dir.parent / overview.day_overview_name("2026-08-25")
+    )
+    assert Path(pointer["day_overview_html"]).exists()
+
+
+def test_the_day_page_rides_the_slow_throttle(tmp_path, monkeypatch):
+    """It is on the lifetime throttle because of the *render* — a third full build of
+    the same rows — not because its queries are slow. They are not: they are
+    `run_id IN (a day's worth)` and index-backed. Verifying that is therefore not a
+    reason to move it onto the fast tick."""
+    db = _ReportDB([scored_record()])
+    monkeypatch.setattr(reporting, "get_db", lambda: db)
+    results_dir = tmp_path / "2026-08-25" / "2026-08-25_153432"
+    results_dir.mkdir(parents=True)
+    day_page = results_dir.parent / overview.day_overview_name("2026-08-25")
+
+    reporting._last_refresh = 0.0
+    reporting._last_lifetime = 0.0
+    reporting.refresh("2026-08-25T22-34-32Z", results_dir, "2026-08-25_153432")
+    assert day_page.exists()
+
+    # A second, throttled pass rewrites the run page and leaves the day page alone.
+    day_page.unlink()
+    reporting._last_refresh = 0.0
+    reporting.refresh("2026-08-25T22-34-32Z", results_dir, "2026-08-25_153432")
+    assert not day_page.exists()
+
+    # ...and `final` goes through however recently the slow pair ran.
+    reporting.refresh("2026-08-25T22-34-32Z", results_dir, "2026-08-25_153432", True)
+    assert day_page.exists()
 
 
 def test_the_overview_survives_the_finalise_path(tmp_path, monkeypatch):

@@ -93,6 +93,9 @@ def test_unreachable_workspace_degrades_instead_of_losing_the_run(data_dir):
 
     assert paths.RESULTS_DIR in run_dir.parents
     assert run_dir.is_dir()
+    # The fallback carries the day segment too. Without it the two layouts would
+    # differ by which drive happened to be plugged in.
+    assert run_dir == paths.RESULTS_DIR / "2026-08-12" / "2026-08-12_143005"
 
 
 def test_a_deleted_workspace_is_recreated(data_dir, tmp_path):
@@ -104,8 +107,60 @@ def test_a_deleted_workspace_is_recreated(data_dir, tmp_path):
 
     run_dir = paths.make_run_dir("2026-08-12_143005")
 
-    assert run_dir == ws / "hireshire_run_results" / "2026-08-12_143005"
+    assert run_dir == (ws / "hireshire_run_results" / "2026-08-12"
+                       / "2026-08-12_143005")
     assert run_dir.is_dir()
+
+
+def test_a_run_is_filed_under_its_own_date(data_dir, tmp_path):
+    """The day folder is the date in the run's *stamp*, which is local — so it is the
+    date the user sees on the run folder beside it, never a UTC one."""
+    ws = tmp_path / "ws"
+    cw.write_config("scraper", {"workspace_dir": str(ws)})
+
+    run_dir = paths.make_run_dir("2026-08-12_235959")
+
+    assert run_dir.parent.name == "2026-08-12"
+    assert run_dir.name == "2026-08-12_235959"
+    assert run_dir.parent.parent == ws / "hireshire_run_results"
+
+
+def test_a_run_folder_from_before_the_day_layout_stays_where_it_is(data_dir, tmp_path):
+    """No migration: nothing moves a folder inside the user's own workspace, and a
+    `file://` bookmark to an old dashboard keeps working. This is also what lets a
+    sweep killed before the update finalise into its own folder rather than a fresh
+    day folder beside it."""
+    ws = tmp_path / "ws"
+    cw.write_config("scraper", {"workspace_dir": str(ws)})
+    legacy = ws / "hireshire_run_results" / "2026-08-12_143005"
+    legacy.mkdir(parents=True)
+
+    assert paths.run_dir_for("2026-08-12_143005") == legacy
+    # ...and a stamp with no folder of its own still gets the day layout.
+    assert paths.run_dir_for("2026-08-13_143005") == (
+        ws / "hireshire_run_results" / "2026-08-13" / "2026-08-13_143005"
+    )
+
+
+def test_a_stamp_that_names_no_date_falls_back_to_the_flat_layout(data_dir, tmp_path):
+    """`finalise_abandoned_runs` sets `stamp = run_id` when a run id will not parse.
+    A folder must never come out as `<root>/""/<stamp>`."""
+    ws = tmp_path / "ws"
+    cw.write_config("scraper", {"workspace_dir": str(ws)})
+
+    assert paths.run_dir_for("not-a-stamp") == (
+        ws / "hireshire_run_results" / "not-a-stamp"
+    )
+
+
+def test_naming_a_run_dir_never_raises_even_when_the_probe_cannot_run(data_dir):
+    """`make_run_dir` promises not to raise while a workspace is configured, and the
+    legacy probe is inside that promise: an unreachable root must answer "not legacy"
+    rather than throw, because the caller's own fallback is about to fire anyway."""
+    cw.write_config("scraper", {"workspace_dir": "Q:\\gone" if _on_windows() else "/proc/x/gone"})
+
+    assert paths.run_dir_for("2026-08-12_143005").name == "2026-08-12_143005"
+    assert paths.make_run_dir("2026-08-12_143005").is_dir()
 
 
 def test_run_dir_and_csv_share_one_stamp():

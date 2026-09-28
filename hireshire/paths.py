@@ -42,6 +42,7 @@ from pathlib import Path
 import yaml
 
 from hireshire.plugin_dirs import resolve_dirs
+from hireshire.run_ids import day_of
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,13 @@ CODEX_DIR = DATA / "codex"
 
 # Layout inside the user's workspace. Named here because setup creates these and
 # the engine writes into them, and they must not drift apart.
+#
+#   <workspace>/hireshire_run_results/<YYYY-MM-DD>/<stamp>/<stamp>_results.csv
+#
+# One folder per calendar day, each holding that day's run folders. The day comes
+# from the run's *stamp*, which is local — see `hireshire/run_ids.py`, which owns
+# that reasoning. Run folders made before the day layout stay where they are, at
+# the results root; `run_dir_for` is what keeps addressing them.
 RUN_RESULTS_DIRNAME = "hireshire_run_results"
 RESUME_SUBDIR = Path("resume") / "original"
 # Inside one run's folder, beside its CSV, JSON and dashboard: the applier's
@@ -141,6 +149,33 @@ def results_root() -> Path:
     return (ws / RUN_RESULTS_DIRNAME) if ws else RESULTS_DIR
 
 
+def run_dir_for(stamp: str, root: Path | None = None) -> Path:
+    """Name this run's results directory. Creates nothing.
+
+    The one place the day layout is decided, so `make_run_dir` (which creates) and
+    `orchestrate.finalise_abandoned_runs` (which has to find a killed sweep's
+    folder again) cannot disagree about where a run lives.
+
+    **A flat `<root>/<stamp>` that already exists wins.** Run folders made before
+    the day layout stay exactly where the user left them — no migration, no
+    `file://` bookmark broken — and this is what keeps finalising one of them
+    writing into its own folder rather than a fresh day folder beside it. A stamp
+    is second-resolution, so the probe can only ever match a genuinely older run.
+
+    Never raises, because `make_run_dir` promises not to: the probe's `OSError` is
+    the unplugged-drive case, and the answer "not a legacy folder" is the right one
+    there — the caller's own fallback is about to fire anyway.
+    """
+    root = root if root is not None else results_root()
+    try:
+        if (root / stamp).is_dir():
+            return root / stamp
+    except OSError:
+        return root / stamp
+    day = day_of(stamp)
+    return (root / day / stamp) if day else (root / stamp)
+
+
 def make_run_dir(stamp: str) -> Path:
     """Create and return this run's results directory.
 
@@ -150,10 +185,13 @@ def make_run_dir(stamp: str) -> Path:
     sweep because its output folder went missing is the wrong trade. A merely
     absent directory is recreated (setup creates the same structure); only an
     unusable one falls back to the data directory, loudly.
+
+    `parents=True` is what creates the day folder; there is nothing else to do for
+    it here, because `run_dir_for` has already decided the whole path.
     """
     root = results_root()
     try:
-        d = root / stamp
+        d = run_dir_for(stamp, root)
         d.mkdir(parents=True, exist_ok=True)
         return d
     except OSError as exc:
@@ -164,6 +202,6 @@ def make_run_dir(stamp: str) -> Path:
             "to %s for this run — re-run /hireshire:setup to choose a new folder.",
             root, exc, RESULTS_DIR,
         )
-        d = RESULTS_DIR / stamp
+        d = run_dir_for(stamp, RESULTS_DIR)
         d.mkdir(parents=True, exist_ok=True)
         return d
