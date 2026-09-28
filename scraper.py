@@ -3,26 +3,24 @@ Sweeps the ATS board APIs for every company in the enabled slug lists.
 
 Slugs are loaded from config/*_companies.json in the plugin install dir. Which
 boards run is set by `enabled_platforms` in scraper.yaml — a disabled board's
-slug file is never even opened. Slugs that 404 are recorded as a delta under the
-plugin data dir and skipped before any HTTP call on later runs.
+slug file is never even opened. Every slug in an enabled board's list is tried on
+every run: a slug that 404s is recorded as an error row for that run and changes
+nothing for the next one.
 
     python scraper.py
 """
 
 import asyncio
-import json
 import logging
 import time
 
 import httpx
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 
-from hireshire import paths
 from hireshire.config import load_config
 from hireshire.http_client import build_client
 from hireshire.scrapers.ashby import AshbyScraper
@@ -39,59 +37,23 @@ from hireshire.storage.json_store import RunStore
 logger = logging.getLogger(__name__)
 console = Console()
 
-_PLATFORMS = ("ashby", "greenhouse", "lever", "bamboohr", "workday", "direct")
-
-# Dead-slug bookkeeping is split three ways because ${CLAUDE_PLUGIN_ROOT} is
-# replaced wholesale on every plugin update, so nothing written at runtime can
-# live there:
+# There is deliberately NO skip list. Every slug in an enabled board's file is
+# tried on every run, whatever happened to it last time.
 #
-#   SEED   (ROOT, read-only)  the curated list shipped with each release
-#   USER_BAD  (DATA, written)  slugs this install discovered are dead
-#   USER_RECOVERED (DATA)      slugs verify_bad_slugs.py --prune found alive again
+# This reverses a seed-plus-delta scheme (a curated `bad_slugs.json` in ROOT plus
+# `user_bad_slugs.json` / `user_recovered_slugs.json` deltas in DATA) and the
+# reversal should not be undone. That list could only ever grow: it was read once
+# before the sweep and never re-checked during one, so a slug that 404'd through a
+# transient outage — or a company that moved boards and came back — was skipped on
+# every future sweep. The only road back was `verify_bad_slugs.py --prune`, a
+# terminal command, in a plugin whose whole premise is that users never open a
+# terminal. So the cost of being wrong was permanent and invisible, and it landed
+# on exactly the employers a user would most want re-checked.
 #
-# Effective set = seed ∪ user_bad − user_recovered. A release can therefore add
-# newly-dead slugs without erasing local learning, and a board that came back
-# online for this user stays enabled even if the shipped seed still calls it dead.
-SEED_BAD_SLUGS_PATH = paths.SHIPPED_CONFIG / "bad_slugs.json"
-USER_BAD_SLUGS_PATH = paths.DATA / "user_bad_slugs.json"
-USER_RECOVERED_PATH = paths.DATA / "user_recovered_slugs.json"
-
-
-def _read_slug_map(path: Path) -> dict[str, set[str]]:
-    """Read a {platform: [slug, ...]} file, tolerating absence."""
-    if not path.exists():
-        return {p: set() for p in _PLATFORMS}
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    return {p: set(raw.get(p, [])) for p in _PLATFORMS}
-
-
-def _write_slug_map(path: Path, data: dict[str, set[str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({p: sorted(data.get(p, ())) for p in _PLATFORMS}, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _load_bad_slugs() -> dict[str, set[str]]:
-    seed = _read_slug_map(SEED_BAD_SLUGS_PATH)
-    user_bad = _read_slug_map(USER_BAD_SLUGS_PATH)
-    recovered = _read_slug_map(USER_RECOVERED_PATH)
-    return {p: (seed[p] | user_bad[p]) - recovered[p] for p in _PLATFORMS}
-
-
-def _save_bad_slugs(bad: dict[str, set[str]]) -> None:
-    """Persist only what this install discovered — never the shipped seed, which
-    is read-only and would be lost on the next update anyway. A slug that is
-    newly bad also stops being 'recovered'."""
-    seed = _read_slug_map(SEED_BAD_SLUGS_PATH)
-    recovered = _read_slug_map(USER_RECOVERED_PATH)
-    user_bad = {p: bad.get(p, set()) - seed[p] for p in _PLATFORMS}
-    _write_slug_map(USER_BAD_SLUGS_PATH, user_bad)
-
-    still_recovered = {p: recovered[p] - bad.get(p, set()) for p in _PLATFORMS}
-    if still_recovered != recovered:
-        _write_slug_map(USER_RECOVERED_PATH, still_recovered)
+# What it bought was requests: ~6,066 of a default sweep's 15,871 companies were
+# skipped. That is the price now paid, and it is paid in a phase that is already
+# I/O-bound and rate-limited per board. A 404 is handled per company by
+# `scrape_one` and recorded as an error row for that run only.
 
 
 def _matches_location(job, terms: list[str]) -> bool:
@@ -127,26 +89,21 @@ async def main(
     config = load_config()
     settings = config.settings
 
-    bad_slugs = _load_bad_slugs()
-    total_skipped = sum(len(v) for v in bad_slugs.values())
-
     # A board absent from settings.enabled_platforms has no companies loaded at
-    # all — load_config() never opened its slug file — so these comprehensions
-    # collapse to empty and run_board returns immediately.
-    ashby_companies = [c for c in config.ashby_companies if c.ashby_token not in bad_slugs["ashby"]]
-    greenhouse_companies = [c for c in config.greenhouse_companies if c.greenhouse_token not in bad_slugs["greenhouse"]]
-    lever_companies = [c for c in config.lever_companies if c.lever_token not in bad_slugs["lever"]]
-    bamboohr_companies = [c for c in config.bamboohr_companies if c.bamboohr_token not in bad_slugs["bamboohr"]]
-    workday_companies = [c for c in config.workday_companies if c.workday_token not in bad_slugs["workday"]]
-
-    # Single-tenant portals: no slug can be "wrong", and DirectScraper never
-    # raises SlugNotFoundError, so there is nothing to filter out here.
+    # all — load_config() never opened its slug file — so these lists collapse to
+    # empty and run_board returns immediately. Nothing else is filtered: see the
+    # note above on why there is no skip list.
+    ashby_companies = list(config.ashby_companies)
+    greenhouse_companies = list(config.greenhouse_companies)
+    lever_companies = list(config.lever_companies)
+    bamboohr_companies = list(config.bamboohr_companies)
+    workday_companies = list(config.workday_companies)
     direct_companies = list(config.direct_companies)
 
     if not (greenhouse_companies or lever_companies or ashby_companies
             or bamboohr_companies or workday_companies or direct_companies):
         if not quiet:
-            console.print("[yellow]No companies to scrape. All slugs may be in the bad-slugs list.[/yellow]")
+            console.print("[yellow]No companies to scrape. Check `enabled_platforms` in scraper.yaml.[/yellow]")
         return
 
     if run_id is None:
@@ -184,15 +141,10 @@ async def main(
             sources.append(f"[bold]{len(workday_companies)}[/bold] via Workday")
         if direct_companies:
             sources.append(f"[bold]{len(direct_companies)}[/bold] via direct portals")
-        console.print(f"Fetching from {' + '.join(sources)}", end="")
-        if total_skipped:
-            console.print(f"  [dim]({total_skipped} known-bad slugs skipped)[/dim]")
-        else:
-            console.print()
+        console.print(f"Fetching from {' + '.join(sources)}")
         console.print()
 
     lock = asyncio.Lock()
-    newly_bad: dict[str, list[str]] = {p: [] for p in _PLATFORMS}
 
     # Counters shared across tasks (mutated under lock)
     counters = {"jobs": 0, "with_jobs": 0, "errors": 0, "not_found": 0, "blocked": 0, "done": 0}
@@ -266,12 +218,23 @@ async def main(
                             counters["jobs"] += len(jobs)
                             if jobs:
                                 counters["with_jobs"] += 1
-                    except SlugNotFoundError as exc:
+                    except SlugNotFoundError:
+                        # No board behind this slug. Contained to the one company:
+                        # recorded under its own status so it stays separable from a
+                        # real failure, counted for the summary line, and tried again
+                        # next run like everything else. It is much the commonest
+                        # outcome on a full sweep, so it logs at debug — a warning per
+                        # dead slug would bury every other line in the log.
+                        elapsed = time.monotonic() - t0
+                        logger.debug("No board for %s (%s) — retried next run", company.name, token)
+                        await store.record_error(
+                            token, "not_found", "no board for this slug",
+                            platform=platform, fetch_time_s=elapsed,
+                        )
                         async with lock:
-                            newly_bad[exc.platform].append(exc.token)
                             counters["not_found"] += 1
                     except BoardBlockedError as exc:
-                        # Access refused (WAF/edge). Not pruned — retried next run.
+                        # Access refused (WAF/edge). Retried next run.
                         elapsed = time.monotonic() - t0
                         msg = f"blocked (HTTP {exc.status_code})"
                         logger.warning("Blocked by %s — skipping (retried next run)", company.name)
@@ -356,13 +319,6 @@ async def main(
         if out_queue is not None:
             await out_queue.put(None)
 
-    # Persist newly discovered bad slugs
-    new_count = sum(len(v) for v in newly_bad.values())
-    if new_count:
-        for platform, tokens in newly_bad.items():
-            bad_slugs[platform].update(tokens)
-        _save_bad_slugs(bad_slugs)
-
     if not quiet:
         console.print("\n[bold]Results[/bold]")
         zero_jobs = (
@@ -375,9 +331,9 @@ async def main(
         console.print(f"  [green]✓[/green] {counters['with_jobs']} companies had jobs  ({counters['jobs']} total jobs)")
         console.print(f"  [dim]·[/dim] {zero_jobs} companies: 0 jobs")
         if counters["not_found"]:
-            console.print(f"  [dim]+[/dim] {counters['not_found']} new bad slugs → [cyan]{USER_BAD_SLUGS_PATH}[/cyan]")
+            console.print(f"  [dim]·[/dim] {counters['not_found']} companies: no board for this slug")
         if counters["blocked"]:
-            console.print(f"  [yellow]⊘[/yellow] {counters['blocked']} blocked (WAF/edge) — not pruned, retried next run")
+            console.print(f"  [yellow]⊘[/yellow] {counters['blocked']} blocked (WAF/edge) — retried next run")
         if counters["errors"]:
             console.print(f"  [red]✗[/red] {counters['errors']} errors")
             for name, msg in errors_detail:

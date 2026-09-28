@@ -6,7 +6,7 @@ opposite lifetimes:
 
 * ``ROOT`` — the install directory. **Replaced wholesale on every plugin update**,
   so it holds only shipped, read-only content: engine code, default YAMLs, the
-  company slug lists, the curated bad-slug seed.
+  company slug lists.
 * ``DATA`` — ``~/.claude/plugins/data/<plugin>-<marketplace>/``. **Survives
   updates.** The venv, SQLite DB, the user's live config, the generated search
   profile and the results CSVs live here.

@@ -79,7 +79,7 @@ HireShire-plugin/
 ├── scripts/bootstrap.py        # venv + pip install into ${CLAUDE_PLUGIN_DATA}
 ├── .mcp.json                   # Playwright MCP for the applier
 ├── hireshire/                  # engine, copied from source repo
-├── config/                     # default YAMLs, curated bad_slugs.json, *_companies.json
+├── config/                     # default YAMLs, *_companies.json
 ├── scraper.py  matcher.py  tuner.py  orchestrate.py
 ├── requirements-core.txt  requirements-applier.txt
 └── README.md  CHANGELOG.md
@@ -174,6 +174,14 @@ Ship `config/no_swe.json` so users who enable those boards inherit the pruning.
 default sweep is ~10,000 and the rest is one setup answer away.
 
 ### 5. Seed-plus-delta slug lists — `scraper.py`
+
+> **Superseded — this was built, shipped, and then removed entirely.** There is no
+> dead-slug skip list any more: every slug is tried on every run, and a 404 is
+> recorded against that run only. The layering below was not the problem; the
+> problem was that the list could only ever grow, because nothing re-checked it
+> during a sweep and the only road back was a terminal command. See the
+> "no dead-slug skip list" bullet in `CLAUDE.md` for the full reasoning. Kept here
+> as a record of the original plan — do not implement it.
 
 `config/bad_slugs.json` is mutated at runtime *and* must receive our curated updates — but
 `${CLAUDE_PLUGIN_ROOT}` is wiped on every update. So split it:
@@ -292,9 +300,7 @@ launches it via `claude -p`. Removes a heavy dependency and a whole code path.
 
 Set an explicit `version` in `plugin.json` — users then get updates **only** when it's bumped.
 (Omitting it pushes every commit at them.) Semver + `CHANGELOG.md`. New slugs ship as a normal
-patch release. Refresh the shipped `bad_slugs.json` from the source repo on each release
-(run `scripts/verify_bad_slugs.py --prune` there first) — that repo does the real sweeps at
-volume, so its curated list beats anything a fresh install accumulates.
+patch release. There is no shipped bad-slugs list to refresh — see the note on section 5.
 
 ---
 
@@ -316,9 +322,7 @@ volume, so its curated list beats anything a fresh install accumulates.
    or a YAML file is a bug.
 8. **Update test**: bump `version`, add a slug to a shipped `*_companies.json`, change
    requirements. Confirm `/plugin update` delivers the slug, the hook reinstalls deps, and the
-   DB / tuned PDFs / past CSVs / user YAML in `${CLAUDE_PLUGIN_DATA}` survive. Then the bad-slugs
-   merge: mark a slug bad locally, ship a release, verify it's still bad; recover one via
-   `verify_bad_slugs.py --prune`, ship again, verify it stays enabled.
+   DB / tuned PDFs / past CSVs / user YAML in `${CLAUDE_PLUGIN_DATA}` survive.
 9. **Recurring runs**: invoke `/hireshire:start-orchestration`, confirm the monitor starts, one
    summary notification arrives per cycle, and a second invocation doesn't spawn a duplicate.
    Close the session, confirm it stops. If Tier 2 was chosen, confirm the scheduled task fires

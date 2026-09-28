@@ -353,8 +353,9 @@ def test_job_ids_are_namespaced_against_cross_platform_collision():
 
 
 def test_direct_scraper_never_raises_slug_not_found():
-    """A single-tenant portal has no wrong slug; SlugNotFoundError would prune it
-    into bad_slugs.json permanently on one transient failure."""
+    """A single-tenant portal has no wrong slug, so SlugNotFoundError would file a
+    layout change or an outage as "no board for this slug" — a status that sends the
+    reader hunting for a typo in a token that cannot be wrong."""
     import inspect
     from hireshire.scrapers import direct
     src = inspect.getsource(direct)

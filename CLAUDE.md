@@ -35,7 +35,6 @@ sh scripts/hireshire.sh --approve     # PreToolUse guard; hook payload on stdin
 python scraper.py                     # sweep the enabled boards
 python matcher.py                     # gate → rerank → cutoff → score
 python orchestrate.py --once          # both, writing a results CSV
-python scripts/verify_bad_slugs.py --prune
 python scripts/calibrate_cutoffs.py   # what rerank.min_score should be, from real runs
 
 # Engine, as the plugin runs it (re-execs into the venv in the data dir)
@@ -48,8 +47,8 @@ python scripts/setup_cli.py set matcher --json '{"threshold": 75}'
 ### The ROOT/DATA/WORKSPACE split governs where every file goes
 
 **ROOT** is the install dir and is **replaced wholesale on every plugin update** —
-shipped, read-only content only: engine code, default YAMLs, company slug lists, the
-curated bad-slug seed. **DATA** (`~/.claude/plugins/data/hireshire-hireshire/`)
+shipped, read-only content only: engine code, default YAMLs, company slug lists.
+**DATA** (`~/.claude/plugins/data/hireshire-hireshire/`)
 **survives updates** — venv, SQLite DB, the user's config, generated profile, logs.
 
 **Putting mutable state in ROOT loses it on the next update.** `hireshire/paths.py`
@@ -80,12 +79,31 @@ so every statement about the results path needs that clause.
 
 Consequences already worked out, which should not be re-derived:
 
-- **Seed-plus-delta slug lists.** `bad_slugs.json` is mutated at runtime *and*
-  shipped curated. The seed sits in ROOT; `user_bad_slugs.json` and
-  `user_recovered_slugs.json` in DATA. Effective set =
-  `seed ∪ user_bad − user_recovered`, so a release can add dead slugs without
-  erasing local learning, and `verify_bad_slugs.py --prune` writes recoveries as a
-  delta rather than editing a file that is about to be replaced.
+- **There is no dead-slug skip list, and the seed-plus-delta scheme that used to
+  solve it must not come back.** Every slug in an enabled board's file is tried on
+  every run. A 404 is recorded as a `not_found` row in `run_companies` for that run
+  and changes nothing for the next one.
+
+  What was removed: a curated `config/bad_slugs.json` in ROOT (15,584 slugs), plus
+  `user_bad_slugs.json` and `user_recovered_slugs.json` deltas in DATA, combined as
+  `seed ∪ user_bad − user_recovered`, with `scripts/verify_bad_slugs.py --prune`
+  writing recoveries as a delta rather than editing a file about to be replaced. All
+  three files and that script are gone.
+
+  **The reason is the failure direction, not the bookkeeping** — the ROOT/DATA
+  layering was correct and is what makes this tempting to rebuild. The list was read
+  once before a sweep and never re-checked during one, so it could only grow: a slug
+  that 404'd through a transient outage, or a company that moved boards and came
+  back, was skipped on every future sweep. The only road back was a terminal command,
+  in a plugin whose premise is that users never open a terminal. So a wrong entry was
+  permanent and invisible, and it landed on exactly the employers a user would most
+  want re-checked. That is the same rule as `_RETRYABLE_SKIP_REASONS` below: a 404 on
+  one sweep is a deferral, not a verdict, and the two must not be confused.
+
+  The price, accepted: a default sweep goes from ~9,805 companies to all 15,871, and
+  ~6,066 of those requests get a 404. It is paid in a phase that is already I/O-bound
+  and rate-limited per board. `docs/SPECS.md`'s 15,871 was always the unfiltered
+  figure, so it needs no correction — it is simply true now.
 - **The recurring sweep is NOT session-scoped, and nothing may make it so again.**
   `scripts/run_orchestration.py` is an ordinary sleep/sweep loop. `--monitor` runs it
   recurring, `--sweep` runs one cycle (`--once`) and is what the OS scheduler entry

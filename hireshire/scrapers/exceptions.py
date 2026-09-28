@@ -8,8 +8,10 @@ class SlugNotFoundError(Exception):
 class BoardBlockedError(Exception):
     """The board host refused access (e.g. Workday WAF returns 403/401).
 
-    Distinct from SlugNotFoundError: a block is usually IP/edge-based and often
-    transient, so the slug is NOT pruned to bad_slugs — it is retried next run.
+    Distinct from SlugNotFoundError only in the status the run records: a block is
+    usually IP/edge-based and often transient, so calling it "no board here" would
+    misreport a slug that is fine. Both are retried next run — nothing is ever
+    skipped on the strength of a past sweep.
     """
 
     def __init__(self, platform: str, token: str, status_code: int):

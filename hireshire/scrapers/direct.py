@@ -72,8 +72,8 @@ class DirectScraper(AbstractScraper):
         self.max_pages = max(1, max_pages)
         self.cutoff = cutoff
         # Which countries each portal's list is searched for. None = unscoped,
-        # which is also what every caller that never lists (the funnel's detail
-        # fetcher, verify_bad_slugs) gets.
+        # which is also what a caller that never lists (the funnel's detail fetcher)
+        # gets.
         self.scope = scope
         if scope is not None:
             self._log_scope(scope)
@@ -123,11 +123,12 @@ class DirectScraper(AbstractScraper):
         measures network time only, never queue wait — same ordering as every
         other scraper's `_get`.
 
-        NOTE: this never maps a 404 to SlugNotFoundError. A single-tenant portal
-        has no "wrong slug", and SlugNotFoundError would permanently prune the
-        company into config/bad_slugs.json — one transient layout change would
-        silently disable Google forever. Failures propagate as ordinary HTTP
-        errors so the run records an error row and retries next time.
+        NOTE: this never maps a 404 to SlugNotFoundError. A single-tenant portal has
+        no "wrong slug", so that exception would file a layout change or an outage
+        under "no board for this slug" and send whoever reads the run looking for a
+        typo in a token that cannot be wrong. Failures propagate as ordinary HTTP
+        errors, which is the honest status; either way the portal is tried again
+        next run.
         """
         merged = {**_HEADERS, **(headers or {})}
 

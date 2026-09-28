@@ -49,8 +49,6 @@ MIGRATABLE = (
     "hireshire.db-shm",
     "last_run.json",
     "profile.md",
-    "user_bad_slugs.json",
-    "user_recovered_slugs.json",
 )
 
 
