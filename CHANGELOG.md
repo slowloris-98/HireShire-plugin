@@ -4,6 +4,16 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.19.0] — 2026-09-28
+
+### Added
+
+- **1,836 more companies are searched on every sweep.** 1,097 on Ashby, 738 on
+  Greenhouse and 1 on Lever, including Mistral AI, Wayve, ClickHouse, Checkout.com,
+  WHOOP, Doctolib and MaintainX. Each one had open jobs when it was added. The default
+  sweep now covers 17,707 companies, up from 15,871. Nothing to do: the next sweep
+  after this update picks them up.
+
 ## [0.18.0] — 2026-09-26
 
 ### Added

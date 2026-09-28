@@ -569,8 +569,8 @@ Three things that trip people up:
    > board types adds roughly 24,000 more, but each run takes considerably
    > longer.
 
-   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~15,871 companies. Adding
-   `workday` and `bamboohr` takes it to 40,071. Do not quote a specific
+   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~17,707 companies. Adding
+   `workday` and `bamboohr` takes it to 41,907. Do not quote a specific
    multiplier for the extra time — nobody has timed it yet. Say "considerably
    longer" until a real timed run exists.
 

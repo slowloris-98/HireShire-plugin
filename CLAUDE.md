@@ -36,6 +36,7 @@ python scraper.py                     # sweep the enabled boards
 python matcher.py                     # gate → rerank → cutoff → score
 python orchestrate.py --once          # both, writing a results CSV
 python scripts/calibrate_cutoffs.py   # what rerank.min_score should be, from real runs
+python scripts/discover_slugs.py      # new ATS slugs from Common Crawl; dry run, --write merges
 
 # Engine, as the plugin runs it (re-execs into the venv in the data dir)
 python scripts/run_engine.py orchestrate.py --once
@@ -102,8 +103,30 @@ Consequences already worked out, which should not be re-derived:
 
   The price, accepted: a default sweep goes from ~9,805 companies to all 15,871, and
   ~6,066 of those requests get a 404. It is paid in a phase that is already I/O-bound
-  and rate-limited per board. `docs/SPECS.md`'s 15,871 was always the unfiltered
-  figure, so it needs no correction — it is simply true now.
+  and rate-limited per board. `docs/SPECS.md`'s default-sweep figure was always the
+  unfiltered one, so it needed no correction — it is simply true now.
+- **The Greenhouse, Lever and Ashby lists grow only through
+  `scripts/discover_slugs.py`, and it only ever adds.** With no skip list every
+  shipped slug is a request on every sweep for every user, so a slug is admitted only
+  when the board's own API (the scraper's `BASE_URL`) answers with at least one
+  posting. Removal is deliberately absent: it would be the 404-as-verdict the bullet
+  above forbids, just made by hand. `tests/test_discover_slugs.py` fails if a removal
+  path appears.
+
+  Candidates come from Common Crawl's URL index, which lists URLs its crawler fetched
+  and never guesses. So coverage is whatever the crawler reached: one crawl found
+  ~1,100 new live Greenhouse and Ashby boards, and **Lever almost nothing**, because
+  the crawler barely visits `jobs.lever.co` (its robots.txt allows it). `--extra
+  lever=<list>` runs any other list through the same check, and is Lever's source.
+
+  **The index server lies with a 200.** It can cut a page off mid-URL and still
+  answer 200; measured, 8,105 lines came back as 2,232, and the first version of this
+  tool cached that and undercounted Ashby by half. `page_is_complete` rejects a page
+  that does not end on a whole record, pages are one index block (`pageSize=1`, ~4 s)
+  rather than the server's 5, and nothing is cached until whole. It also answers
+  502/504 often and the occasional transient 400, so a failed page is reported and
+  skipped, and a rerun fetches only that page. Do not "simplify" the completeness
+  check away because the status code looks fine.
 - **The recurring sweep is NOT session-scoped, and nothing may make it so again.**
   `scripts/run_orchestration.py` is an ordinary sleep/sweep loop. `--monitor` runs it
   recurring, `--sweep` runs one cycle (`--once`) and is what the OS scheduler entry
@@ -957,9 +980,9 @@ suppresses Rich in favour of `logging` — required under the monitor.
 ## Things that are easy to get wrong
 
 - **Board defaults.** Workday and BambooHR default **off**, and they are the two
-  biggest lists: 24,200 companies held back against 15,871 swept (greenhouse 8,333,
-  lever 4,369, ashby 3,163, direct 6), out of 40,071 shipped. `docs/SPECS.md` leads with
-  40,000+ but must state plainly that the default sweep is ~15,871. Setup presents it
+  biggest lists: 24,200 companies held back against 17,707 swept (greenhouse 9,071,
+  lever 4,370, ashby 4,260, direct 6), out of 41,907 shipped. `docs/SPECS.md` leads with
+  40,000+ but must state plainly that the default sweep is ~17,707. Setup presents it
   as a time trade-off — and **no specific multiplier has been measured yet**, so say
   "considerably longer", not "3x". These counts come from `config/*_companies.json`
   and grow between releases; re-derive them rather than copying this paragraph.
