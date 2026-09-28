@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from pathlib import Path
 
 import scraper
 from hireshire.config import AppConfig, CompanyConfig, ScraperSettings
@@ -82,7 +81,7 @@ def _make_config() -> AppConfig:
     return AppConfig(settings=settings, companies=companies)
 
 
-def test_queue_wait_does_not_count_against_timeout(monkeypatch, tmp_path):
+def test_queue_wait_does_not_count_against_timeout(monkeypatch):
     _FakeScraper.concurrent = 0
     _FakeScraper.peak = 0
     store = _FakeStore()
@@ -91,11 +90,6 @@ def test_queue_wait_does_not_count_against_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(scraper, "AshbyScraper", _FakeScraper)
     monkeypatch.setattr(scraper, "RunStore", lambda *a, **k: store)
     monkeypatch.setattr(scraper, "get_db", lambda *a, **k: None)
-    # Redirect all three slug files into tmp so the test neither reads the shipped
-    # seed nor writes a delta into the real data dir.
-    monkeypatch.setattr(scraper, "SEED_BAD_SLUGS_PATH", tmp_path / "seed_bad_slugs.json")
-    monkeypatch.setattr(scraper, "USER_BAD_SLUGS_PATH", tmp_path / "user_bad_slugs.json")
-    monkeypatch.setattr(scraper, "USER_RECOVERED_PATH", tmp_path / "user_recovered.json")
 
     start = time.monotonic()
     asyncio.run(scraper.main(quiet=True))

@@ -44,7 +44,6 @@ APPROVED = [
     "scripts/setup_cli.py codex-check",
     'scripts/setup_cli.py set matcher --json \'{"threshold": 75}\'',
     'scripts/setup_cli.py write-profile --text "Senior account manager, SaaS renewals"',
-    "scripts/verify_bad_slugs.py --prune",
     # The hand-recorded outcomes. Reached from a button on the user's own dashboard,
     # so a prompt would sit between the click and what it asks for.
     "scripts/jobs_cli.py list",
@@ -87,6 +86,9 @@ REFUSED = [
     # The manual-apply CLI was removed with `/hireshire:apply`; a file of that name
     # must not inherit its old approval.
     "scripts/applied_cli.py list",
+    # Removed with the bad-slugs list. Same rule: a file dropped back under that
+    # name must not inherit the approval the real script used to carry.
+    "scripts/verify_bad_slugs.py --prune",
     "scripts/verify_bad_slugs.py --wipe",
     # A mode that takes no arguments, given some.
     "--paths extra",

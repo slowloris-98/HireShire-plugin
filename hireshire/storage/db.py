@@ -22,7 +22,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 from hireshire import paths
 from hireshire.models.job import Job
@@ -436,7 +436,17 @@ class Database:
             f"(skipped = 0 OR skipped IS NULL OR {self._sibling_sql(alias)})"
         )
 
-    def _canonical_matches_sql(self, cols: str, joins: str = "") -> str:
+    @staticmethod
+    def _in_clause(run_ids: Sequence[str], column: str = "m.run_id") -> str:
+        """``column IN (?,?,…)`` for a day's worth of run ids. Spelled once.
+
+        The caller has already established that `run_ids` is neither None nor empty;
+        an empty list must never reach here, because `IN ()` is a SQLite syntax error
+        and every reader short-circuits on it instead.
+        """
+        return f"{column} IN ({','.join('?' * len(run_ids))})"
+
+    def _canonical_matches_sql(self, cols: str, joins: str = "", where: str = "") -> str:
         """One row per `job_id` across every run: the job's **newest** match row.
 
         `matches` is keyed `(run_id, job_id)`, so a job dropped on a deferral — the
@@ -465,14 +475,24 @@ class Database:
         `_relevant_sql()` and `_sibling_sql()` run unaliased against the row this has
         already chosen. Inside the aggregate they would be answered by rows the group
         is in the middle of discarding.
+
+        `where` is the **mirror image** of that rule and the two only look
+        contradictory. It narrows *which runs are candidates* — the day scope's
+        `m.run_id IN (…)` — and it has to go inside, because the point of a day page
+        is each job's newest row **among that day's sweeps**. Outside, the aggregate
+        would first pick the job's all-time newest row and the outer `WHERE` would
+        then discard the job **entirely** whenever that row belonged to another day:
+        a job today's sweep judged would vanish from today's page the moment a later
+        sweep touched it. So: scope inside, state outside.
         """
         return (
             f"SELECT {cols}, MAX(m.scored_at) AS canonical "
-            f"FROM matches m {joins} GROUP BY m.job_id"
+            f"FROM matches m {joins} {where} GROUP BY m.job_id"
         )
 
-    def overview_counts(self, run_id: str | None = None) -> dict[str, int]:
-        """The overview page's four figures, at run scope or across the install.
+    def overview_counts(self, run_id: str | None = None,
+                        run_ids: Sequence[str] | None = None) -> dict[str, int]:
+        """The overview page's four figures, at one of the three scopes.
 
         Counted one job at a time rather than one row at a time, so a job that
         resurfaced in several sweeps is one job on the lifetime page — unlike a per-run
@@ -488,9 +508,23 @@ class Database:
 
         This changes only which row is consulted, never what `shortlisted = 1` means: an
         `excluded` or `expired` job keeps its shortlist row and its place in the tile.
+
+        Day scope (`run_ids`) is the lifetime path with the scope filter pushed inside
+        `_canonical_matches_sql`, for the reason that method documents. `run_ids` and
+        `run_id` are mutually exclusive. `run_ids=[]` means "a day with no sweeps" and
+        must read zero — not the whole install, which is what a truthiness test on the
+        list would silently give.
         """
-        run_filter = " AND run_id = ?" if run_id else ""
-        params: tuple = (run_id,) if run_id else ()
+        if run_ids is not None and not run_ids:
+            return {"seen": 0, "relevant": 0, "shortlisted": 0, "applied": 0}
+
+        ids: tuple = tuple(run_ids or ())
+        run_filter = (
+            " AND run_id = ?" if run_id
+            else f" AND {self._in_clause(ids, 'run_id')}" if ids
+            else ""
+        )
+        params: tuple = (run_id,) if run_id else ids
         if run_id:
             relevant_sql = ("SELECT COUNT(DISTINCT job_id) AS n FROM matches "
                             f"WHERE {self._relevant_sql()}" + run_filter)
@@ -498,7 +532,8 @@ class Database:
                                "WHERE shortlisted = 1" + run_filter)
         else:
             canonical = self._canonical_matches_sql(
-                "m.job_id, m.raw_json, m.skip_reason, m.shortlisted"
+                "m.job_id, m.raw_json, m.skip_reason, m.shortlisted",
+                where=f"WHERE {self._in_clause(ids)}" if ids else "",
             )
             relevant_sql = (f"SELECT COUNT(*) AS n FROM ({canonical}) "
                             f"WHERE {self._relevant_sql()}")
@@ -519,12 +554,16 @@ class Database:
             # sign-in gate, a question nothing could answer — and counting it here made
             # the tile promise applications that never reached the employer. Those
             # rows are the page's Needs Attention section instead.
+            applied_scope = (
+                " AND EXISTS (SELECT 1 FROM matches m WHERE m.job_id = a.job_id"
+                " AND m.run_id = ?)" if run_id
+                else " AND EXISTS (SELECT 1 FROM matches m WHERE m.job_id = a.job_id"
+                     f" AND {self._in_clause(ids)})" if ids
+                else ""
+            )
             applied = self._conn.execute(
                 "SELECT COUNT(*) AS n FROM applied a WHERE a.status = 'submitted'"
-                + (
-                    " AND EXISTS (SELECT 1 FROM matches m WHERE m.job_id = a.job_id"
-                    " AND m.run_id = ?)" if run_id else ""
-                ),
+                + applied_scope,
                 params,
             ).fetchone()
         return {
@@ -550,8 +589,9 @@ class Database:
         record["shortlisted"] = bool(row["shortlisted"])
         return record
 
-    def load_lifetime_matches(self, limit: int) -> list[dict]:
-        """One row per job_id across every run — its canonical row, best first.
+    def load_lifetime_matches(self, limit: int,
+                              run_ids: Sequence[str] | None = None) -> list[dict]:
+        """One row per job_id across a set of runs — its canonical row, best first.
 
         Row selection is `_canonical_matches_sql`: the job's newest match row, because
         an older one may have been superseded by a later sweep. This used to be two
@@ -565,23 +605,33 @@ class Database:
         cross-encoder logit that decided whether they were worth a call. `IS NULL`
         first keeps a job that never reached the reranker at the bottom rather than
         the top.
+
+        `run_ids` narrows it to one day. The filter goes *inside* the aggregate, so
+        each job's chosen row is its newest among those runs — see
+        `_canonical_matches_sql`. Its placeholders therefore come **before** `limit`
+        in the parameter tuple, because the subquery is rendered first.
         """
+        if run_ids is not None and not run_ids:
+            return []
+        ids = tuple(run_ids or ())
         judged = self._judged_sql()
         rank = f"CASE WHEN {judged} THEN relevance_score ELSE rerank_score END"
         canonical = self._canonical_matches_sql(
             self._MATCH_COLUMNS,
             "LEFT JOIN jobs j ON j.run_id = m.run_id AND j.job_id = m.job_id",
+            where=f"WHERE {self._in_clause(ids)}" if ids else "",
         )
         with self._lock:
             rows = self._conn.execute(
                 f"SELECT * FROM ({canonical}) "
                 f"ORDER BY ({judged}) DESC, {rank} IS NULL, {rank} DESC LIMIT ?",
-                (int(limit),),
+                (*ids, int(limit)),
             ).fetchall()
         return [self._match_record(r) for r in rows]
 
-    def load_unmatched_jobs(self, run_id: str | None, limit: int) -> list[dict]:
-        """Jobs the funnel never wrote a `matches` row for, at either scope.
+    def load_unmatched_jobs(self, run_id: str | None, limit: int,
+                            run_ids: Sequence[str] | None = None) -> list[dict]:
+        """Jobs the funnel never wrote a `matches` row for, at any of the three scopes.
 
         These are the title-gate rejections — `title_excluded` and
         `title_low_relevance` — which `matcher.py` deliberately keeps out of `matches`
@@ -599,9 +649,22 @@ class Database:
         Index-backed both ways: `idx_matches_job` serves the subquery and
         `idx_jobs_run` the run-scope filter — which matters because the reports now
         rebuild on a clock for the length of a sweep, not on funnel events.
+
+        The scope filter is the only thing `run_ids` changes: there is no aggregate
+        here to place it inside, because `GROUP BY j.job_id` is already one row per
+        job whatever set of runs produced them.
         """
-        scope = " AND j.run_id = ?" if run_id else ""
-        params: tuple = (run_id, int(limit)) if run_id else (int(limit),)
+        if run_ids is not None and not run_ids:
+            return []
+        ids = tuple(run_ids or ())
+        scope = (
+            " AND j.run_id = ?" if run_id
+            else f" AND {self._in_clause(ids, 'j.run_id')}" if ids
+            else ""
+        )
+        params: tuple = (
+            (run_id, int(limit)) if run_id else (*ids, int(limit))
+        )
         with self._lock:
             rows = self._conn.execute(
                 "SELECT j.job_id, j.board_token, j.title, j.location, j.url "
@@ -623,7 +686,8 @@ class Database:
             for r in rows
         ]
 
-    def load_applied_matches(self, run_id: str | None = None) -> list[dict]:
+    def load_applied_matches(self, run_id: str | None = None,
+                             run_ids: Sequence[str] | None = None) -> list[dict]:
         """Every application, carrying the job's best match row where one exists.
 
         LEFT JOIN because an application can outlive the sweep that found it: the
@@ -642,12 +706,24 @@ class Database:
         match row left to point at sorts last rather than first, and the timestamp
         breaks ties — nothing is lost by demoting it from the primary key, because
         `_job_entry` prints it in the meta line either way.
+
+        Only the scope `EXISTS` takes `run_ids`; the display join stays unscoped on
+        purpose. An application is a fact about a job, not about a sweep, so the day
+        page can and should render one from a match row written outside that day —
+        the same reading `overview_counts` applies, where run scope already means
+        "applications to jobs this sweep saw" rather than "made during it".
         """
+        if run_ids is not None and not run_ids:
+            return []
+        ids = tuple(run_ids or ())
         scope = (
             " WHERE EXISTS (SELECT 1 FROM matches mm WHERE mm.job_id = a.job_id"
-            " AND mm.run_id = ?)" if run_id else ""
+            " AND mm.run_id = ?)" if run_id
+            else " WHERE EXISTS (SELECT 1 FROM matches mm WHERE mm.job_id = a.job_id"
+                 f" AND {self._in_clause(ids, 'mm.run_id')})" if ids
+            else ""
         )
-        params: tuple = (run_id,) if run_id else ()
+        params: tuple = (run_id,) if run_id else ids
         with self._lock:
             rows = self._conn.execute(
                 "SELECT a.job_id, a.board_token, a.title, a.absolute_url, "
@@ -832,8 +908,8 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def lifetime_progress(self) -> dict:
-        """The lifetime page's bars: two sums and one backlog.
+    def lifetime_progress(self, run_ids: Sequence[str] | None = None) -> dict:
+        """The aggregate bars: two sums and one backlog. Lifetime, or one day.
 
         The scraper and matcher figures are sums over every tracked sweep, because
         nothing else can count them. `jobs_in_scope` is scoped to those same sweeps,
@@ -851,9 +927,35 @@ class Database:
         this bar's total *is* the `Jobs shortlisted` tile, and the two must be the same
         number by construction rather than by coincidence.
 
-        Groups whole tables, so it belongs on the lifetime page's slower throttle.
+        Groups whole tables at lifetime scope, so it belongs on the slower throttle —
+        and the day page rides that same throttle, though for a different reason (see
+        `reporting.refresh`).
+
+        `run_ids` narrows every one of these reads to one day. Three of them are
+        deliberately unfiltered at lifetime scope and each justification is a
+        *lifetime* argument that does not transfer, so each takes the filter: the
+        `unique_jobs` count (every run, tracked or not), the shortlist half (every
+        representative the install has ever had), and `jobs_in_scope` (which must
+        intersect the day's ids rather than take every tracked sweep). What does not
+        change is the applier half's shape: it is still not a sum, because a sum of
+        per-sweep counters reads ~100% whenever no sweep is running.
         """
-        canonical = self._canonical_matches_sql("m.job_id, m.raw_json, m.shortlisted")
+        if run_ids is not None and not run_ids:
+            return {
+                "sweeps": 0, "companies_total": 0, "companies_done": 0,
+                "jobs_processed": 0, "jobs_in_scope": 0, "unique_jobs": 0,
+                "shortlisted": 0, "submitted": 0, "attention": 0,
+            }
+        ids = tuple(run_ids or ())
+        progress_scope = f" WHERE {self._in_clause(ids, 'run_id')}" if ids else ""
+        jobs_scope = (
+            f"WHERE {self._in_clause(ids, 'run_id')}" if ids
+            else "WHERE run_id IN (SELECT run_id FROM run_progress)"
+        )
+        canonical = self._canonical_matches_sql(
+            "m.job_id, m.raw_json, m.shortlisted",
+            where=f"WHERE {self._in_clause(ids)}" if ids else "",
+        )
         shortlist = (
             f"SELECT job_id FROM ({canonical}) "
             f"WHERE shortlisted = 1 AND NOT ({self._sibling_sql()})"
@@ -864,24 +966,27 @@ class Database:
                 "       COALESCE(SUM(companies_total), 0) AS companies_total, "
                 "       COALESCE(SUM(companies_done), 0) AS companies_done, "
                 "       COALESCE(SUM(jobs_processed), 0) AS jobs_processed "
-                "FROM run_progress"
+                "FROM run_progress" + progress_scope,
+                ids,
             ).fetchone()
             jobs = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM jobs "
-                "WHERE run_id IN (SELECT run_id FROM run_progress)"
+                f"SELECT COUNT(*) AS n FROM jobs {jobs_scope}", ids
             ).fetchone()
-            # What the scraper bar prints. Every run, tracked or not, and each posting
-            # once however many sweeps found it — the lifetime `Jobs in scope` rule.
+            # What the scraper bar prints. Each posting once however many sweeps found
+            # it — the `Jobs in scope` rule, over whatever set of runs is in scope.
             unique = self._conn.execute(
                 "SELECT COUNT(DISTINCT job_id) AS n FROM jobs"
+                + (f" WHERE {self._in_clause(ids, 'run_id')}" if ids else ""),
+                ids,
             ).fetchone()
             shortlisted = self._conn.execute(
-                f"SELECT COUNT(*) AS n FROM ({shortlist})"
+                f"SELECT COUNT(*) AS n FROM ({shortlist})", ids
             ).fetchone()
             applied = self._conn.execute(
                 "SELECT SUM(CASE WHEN a.status = 'submitted' THEN 1 ELSE 0 END) AS ok, "
                 "       SUM(CASE WHEN a.status != 'submitted' THEN 1 ELSE 0 END) AS bad "
-                f"FROM applied a WHERE a.job_id IN ({shortlist})"
+                f"FROM applied a WHERE a.job_id IN ({shortlist})",
+                ids,
             ).fetchone()
         return {
             "sweeps": sums["sweeps"] or 0,
@@ -902,6 +1007,52 @@ class Database:
                 "SELECT run_id, MIN(started_at) AS started_at, MAX(finished_at) AS finished_at "
                 "FROM runs GROUP BY run_id ORDER BY started_at DESC LIMIT ?",
                 (int(limit),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def known_run_ids(self) -> list[str]:
+        """Every run id this database has heard of, newest first.
+
+        The union is not belt-and-braces: `run_progress` holds one row per
+        *orchestrated* sweep and nothing else, while `runs` holds a row per finished
+        phase — so a sweep still in flight is only in the first, and a phase run
+        standalone (`python scraper.py`) is only in the second. The day scope picks its
+        runs out of this list, so a sweep missing from it would be missing from its own
+        day's page.
+
+        One row per sweep, so this is a small scan however long the user has been at
+        it, and it rides the day page's throttle rather than the fast one.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT run_id FROM run_progress "
+                "UNION SELECT run_id FROM runs "
+                "ORDER BY run_id DESC"
+            ).fetchall()
+        return [r["run_id"] for r in rows]
+
+    def pipeline_spans(self, run_ids: Sequence[str]) -> list[dict]:
+        """`(started_at, finished_at)` for each named sweep's pipeline phase.
+
+        Deliberately returns the raw strings and does no arithmetic. `runs.started_at`
+        arrives from three producers in three shapes — `datetime.isoformat()` with an
+        offset, `now_isoformat()` with fractional seconds, and an orphan's re-derived
+        instant — and `julianday()` is particular about all three, so averaging in SQL
+        would fail silently on a subset of rows. `reporting.data.day_summary` does the
+        arithmetic with the same tolerant parse `render.duration` uses, so there is one
+        parsing rule rather than two.
+
+        A sweep still in flight has no row here at all: `_finalise_pipeline` writes it
+        at the end. That is deliberate, and the caller must not read it as a zero.
+        """
+        ids = tuple(run_ids or ())
+        if not ids:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT run_id, started_at, finished_at FROM runs "
+                f"WHERE phase = ? AND {self._in_clause(ids, 'run_id')}",
+                (PHASE_PIPELINE, *ids),
             ).fetchall()
         return [dict(r) for r in rows]
 

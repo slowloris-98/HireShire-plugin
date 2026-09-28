@@ -29,7 +29,7 @@ matches permission rules against the exact Bash command string, so a stable argv
 what lets `scripts/approve.py` recognise these and stop asking. `--job-id` repeats
 rather than taking a list, so marking three jobs is one command and one approval.
 
-**Every write rebuilds the two dashboard pages before returning.** They are static
+**Every write rebuilds the dashboard pages before returning.** They are static
 files that only the engine rewrites, and between sweeps nothing rewrites them at all
 — so without this the user would paste the command, the database would change, and
 the page they are looking at would not.
@@ -72,7 +72,7 @@ def _print_json(value: object) -> None:
 
 
 def _rebuild_reports() -> dict[str, str]:
-    """Rewrite both dashboard pages from the database. Never raises.
+    """Rewrite every dashboard page from the database. Never raises.
 
     `last_run.json` already records the three things `reporting.refresh` needs, so
     this reads them rather than guessing at a results directory — the same rule the
@@ -150,7 +150,7 @@ def _write(args: argparse.Namespace, action: str) -> int:
         results.append({"job_id": job_id, "action": action, "result": outcome})
 
     # Only pay for a rebuild when something actually moved. A run of no-ops should not
-    # rewrite two pages.
+    # rewrite the pages.
     pages = {}
     if any(r["result"] not in ("unknown", "nothing_to_change") for r in results):
         pages = _rebuild_reports()

@@ -1,6 +1,9 @@
 smart applier:
     - a human check to approve before applying into jobs
 
+- update slugs with new companies
+- per day dashboard folder
+
 2. introduce resume tuning.
 3. db balooning for users over time
 
@@ -8,3 +11,8 @@ smart applier:
 4. setup recommendations:
     option for a single run in the orchestrate. currently it reccurs everytime 
         - leave it, we want users to use reccuring runs
+
+
+New companies:
+
+Qualcomm

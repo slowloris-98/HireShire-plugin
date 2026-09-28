@@ -71,7 +71,6 @@ _FLAG_MODES = frozenset({"--check", "--paths", "--bootstrap", "--monitor",
 # payload, a file path) that argv delivers safely.
 _SCRIPTS: dict[str, frozenset[str] | None] = {
     "orchestrate.py": frozenset({"--once"}),
-    "scripts/verify_bad_slugs.py": frozenset({"--prune"}),
     # Read-only: reads past runs out of the database, prints a table, writes
     # nothing. Empty set means the bare form only — `--run-id` and `--recall` take
     # values, and allowing a flag that carries an argument means allowing the

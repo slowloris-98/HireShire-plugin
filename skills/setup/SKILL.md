@@ -569,8 +569,8 @@ Three things that trip people up:
    > board types adds roughly 24,000 more, but each run takes considerably
    > longer.
 
-   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~15,871 companies. Adding
-   `workday` and `bamboohr` takes it to 40,071. Do not quote a specific
+   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~17,707 companies. Adding
+   `workday` and `bamboohr` takes it to 41,907. Do not quote a specific
    multiplier for the extra time — nobody has timed it yet. Say "considerably
    longer" until a real timed run exists.
 
@@ -782,5 +782,5 @@ database starts empty and every posting is new.
 Name the workspace and show them where the first CSV will appear:
 
 > Everything lives in `<workspace>`. Your resume is in `resume/original/`, and
-> after the first search you'll find `hireshire_run_results/<date>_<time>/` with
-> the results CSV in it.
+> after the first search you'll find `hireshire_run_results/<date>/<date>_<time>/`
+> with the results CSV in it.

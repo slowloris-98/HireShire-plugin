@@ -101,8 +101,13 @@ def _job(job_id: str, company: str = "acme") -> dict:
 
 
 def _run_dir(tmp_path, stamp: str = "2026-09-19_120000") -> Path:
-    """This sweep's results folder — what `paths.make_run_dir` hands the worker."""
-    d = tmp_path / "hireshire_run_results" / stamp
+    """This sweep's results folder — what `paths.make_run_dir` hands the worker.
+
+    Built at the real depth, one folder per day above the run folder, so the cwd rule
+    below (`out_dir` has to be inside the workspace) is exercised where a real sweep
+    exercises it rather than one level shallower.
+    """
+    d = tmp_path / "hireshire_run_results" / stamp[:10] / stamp
     d.mkdir(parents=True, exist_ok=True)
     return d
 

@@ -440,14 +440,8 @@ def test_every_skill_has_frontmatter_with_a_matching_name(skill):
 
 def test_no_mutable_state_is_written_into_the_install_dir():
     """ROOT is replaced on every update. Anything written there is lost."""
-    import scraper
-
-    for p in (scraper.USER_BAD_SLUGS_PATH, scraper.USER_RECOVERED_PATH,
-              paths.DB_PATH, paths.RESULTS_DIR, paths.USER_CONFIG):
+    for p in (paths.DB_PATH, paths.RESULTS_DIR, paths.USER_CONFIG):
         assert paths.DATA in p.parents or p == paths.DATA, f"{p} must live under DATA"
-
-    # ...and the read-only seed is the one thing that does come from the install dir.
-    assert scraper.SEED_BAD_SLUGS_PATH.parent == paths.SHIPPED_CONFIG
 
 
 def test_results_leave_the_data_dir_only_for_a_folder_the_user_chose():

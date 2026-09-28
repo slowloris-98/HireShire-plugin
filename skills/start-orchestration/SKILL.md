@@ -78,8 +78,11 @@ Tell the user, plainly:
   next sweep starts.
 - **Where to watch it** without waiting on you: the dashboard at
   `<results root>/Dashboard_Lifetime.html`. It is local, covers every sweep the install has
-  done, rewrites itself continuously while a sweep runs, and costs them nothing. Each
-  sweep also leaves its own copy in its run folder. The results root is
+  done, rewrites itself continuously while a sweep runs, and costs them nothing. There
+  are two narrower ones beside it, same page, less of it: each day gets
+  `<results root>/<date>/Dashboard_Day_<date>.html`, covering that day's sweeps with how
+  many there were and how long each took on average, and each sweep leaves its own copy
+  in its run folder. The results root is
   `<workspace_dir>/hireshire_run_results/`, or `<DATA>/results/` when `workspace_dir`
   is empty.
 - **What to do about a job the sweep could not finish:** rows under Needs Attention, and
@@ -88,9 +91,10 @@ Tell the user, plainly:
   `/hireshire:mark-applied` command; pasting it into Claude records the outcome and
   rewrites the dashboard.
 - **Where each sweep's results land:**
-  `<results root>/<date>_<time>/<date>_<time>_results.csv` — every job that reached the
-  funnel, best first. A blank `llm_score` means no judge read that job, not a score of
-  zero. `<DATA>/last_run.json` names the latest one.
+  `<results root>/<date>/<date>_<time>/<date>_<time>_results.csv` — every job that reached
+  the funnel, best first. A blank `llm_score` means no judge read that job, not a score of
+  zero. `<DATA>/last_run.json` names the latest one. Run folders from before this layout
+  stay where they are, directly under the results root; nothing was moved.
 
 If auto-apply is enabled in their config, say plainly that each sweep will also open a
 browser **as soon as a job is shortlisted** — mid-sweep, not at the end — and **submit
@@ -105,10 +109,12 @@ Each cycle emits one summary line: how many matches were found, the best score, 
 the next sweep is due. Relay those as they arrive; do not go looking for more detail
 unless the user asks.
 
-There is nothing to publish. The engine rewrites both dashboards on a clock and
+There is nothing to publish. The engine rewrites the dashboards on a clock and
 they reload themselves while a sweep is running, so the user watches them directly
 rather than waiting on a message from you. `<DATA>/last_run.json` carries the exact
-paths as `overview_html` and `run_overview_html` once a sweep has written them.
+paths as `overview_html`, `day_overview_html` and `run_overview_html` once a sweep has
+written them. `day_overview_html` is blank for a run folder that predates the day
+layout — hand over a path only when it is not.
 
 Do not tail the engine log for progress here. A recurring sweep runs unattended for
 hours, and relaying every internal milestone would put several messages into the

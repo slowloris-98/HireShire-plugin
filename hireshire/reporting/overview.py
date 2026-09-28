@@ -15,15 +15,21 @@ job is also a relevant one), the sections are a **partition** — a job renders 
 exactly one of them. The page is the user's only list of what is left to do, so a job
 appearing twice would double it. `data.partition_jobs` owns that split.
 
-Both scopes render from the same code and differ only in the data they are handed,
-with one exception: how long it took is a fact about a sweep, not about an install,
-so that tile appears on the per-run page alone. It used to have a companion, an
-``Est. cost`` tile, and ``render.SHOW_COST`` is what turned that one off — the figure
-was the Claude CLI's own list-price estimate and read on the page as a bill.
+All three scopes render from the same code and differ only in the data they are
+handed, with one exception, and it is the same fact stated three ways: how long it
+took belongs to a sweep, not to a day or an install. So the run page alone gets
+``Took``; the day page answers the two questions that *are* about a day — how many
+sweeps, and how long each took on average; and the lifetime page gets neither,
+because a mean over months is not a number anyone acts on. ``Took`` used to have a
+companion, an ``Est. cost`` tile, and ``render.SHOW_COST`` is what turned that one
+off — the figure was the Claude CLI's own list-price estimate and read on the page as
+a bill.
 
-Written at two scopes from one renderer:
+Written at three scopes from one renderer:
 
 * ``Dashboard_Lifetime.html`` at the results root — every sweep this install has done.
+* ``Dashboard_Day_<YYYY-MM-DD>.html`` in a day folder — that day's sweeps, how many
+  there were and how long each one took on average.
 * ``Dashboard_<stamp>.html`` inside a run folder, beside that run's CSVs — one sweep,
   plus how long it took.
 
@@ -54,6 +60,7 @@ from hireshire.reporting.render import (
     document,
     duration,
     e,
+    humanise_seconds,
     listing,
     local_time,
     num,
@@ -67,6 +74,12 @@ logger = logging.getLogger(__name__)
 TITLE = "HireShire"
 LIFETIME_NAME = "Dashboard_Lifetime.html"
 RUN_PREFIX = "Dashboard_"
+# `Dashboard_Day_` rather than `Dashboard_<date>`: it could not collide with a stamp,
+# which always carries `_HHMMSS`, but the filenames are the only place these pages
+# name themselves to a user, and a directory listing should say which is which. The
+# capital D also clears the two case-sensitive guards against the deleted
+# `dashboard.html` (`tests/test_reporting.py`, `tests/test_plugin_shell.py`).
+DAY_PREFIX = "Dashboard_Day_"
 
 # Long enough not to thrash a browser, short enough to feel live against an engine
 # that rewrites the file every ten seconds.
@@ -238,6 +251,10 @@ OVERVIEW_CSS = """
 
 def run_overview_name(stamp: str) -> str:
     return f"{RUN_PREFIX}{stamp}.html"
+
+
+def day_overview_name(day: str) -> str:
+    return f"{DAY_PREFIX}{day}.html"
 
 
 # The one column set, and the whole point of the layout: the same six labels over
@@ -857,10 +874,23 @@ def _progress_block(bars: list[dict]) -> str:
     )
 
 
-def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
-    """Render the page. Pure — takes data, returns HTML, touches no disk."""
+def build(snapshot: dict[str, Any], label: str | None = None) -> str:
+    """Render the page. Pure — takes data, returns HTML, touches no disk.
+
+    `label` is the sweep's stamp at run scope and the date at day scope, and is unused
+    at lifetime scope — one parameter because it is one slot in the heading and the
+    document title.
+
+    The scope is read from `snapshot["scope"]` and falls back to the old
+    `run_id is not None` test when the key is absent. That fallback is load-bearing
+    rather than defensive: snapshots are built by hand in several tests, and without it
+    every one of them would have to gain a key to keep rendering what it renders now.
+    """
     counts = snapshot["counts"]
-    per_run = snapshot.get("run_id") is not None
+    scope = snapshot.get("scope") or (
+        "run" if snapshot.get("run_id") is not None else "lifetime"
+    )
+    per_run = scope == "run"
 
     tiles = [
         _stat(num(counts["seen"]), "Jobs in scope",
@@ -885,8 +915,23 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
             tiles.append(_stat(
                 usd((snapshot.get("usage") or {}).get("cost_usd")), "Est. cost"
             ))
+    elif scope == "day":
+        # The two questions `Took` cannot answer about a day. `Sweeps` is the size of
+        # the scope itself; the average covers only the sweeps that finished, because a
+        # sweep in flight has no end to measure — so the two deliberately do not
+        # multiply out to the day, and the tooltip says which ones were measured.
+        measured = int(snapshot.get("measured") or 0)
+        tiles.append(_stat(
+            num(snapshot.get("sweeps")), "Sweeps",
+            hint="Sweeps that ran on this day",
+        ))
+        tiles.append(_stat(
+            humanise_seconds(snapshot.get("avg_seconds")), "Avg per sweep",
+            hint=f"Mean wall-clock time of the {measured} sweep(s) that finished",
+        ))
 
-    heading = (f"Dashboard Run: {stamp}" if per_run and stamp
+    heading = (f"Dashboard Run: {label}" if per_run and label
+               else f"Dashboard Day: {label}" if scope == "day" and label
                else "Lifetime Dashboard")
     live_chip = ('<span class="chip live">running</span>' if snapshot["live"]
                  else '<span class="chip">stopped</span>' if snapshot.get("stopped")
@@ -943,7 +988,7 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     markable = bool(attention or snapshot["shortlisted"])
 
     return document(
-        f"{TITLE} — {stamp}" if per_run and stamp else TITLE,
+        f"{TITLE} — {label}" if label and scope != "lifetime" else TITLE,
         body + (_SCRIPT if seen else "") + (_FILTER_SCRIPT if listed else "")
         + (_MARK_SCRIPT if markable else "") + _STATE_SCRIPT,
         refresh_s=REFRESH_S if snapshot["live"] else None,
@@ -951,12 +996,12 @@ def build(snapshot: dict[str, Any], stamp: str | None = None) -> str:
     )
 
 
-def write(snapshot: dict[str, Any], path: Path, stamp: str | None = None) -> Path | None:
+def write(snapshot: dict[str, Any], path: Path, label: str | None = None) -> Path | None:
     """Write one overview file. Never raises — see `matching.write` for why."""
     try:
-        html = build(snapshot, stamp)
+        html = build(snapshot, label)
     except Exception:  # noqa: BLE001
-        logger.exception("Could not build the overview page for %s", stamp or "all sweeps")
+        logger.exception("Could not build the overview page for %s", label or "all sweeps")
         return None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

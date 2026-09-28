@@ -77,7 +77,7 @@ Report each job's `result` as it stands, and nothing more:
   retry with a different id.
 - `nothing_to_change` — it was already recorded that way.
 
-`pages` holds the two dashboard files the command rewrote, so the change is already on
+`pages` holds the dashboard files the command rewrote, so the change is already on
 them. Hand over the `overview` path — that page covers every sweep. If `pages` is empty,
 either nothing changed or no sweep has finished yet; say that rather than naming a path.
 

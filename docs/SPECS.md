@@ -111,24 +111,30 @@ engineering.
 |---|---:|:--:|
 | Workday | 12,884 | |
 | BambooHR | 11,316 | |
-| Greenhouse | 8,333 | ✓ |
-| Lever | 4,369 | ✓ |
-| Ashby | 3,163 | ✓ |
+| Greenhouse | 9,071 | ✓ |
+| Lever | 4,370 | ✓ |
+| Ashby | 4,260 | ✓ |
 | Direct portals | 6 | ✓ |
-| **Total** | **40,071** | **15,871** |
+| **Total** | **41,907** | **17,707** |
 
-**The default sweep is 15,871 of these** — Greenhouse, Ashby, Lever and the direct
+**The default sweep is 17,707 of these** — Greenhouse, Ashby, Lever and the direct
 portals (Amazon, Apple, Google, Intuit, Meta, Microsoft, which post outside the big
 platforms). Workday and
 BambooHR are off by default because they are slow: Workday is POST-based and BambooHR
 needs two requests per company. Turning them on is one answer during setup, and it
 makes each run considerably longer.
 
-That 40,068 is the shipped list, not a promise of 40,068 live boards. Dead slugs are
-recorded and skipped before any HTTP call, so runs get faster over time and the
-reachable count drifts down as your install learns. Each release ships a refreshed
-list, and anything your own install discovers is kept separately so an update never
-erases it.
+That 41,907 is the shipped list, not a promise of 41,907 live boards. A fair number
+of them answer "no board here" on any given day — a company that moved platforms,
+or one that has taken its board down. Every slug is tried on every run anyway: a
+slug with no board is recorded against that run and tried again on the next one.
+
+There is deliberately no permanent skip list. One that learned from a sweep could
+only grow, since a board is never re-checked once it is on the list, so a company
+that was briefly unreachable would be dropped for good and nothing you could see
+would say so. Trying every slug every time costs requests in a phase that is
+already rate-limited per board, and it means a board that comes back is picked up
+on the next sweep without you doing anything.
 
 ## Where your data lives
 
@@ -193,5 +199,4 @@ environment variables set, everything falls back to `./data/`. Note that this is
 python scraper.py                     # sweep the boards
 python matcher.py                     # score the latest scrape
 python orchestrate.py --once          # both, end to end
-python scripts/verify_bad_slugs.py --prune   # re-check dead slugs
 ```

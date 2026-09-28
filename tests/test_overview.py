@@ -16,12 +16,33 @@ from datetime import datetime, timedelta, timezone
 
 from hireshire.applier import worker
 from hireshire.models.job import Job, Location
+from hireshire import run_ids
 from hireshire.reporting import data, overview
 from hireshire.reporting.render import duration, e
-from hireshire.storage.db import DECLINED_BY_USER, Database
+from hireshire.storage.db import DECLINED_BY_USER, PHASE_PIPELINE, Database
 
 RUN = "2026-09-09T06-51-12Z"
 OLDER = "2026-09-01T00-00-00Z"
+
+
+def _run_id_at_local(year, month, day, hour) -> str:
+    """The run id of a sweep that started at a given *local* wall-clock time.
+
+    Built this way round rather than written out because the day a sweep belongs to is
+    its local date, and a literal UTC run id would straddle local midnight on some
+    machines and not others — so a hand-written pair would be two sweeps on one day in
+    London and two different days in Auckland.
+    """
+    local = datetime(year, month, day, hour, 0, 0)   # naive: read as local
+    return local.astimezone(timezone.utc).strftime(run_ids.RUN_ID_FMT)
+
+
+# Two sweeps on one local day, a third still running on it, and one two days later.
+DAY = "2026-09-09"
+DAY_A = _run_id_at_local(2026, 9, 9, 8)
+DAY_B = _run_id_at_local(2026, 9, 9, 18)
+DAY_C = _run_id_at_local(2026, 9, 9, 22)
+NEXT_DAY = _run_id_at_local(2026, 9, 11, 8)
 
 
 # --- fixtures -----------------------------------------------------------------
@@ -138,6 +159,34 @@ def _snapshot(db: Database, run_id: str | None = RUN, **over) -> dict:
     })
     snap.update(over)
     return snap
+
+
+def _day_db(tmp_path) -> Database:
+    """One job, judged by two sweeps on `DAY` and re-judged two days later.
+
+    That shape is the whole point: `matches` is keyed `(run_id, job_id)`, so j1 holds
+    three rows, and each scope has to pick the right one. The `scored_at` values are
+    distinct because the canonical row is chosen by `MAX(scored_at)` — rows written at
+    the same instant leave it nothing to choose between.
+    """
+    db = _db(tmp_path)
+    plan = (
+        (DAY_A, 88, True, None, "2026-09-09T09:00:00+00:00"),
+        (DAY_B, 88, True, None, "2026-09-09T19:00:00+00:00"),
+        (NEXT_DAY, 10, False, "rerank_below_cutoff", "2026-09-11T09:00:00+00:00"),
+    )
+    for run_id, score, shortlisted, reason, scored_at in plan:
+        db.start_progress(run_id, False)
+        db.insert_jobs(run_id, [_job("j1")])
+        _match(db, run_id, "j1", score=score, shortlisted=shortlisted,
+               reason=reason, scored_at=scored_at)
+
+    # Pipeline rows for the two that finished: ten minutes and twenty.
+    db.finalise_run(DAY_A, PHASE_PIPELINE, "2026-09-09T08:00:00+00:00",
+                    "2026-09-09T08:10:00+00:00", {"completed": True})
+    db.finalise_run(DAY_B, PHASE_PIPELINE, "2026-09-09T18:00:00+00:00",
+                    "2026-09-09T18:20:00+00:00", {"completed": True})
+    return db
 
 
 # --- the four lists partition the jobs -----------------------------------------
@@ -581,19 +630,23 @@ def test_no_scope_prints_what_the_sweep_cost(tmp_path):
 
 
 def test_the_lifetime_page_has_no_duration(tmp_path):
-    """How long it took is a fact about a sweep, not about an install. It is the
-    *only* difference between the two scopes; everything else on the lifetime page is
-    the same markup fed different data."""
+    """How long it took is a fact about a sweep, so `Took` appears on the run page
+    alone. That tile is the only thing the three scopes disagree about: the day page
+    substitutes `Sweeps` + `Avg per sweep` for it, the lifetime page has neither
+    because a mean over months is not a number anyone acts on, and everything else on
+    both is the same markup fed different data."""
     html = overview.build(data.overview_snapshot(_populated(tmp_path), None), None)
     assert ">Took<" not in html
+    assert ">Sweeps</span>" not in html and ">Avg per sweep</span>" not in html
 
 
 def test_both_scopes_carry_the_same_header(tmp_path):
     db = _populated(tmp_path)
     per_run = overview.build(_snapshot(db), RUN)
     lifetime = overview.build(data.overview_snapshot(db, None), None)
+    day = overview.build(data.overview_snapshot(db, None, run_ids=[RUN]), DAY)
 
-    for html in (per_run, lifetime):
+    for html in (per_run, lifetime, day):
         assert "<h1>HireShire</h1>" in html
         assert 'class="eyebrow"' not in html
         # One line of instruction, and it sits between the tiles and the first
@@ -602,9 +655,152 @@ def test_both_scopes_carry_the_same_header(tmp_path):
         assert html.count('<p class="hint">') == 1
         assert html.index('class="stats"') < html.index('class="hint"') < html.index('class="acc"')
 
-    # The subtitle names the scope, and it is what tells the two apart.
+    # The subtitle names the scope, and it is what tells the three apart.
     assert "<span>Lifetime Dashboard</span>" in lifetime
     assert f"<span>Dashboard Run: {RUN}</span>" in per_run
+    assert f"<span>Dashboard Day: {DAY}</span>" in day
+
+
+# --- the day scope ------------------------------------------------------------
+
+
+def test_a_day_counts_a_job_two_of_its_sweeps_saw_once(tmp_path):
+    """`matches` is keyed `(run_id, job_id)`, so a job two of the day's sweeps judged
+    holds two rows. The day page has to choose one, exactly as the lifetime page does,
+    or the tiles read double and the list below prints the job twice."""
+    db = _day_db(tmp_path)
+    counts = db.overview_counts(None, run_ids=[DAY_A, DAY_B])
+    snap = data.overview_snapshot(db, None, run_ids=[DAY_A, DAY_B])
+
+    assert counts["seen"] == 1
+    assert counts["relevant"] == 1
+    assert counts["shortlisted"] == 1
+    assert _section_of(snap, "j1") == ["shortlisted"]
+
+
+def test_a_day_shows_the_verdict_that_day_reached(tmp_path):
+    """The load-bearing half: the scope filter sits *inside* the canonical aggregate, so
+    each job's chosen row is its newest **among that day's sweeps**. Outside, the
+    aggregate would pick the job's all-time newest row and the outer `WHERE` would then
+    discard the job entirely — a job this day judged would vanish from this day's page
+    the moment a later sweep touched it."""
+    db = _day_db(tmp_path)
+
+    first = data.overview_snapshot(db, None, run_ids=[DAY_A, DAY_B])
+    later = data.overview_snapshot(db, None, run_ids=[NEXT_DAY])
+    lifetime = data.overview_snapshot(db, None)
+
+    # The first day still holds its own verdict, and the job has not gone missing.
+    assert _section_of(first, "j1") == ["shortlisted"]
+    assert first["shortlisted"][0]["relevance_score"] == 88
+    # The later sweep overturned it, and both the later day and lifetime say so.
+    assert _section_of(later, "j1") == ["seen"]
+    assert _section_of(lifetime, "j1") == ["seen"]
+
+
+def test_the_day_page_trades_took_for_how_many_and_how_long(tmp_path):
+    db = _day_db(tmp_path)
+    html = overview.build(
+        data.overview_snapshot(db, None, run_ids=[DAY_A, DAY_B]), DAY
+    )
+
+    assert ">Sweeps</span>" in html
+    assert ">Avg per sweep</span>" in html
+    assert ">Took<" not in html
+    assert "Est. cost" not in html
+    assert f"{overview.TITLE} — {DAY}" in html
+
+
+def test_the_day_tiles_count_the_sweeps_and_average_the_finished_ones(tmp_path):
+    """A sweep in flight has no pipeline `runs` row, so it counts in `Sweeps` and not
+    in the average. The two tiles therefore do not multiply out to the day, which is
+    why `measured` exists to say which ones were timed."""
+    db = _day_db(tmp_path)
+    # A third sweep on the same day, still running: progress row, no pipeline row.
+    db.start_progress(DAY_C, False)
+
+    summary = data.day_summary(db, [DAY_A, DAY_B, DAY_C])
+
+    assert summary["sweeps"] == 3
+    assert summary["measured"] == 2
+    # 10 minutes and 20 minutes.
+    assert summary["avg_seconds"] == 900.0
+
+
+def test_an_unmeasured_average_is_an_em_dash_but_zero_is_zero(tmp_path):
+    """Same rule as the results CSV's blank `llm_score`: a printed zero reads as a
+    measured zero. A sweep that finished inside a second, though, *was* measured — so
+    the None/zero distinction has to be carried by the value, never by truthiness."""
+    db = _day_db(tmp_path)
+    base = data.overview_snapshot(db, None, run_ids=[DAY_A, DAY_B])
+
+    none_html = overview.build({**base, "avg_seconds": None}, DAY)
+    zero_html = overview.build({**base, "avg_seconds": 0.0}, DAY)
+
+    assert '<span class="stat-n">—</span>' in none_html
+    assert '<span class="stat-n">0s</span>' in zero_html
+
+
+def test_a_day_with_no_sweeps_reads_zero_rather_than_the_whole_install(tmp_path):
+    """`IN ()` is a SQLite syntax error and `if run_ids:` falls through to lifetime
+    scope, so a truthiness test here would print every job the install has ever seen
+    under a heading naming one empty day."""
+    db = _day_db(tmp_path)
+
+    assert db.overview_counts(None, run_ids=[]) == {
+        "seen": 0, "relevant": 0, "shortlisted": 0, "applied": 0
+    }
+    assert db.load_lifetime_matches(50, run_ids=[]) == []
+    assert db.load_unmatched_jobs(None, 50, run_ids=[]) == []
+    assert db.load_applied_matches(None, run_ids=[]) == []
+    assert db.lifetime_progress(run_ids=[])["sweeps"] == 0
+    assert db.pipeline_spans([]) == []
+    assert data.day_run_ids(db, "") == []
+
+    snap = data.overview_snapshot(db, None, run_ids=[])
+    assert snap["counts"] == {"seen": 0, "relevant": 0, "shortlisted": 0, "applied": 0}
+    assert snap["scope"] == "day" and snap["sweeps"] == 0
+    assert snap["avg_seconds"] is None
+
+
+def test_a_day_picks_its_sweeps_by_the_date_on_their_folders(tmp_path):
+    db = _day_db(tmp_path)
+    day = run_ids.day_of_run_id(DAY_A)
+
+    picked = data.day_run_ids(db, day)
+
+    assert day == DAY
+    assert DAY_A in picked and DAY_B in picked
+    assert NEXT_DAY not in picked
+    assert all(run_ids.day_of_run_id(r) == day for r in picked)
+
+
+def test_a_day_page_reloads_only_while_that_days_sweep_is_running(tmp_path):
+    """The lifetime page cannot tell whether a sweep is live and neither can this one —
+    scanning every run for one in progress would count a crashed sweep as live forever.
+    `refresh` knows, so it passes the answer in. No `stopped` chip either: that is a
+    fact about one sweep."""
+    db = _day_db(tmp_path)
+
+    live = overview.build(
+        data.overview_snapshot(db, None, run_ids=[DAY_A], live=True), DAY)
+    idle = overview.build(
+        data.overview_snapshot(db, None, run_ids=[DAY_A], live=False), DAY)
+
+    assert 'http-equiv="refresh"' in live
+    assert 'http-equiv="refresh"' not in idle
+    assert 'class="chip">stopped</span>' not in idle
+
+
+def test_a_snapshot_with_no_scope_key_renders_exactly_as_it_did(tmp_path):
+    """Snapshots are built by hand all over this file. The renderer derives the scope
+    from `snapshot["scope"]` and falls back to the old `run_id is not None` test, so
+    every one of them keeps rendering what it rendered before the day scope existed."""
+    db = _populated(tmp_path)
+    for run_id, label in ((RUN, RUN), (None, None)):
+        snap = data.overview_snapshot(db, run_id) if run_id is None else _snapshot(db)
+        bare = {k: v for k, v in snap.items() if k != "scope"}
+        assert overview.build(bare, label) == overview.build(snap, label)
 
 
 # --- the page itself ----------------------------------------------------------

@@ -118,14 +118,17 @@ class _OutputsDB(_FakeDB):
 
 
 def _write_outputs(tmp_path, stamp, rows, monkeypatch, all_rows=None, applied=None,
-                   complete=True):
+                   complete=True, day_layout=True):
     from hireshire import paths
 
     monkeypatch.setattr(paths, "LAST_RUN_PATH", tmp_path / "last_run.json")
+    monkeypatch.setattr(paths, "results_root", lambda: tmp_path)
     db = _OutputsDB(rows, all_rows, applied)
     monkeypatch.setattr(orchestrate, "get_db", lambda: db)
-    results_dir = tmp_path / stamp
-    results_dir.mkdir(exist_ok=True)
+    # The day layout is what a sweep produces now; `day_layout=False` is the shape every
+    # run folder made before it still has, and both have to reach this path intact.
+    results_dir = (tmp_path / stamp[:10] / stamp) if day_layout else (tmp_path / stamp)
+    results_dir.mkdir(parents=True, exist_ok=True)
     total = asyncio.run(
         orchestrate._write_run_outputs(
             "2026-08-12T14-30-05Z", results_dir, stamp, complete=complete
@@ -158,7 +161,7 @@ def test_the_outputs_are_the_csv_the_json_and_the_pointer(tmp_path, monkeypatch)
         assert next(csv.DictReader(f))["llm_score"] == "91"
 
 
-def test_the_pointer_names_only_the_two_pages_that_exist(tmp_path, monkeypatch):
+def test_the_pointer_names_the_pages_that_exist(tmp_path, monkeypatch):
     """The dashboard and the matching report are gone, and a pointer still naming
     them would send a skill at a path nothing writes."""
     stamp = "2026-08-12_143005"
@@ -167,9 +170,24 @@ def test_the_pointer_names_only_the_two_pages_that_exist(tmp_path, monkeypatch):
     pointer = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
     assert pointer["overview_html"].endswith("Dashboard_Lifetime.html")
     assert pointer["run_overview_html"].endswith(f"Dashboard_{stamp}.html")
+    assert pointer["day_overview_html"].endswith("Dashboard_Day_2026-08-12.html")
+    # The day page sits in the day folder, one level above the run folder.
+    assert Path(pointer["day_overview_html"]).parent == tmp_path / "2026-08-12"
     for gone in ("matching_html", "latest_matching_html", "dashboard_html",
                  "all_jobs_csv"):
         assert gone not in pointer
+
+
+def test_a_legacy_run_folder_points_at_no_day_page(tmp_path, monkeypatch):
+    """A run folder from before the day layout has no day folder, so the pointer says
+    so with a blank — never the string "None", which a reader would turn into a path."""
+    stamp = "2026-08-12_143005"
+    _write_outputs(tmp_path, stamp, [_record("Engineer", "Acme", 91)], monkeypatch,
+                   day_layout=False)
+
+    pointer = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
+    assert pointer["day_overview_html"] == ""
+    assert pointer["run_overview_html"].endswith(f"Dashboard_{stamp}.html")
 
 
 def test_the_csv_says_which_jobs_have_been_applied_to(tmp_path, monkeypatch):
