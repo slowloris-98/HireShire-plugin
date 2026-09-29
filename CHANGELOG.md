@@ -4,6 +4,23 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.21.0] — 2026-09-29
+
+### Added
+
+- **Tell it you applied to a job it passed on.** The "I applied to this" button now
+  appears on **Jobs Filtered** and **Total Jobs Seen** as well, so a job you found and
+  applied to yourself counts toward Jobs Applied instead of sitting in a list forever.
+  These two sections get that button only — those jobs are already out of the running,
+  so there is nothing left for "Not pursuing this" to change.
+- **Total Jobs Seen now says why each job is there.** A new **Reason** column, before
+  Location, gives the verdict in two words: `Title excluded`, `Low relevance`,
+  `Below cutoff`, `Experience gap`. Jobs seen before this update read as a dash — the
+  reason was never recorded for them, so it cannot be worked out now. Every sweep from
+  here on fills it in.
+- **A light/dark toggle** on every dashboard page, which remembers your choice for the
+  session and otherwise follows the system setting.
+
 ## [0.20.0] — 2026-09-28
 
 ### Added

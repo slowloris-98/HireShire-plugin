@@ -283,6 +283,52 @@ def partition_jobs(
     return shortlisted, filtered, seen
 
 
+#: The same verdicts as `REASON_LABELS`, in two words. The last section is a table
+#: whose other cells are a title, a company and a location, so a whole sentence would
+#: either wrap every row or be clipped past the point of saying anything. It is a
+#: separate table rather than a truncation of the long one because the short form is a
+#: different phrase, not a prefix: "Below the relevance cutoff — the cross-encoder read
+#: it and said no" does not shorten to anything useful by cutting.
+#:
+#: Keys come from two places and both reach this one column: `matches.skip_reason` for
+#: the jobs the cutoff and the YoE gate dropped, and `jobs.gate_reason` for the title
+#: gate's own three verdicts, which have no `matches` row at all.
+SHORT_REASONS = {
+    "title_excluded": "Title excluded",
+    "title_low_relevance": "Low relevance",
+    "title_no_include_match": "No keyword",
+    "rerank_below_cutoff": "Below cutoff",
+    "yoe_below_requirement": "Experience gap",
+    "llm_call_cap_reached": "Call cap",
+    "duplicate_of_cluster": "Duplicate posting",
+    "location_mismatch": "Wrong location",
+    "no_content_text": "No description",
+    "api_error": "Scoring failed",
+    DECLINED_BY_USER: "You declined",
+    "rerank_below_top_k": "Over budget",
+}
+
+
+def short_reason(reason: str | None) -> str:
+    """Two words for a `skip_reason` or a `gate_reason`; an em dash for neither.
+
+    An em dash rather than a blank or a guess: a row with no reason on it is one the
+    gate dropped before the column existed, and the page says so the same way it says
+    "nothing read this" in the score columns.
+
+    An unlabelled reason falls back to the first two words of its own key, so a verdict
+    nobody has added here still reads as something — the same principle as
+    `reason_label`, which shows an unknown reason verbatim rather than bucketing it
+    into "other". Two words, because that is what the column is for.
+    """
+    key = reason or ""
+    if not key:
+        return "—"
+    if key in SHORT_REASONS:
+        return SHORT_REASONS[key]
+    return " ".join(key.replace("_", " ").capitalize().split()[:2])
+
+
 def reason_label(reason: str | None) -> str:
     """A human phrase for a `skip_reason`, falling back to the raw value.
 

@@ -428,7 +428,11 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
 Note that `MatchStore.finalise` records only summary stats — individual rows reach
 the `matches` table via `append_result`. Budget drops and cluster siblings are
 appended explicitly so the user can see what the budget cost; title-gate rejections
-deliberately are not, since there can be tens of thousands per run.
+deliberately are not, since there can be tens of thousands per run. They are not
+unrecorded, though: `matcher._record_gate_reasons` writes the gate's verdict onto
+`jobs.gate_reason`, which is what the overview's last section prints as its `Reason`
+column. A column on a row that already exists is not a row in a table the reports
+group, and that distinction is the whole basis for this split.
 
 **Two files come out of a run, and they are not interchangeable.**
 `<stamp>_results.json` is the shortlist the apply skill consumes via
@@ -649,6 +653,21 @@ the button copies the command rather than pretending to record anything — with
 `execCommand` fallback and then a selectable `<code>`, because a local file is not
 reliably a secure context and `navigator.clipboard` can simply be absent.
 
+**Four of the five sections carry buttons, and which buttons is a statement about the
+row, not a style choice.** Needs Attention and Jobs Shortlisted get both outcomes.
+Jobs Filtered and `Total Jobs Seen` get **`applied` only** (`_APPLIED_ONLY`): those
+jobs are already un-shortlisted or were never shortlisted and have no `applied` row,
+so `decline_job` would delete nothing and un-shortlist nothing, and offering it would
+hand the user a command that answers `nothing_to_change`. Jobs Applied gets neither —
+the outcome is recorded. Do not "restore" the pair for symmetry.
+
+Putting the button on those two sections forced a third source of identity in
+`Database.mark_applied_by_hand`: an `applied` row, then the canonical `matches` row,
+then **`jobs`**. A title-gate rejection has neither of the first two — that is why it
+is in `Total Jobs Seen` and nowhere else — so without that branch the button copied a
+command that answered `unknown` and wrote nothing, for the largest section on the page.
+`"unknown"` still means what it said: a `job_id` in no table at all.
+
 **All five sections read the same way, and the rows stay `<details>` for one
 load-bearing reason.** Each section is a filter box over a sticky six-column header
 (`# | Title | Company | Location | LLM | Cross`) over a `.scroll-y` box. Three of them
@@ -730,8 +749,56 @@ judged it would otherwise be listed here with a blank score, as though nothing h
 ever read it. The price, accepted, is that on later sweeps the five sections no longer
 sum to the `Jobs in scope` tile. Its payload carries **no LLM key** — a key holding 0
 invites a renderer to print it as a verdict — while the renderer still prints an em
-dash in that column, so the six columns match the sections above. A printed dash and
-an absent key are not the same thing; only the key is dangerous.
+dash in that column, so the six shared columns match the sections above. A printed
+dash and an absent key are not the same thing; only the key is dangerous.
+
+**It is the one section with a `Reason` column, and the only reason it can have one is
+that the verdict is now persisted.** `jobs.gate_reason` holds it, written by
+`matcher._record_gate_reasons` in one batched `UPDATE` per company batch. The title
+gate rejects tens of thousands of jobs a sweep and `matcher.py` deliberately writes
+them no `matches` row for that reason — which left the verdict recorded nowhere, and
+thousands of rows on a page with no way to say why any of them was there. A column on
+a row the scraper had already made costs an UPDATE, not a row in a table the reports
+group. Four consequences:
+
+- **The scraper must not write the column, and `insert_jobs` had to stop being
+  `INSERT OR REPLACE` for that to hold.** `OR REPLACE` *deletes the row and inserts a
+  new one*, so a column the statement does not name comes back as its default —
+  leaving it out was not enough, it has to be left out of an `ON CONFLICT … DO UPDATE`.
+  `matcher._persist_hydrated_details` re-inserts a job to attach its description, so
+  under the old writer that second call silently erased the gate's verdict.
+- **`load_unmatched_jobs` reads `MAX(j.gate_reason)`, not the bare column.** A job can
+  have a `jobs` row in several runs and only some of them gated it — the `SeenStore`
+  skips a job an earlier sweep judged — so a bare column hands back the later row's
+  NULL and loses the verdict at lifetime scope. `MAX` ignores NULLs, so any run that
+  recorded a reason wins; the other bare columns then come from that row, which
+  changes nothing, since title, company, location and url are properties of the
+  posting.
+- **The column is fed by two different columns and `_tail_payload` normalises them**:
+  `matches.skip_reason` for the jobs the cutoff and the YoE gate dropped,
+  `jobs.gate_reason` for the title gate's own three. That is done there rather than in
+  either loader because it is the one place both halves have already been
+  concatenated. `data.short_reason` is a **second** label table, not a truncation of
+  `REASON_LABELS`: the short form is a different phrase, and the two disagree about
+  `""` on purpose — "scored by the LLM" to the long one, an em dash to the short one,
+  since a judged job never reaches this section.
+- **Three columns are now bounded, not one, and all three take the widths the grid
+  above them already uses** — company `8rem`, location `11rem` (the ceiling of its
+  `minmax(6rem, 11rem)`) and a `12rem` *floor* on `td.wide` overriding BASE_CSS's
+  18rem. Reason plus the action cell take ~230px the six-column table did not, and on
+  real data one cap was no longer enough: measured on a live install the row ran 1,131px
+  in a 951px box and the "I applied" button, the last column, was off the edge. The
+  location cap is `td:nth-child(5)`, since Reason sits ahead of Location — a stale
+  index truncates a two-word verdict and lets the locations run off instead, the exact
+  regression the rule exists to stop. Title is the one cell that wraps, so a floor
+  rather than a ceiling lets it absorb whatever the bounded columns leave.
+
+The trailing cell holding the `I applied` button is the second thing this section has
+that the others do not, and it is a cell rather than a row body because these rows are
+built by a script from a payload: `_STATE_SCRIPT` can only reopen a row already in the
+document, which is why the tail is not `<details>` in the first place. The payload's
+`j` key is the job id the button needs; a row without one gets an empty cell, never a
+button that cannot name anything.
 
 Five things about it that are easy to get wrong:
 

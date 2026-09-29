@@ -180,6 +180,22 @@ class _NoopProgress:
     def __exit__(self, *a): pass
 
 
+async def _record_gate_reasons(db, run_id: str, filtered) -> None:
+    """Persist the title gate's verdict onto the `jobs` rows it dropped.
+
+    These results deliberately get no `matches` row — there can be tens of thousands
+    of them a sweep — so this column is the only record of *why* each one was dropped,
+    and the only thing that lets the overview's last section say so. One batched
+    UPDATE per company batch, off the event loop like every other write here.
+    """
+    if not filtered:
+        return
+    await asyncio.to_thread(
+        db.record_gate_reasons, run_id,
+        [(r.job_id, r.skip_reason or "") for r in filtered],
+    )
+
+
 async def _persist_hydrated_details(db, run_id: str, to_score) -> None:
     """Upsert funnel-hydrated Workday/BambooHR descriptions back to the jobs table.
 
@@ -728,6 +744,7 @@ async def main(
                             len(batch_jobs) - len(unseen), board_token,
                         )
                     to_score, title_filtered = await gate(unseen)
+                    await _record_gate_reasons(db, run_id, title_filtered)
                     results.extend(title_filtered)
                     stages["gated"] += len(to_score)
 
@@ -752,8 +769,9 @@ async def main(
                     # only summary stats, so without this the user cannot see what
                     # the cutoff cost them — and "lower min_score to score them"
                     # would be unverifiable. Bounded by the candidate pool, unlike
-                    # the title-gate rejections, which stay stats-only because there
-                    # can be tens of thousands.
+                    # the title-gate rejections, which get no `matches` row for that
+                    # reason — they carry their verdict on the `jobs` row instead,
+                    # written by `_record_gate_reasons` above.
                     for r in dropped:
                         await persist(r)
 
@@ -839,6 +857,7 @@ async def main(
         if dedup_skipped > 0 and not quiet:
             console.print(f"[yellow]Dedup: {dedup_skipped} jobs skipped (already scored in a previous run)[/yellow]\n")
         gated, title_filtered = await gate(unscored)
+        await _record_gate_reasons(db, run_id, title_filtered)
         # One batch covering the whole run. Standalone mode reads a finished scrape
         # out of the database, so there is nothing to overlap with and no reason to
         # chunk it — but it goes through the same helper as the streaming path so the

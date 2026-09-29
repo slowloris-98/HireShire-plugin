@@ -855,7 +855,9 @@ def test_a_never_scored_job_carries_no_score_key_at_all(tmp_path):
         html.split('id="ov-tail-data">')[1].split("</script>")[0].replace("<\\/", "</")
     )
     assert payload and "relevance_score" not in payload[0]
-    assert set(payload[0]) == {"t", "c", "l", "x", "u"}
+    # `r` is the two-word verdict and `j` the job id the "I applied" button needs.
+    # Neither is a score, which is the thing this exact set exists to hold the line on.
+    assert set(payload[0]) == {"t", "c", "l", "r", "x", "u", "j"}
     # The column still exists, so all four sections carry the same six — rendered
     # as a literal dash by a script that has no number to print. An absent key and
     # a printed dash are not the same thing; only the key would invite a verdict.
@@ -965,6 +967,65 @@ def _all_four(tmp_path) -> dict:
     return _snapshot(db)
 
 
+def test_the_tail_says_why_each_job_is_there(tmp_path):
+    """The one question this section could not answer. Its two halves get the reason
+    from two different columns — `matches.skip_reason` for the jobs a paid-for gate
+    dropped, `jobs.gate_reason` for the title gate's own — and both land in one
+    column."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j9", title="Barista")])
+    db.record_gate_reasons(RUN, [("j9", "title_excluded")])
+
+    html = overview.build(_snapshot(db), RUN)
+    payload = json.loads(
+        html.split('id="ov-tail-data">')[1].split("</script>")[0].replace("<\\/", "</")
+    )
+    by_id = {r["j"]: r for r in payload}
+    assert by_id["j9"]["r"] == "Title excluded"
+    # j3 is in the same section, from `matches`, dropped by the cross-encoder.
+    assert by_id["j3"]["r"] == "Below cutoff"
+    assert "<th>Reason</th>" in html
+    # The caps are on the columns they name, at the widths the grid above them uses.
+    # Reason sits ahead of Location, so a stale index truncates a two-word verdict and
+    # lets the locations — the thing the rule was written for — run off the right edge.
+    # On real data all three are needed at once: with any of them missing the last
+    # column, which is now the "I applied" button, goes off the edge of the box.
+    assert ".scroll-y td:nth-child(3) { max-width:  8rem;" in html   # company, as 8rem
+    assert ".scroll-y td:nth-child(5) { max-width: 11rem;" in html   # location, as 11rem
+    assert ".scroll-y td.wide { min-width: 12rem; }" in html         # title, as 12rem
+    assert ".scroll-y td:nth-child(4) {" not in html
+
+
+def test_a_tail_row_with_no_recorded_reason_reads_as_a_dash(tmp_path):
+    """Rows written before the column existed. An em dash, the same statement the
+    score columns make: nothing here is known, rather than a reason invented for it."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j9", title="Barista")])
+
+    html = overview.build(_snapshot(db), RUN)
+    payload = json.loads(
+        html.split('id="ov-tail-data">')[1].split("</script>")[0].replace("<\\/", "</")
+    )
+    assert next(r for r in payload if r["j"] == "j9")["r"] == "—"
+
+
+def test_the_tail_offers_the_one_outcome_its_jobs_can_have(tmp_path):
+    """A title-gated job was never shortlisted and has no `applied` row, so the only
+    thing left to record about it is that the user applied to it themselves. The cell
+    is in the row because the tail has no row body to put it in."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j9", title="Barista")])
+
+    html = overview.build(_snapshot(db), RUN)
+    assert overview._TAIL_MARK_LABEL in html
+    assert '__MARK_LABEL__' not in html
+    assert 'data-mark="applied"' in html
+    # The script that copies the command has to ship with it, or the button is inert.
+    assert "navigator.clipboard" in html
+    # A row with no id gets an empty cell, never a button that cannot name anything.
+    assert "r.j" in html and 'data-job="' in html
+
+
 def test_each_job_list_is_filterable_and_bounded(tmp_path):
     """The whole point of the layout. Three of these sections used to be unbounded
     flat lists beside one that was not, which made a sweep with 300 filtered jobs a
@@ -994,6 +1055,11 @@ def test_all_four_sections_carry_the_same_six_columns(tmp_path):
     html = overview.build(_all_four(tmp_path), RUN)
     for label in ("#", "Title", "Company", "Location", "LLM", "Cross"):
         assert html.count(f">{label}<") == 4, label
+    # And one column the tail has alone, deliberately: thousands of its rows are
+    # title-gate rejections, and why each one is there is the only question the
+    # section could not answer. The four above it say it as a `.job-sub` sentence
+    # instead, which a nowrap column could not hold.
+    assert html.count(">Reason<") == 1
 
 
 def test_a_row_carries_a_lowercased_filter_haystack(tmp_path):
@@ -1247,10 +1313,12 @@ def test_both_hand_recorded_states_keep_the_partition_whole(tmp_path):
             assert len(_section_of(snap, job_id)) == 1, (run_id, job_id)
 
 
-def test_only_the_sections_the_user_must_act_on_carry_buttons(tmp_path):
+def test_each_section_offers_only_the_outcomes_it_can_actually_record(tmp_path):
     """A `file://` page cannot write to the database, so the button copies the command
-    that can. It belongs on the two sections where the user is the one who has to act —
-    not on a finished application, and not on a job the funnel already dropped."""
+    that can. Which buttons a section gets is not cosmetic: a job the funnel already
+    dropped has no `applied` row and is not shortlisted, so `decline_job` would change
+    nothing there — offering it would hand the user a command that reports
+    `nothing_to_change`. A finished application gets neither."""
     db = _populated(tmp_path)
     db.insert_jobs(RUN, [_job("j6")])
     _match(db, RUN, "j6", score=80, shortlisted=True, rerank=7.90)
@@ -1259,11 +1327,15 @@ def test_only_the_sections_the_user_must_act_on_carry_buttons(tmp_path):
     snap = _snapshot(db)
     html = overview.build(snap, RUN)
 
-    # j6 needs attention, j1 is a finished application, j2 lost on its score.
+    # j6 needs attention: both outcomes are open to the user.
     assert 'data-mark="applied"' in _job_block(html, "j6")
     assert 'data-mark="declined"' in _job_block(html, "j6")
+    # j2 lost on its score — they may have applied anyway, but there is nothing left
+    # to decline.
+    assert 'data-mark="applied"' in _job_block(html, "j2")
+    assert 'data-mark="declined"' not in _job_block(html, "j2")
+    # j1 is a finished application. Nothing to record.
     assert "job-mark" not in _job_block(html, "j1")
-    assert "job-mark" not in _job_block(html, "j2")
     # The command is the skill's, and the script that copies it shipped with the page.
     assert overview._MARK_COMMAND == "/hireshire:mark-applied"
     assert "navigator.clipboard" in html and "execCommand" in html

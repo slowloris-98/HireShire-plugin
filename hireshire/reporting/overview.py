@@ -160,7 +160,8 @@ OVERVIEW_CSS = """
 /* A grid item defaults to `min-width: auto`, which refuses to shrink below its
    content — without this the ellipsis never fires and "Hyderabad, Telangana, India
    ; Bengaluru, Karnataka, India ; …" comes back as a horizontal scrollbar, which is
-   the problem the `.scroll-y td:nth-child(4)` rule below was written for. */
+   the problem the `.scroll-y td:nth-child(3)` and `(5)` rules below were written
+   for — the same two columns, capped at the same widths. */
 .job-c, .job-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .job-x { font-variant-numeric: tabular-nums; text-align: right; }
 /* A whole sentence, so it wraps where the cells above it do not. */
@@ -267,10 +268,40 @@ OVERVIEW_CSS = """
   letter-spacing: .07em; text-transform: uppercase; color: var(--ink-faint);
 }
 
-/* Locations run to "Hyderabad, Telangana, India ; Bengaluru, Karnataka, India ; …"
-   and `th, td` are nowrap, so an uncapped column pushed the cross-encoder score —
-   the column the table is *sorted by* — off the right edge of the box. */
-.scroll-y td:nth-child(4) { max-width: 20rem; overflow: hidden; text-overflow: ellipsis; }
+/* The last section is a real table, so its columns size themselves to their content
+   while `th, td` are nowrap — and a column that cannot shrink pushes everything to its
+   right off the edge of the box. Locations run to "Hyderabad, Telangana, India ;
+   Bengaluru, Karnataka, India ; …" and an uncapped one used to push the cross-encoder
+   score, the column the table is *sorted by*, out of sight.
+
+   Both caps are the widths the OTHER four sections already use — `8rem` for company
+   and the `11rem` ceiling of `minmax(6rem, 11rem)` for location, from the grid
+   template above. That is the point rather than a coincidence: the whole layout is
+   one column set repeated down the page, so the section that renders it as a table
+   should come out at the same widths as the three that render it as a grid.
+
+   Three columns rather than one is what the Reason and action columns cost. Together
+   they take ~230px the six-column table did not, and on real data — long locations,
+   and company slugs up to 15rem — one cap was no longer enough: the "I applied"
+   button, the last column, went off the right edge. Anything past a cap was already
+   being ellipsized.
+
+   The title floor is the third, and the only one that is a `min-width` rather than a
+   max: BASE_CSS gives `td.wide` 18rem, which was right for the six-column table and is
+   the one column that then refused to give the last 16px back. `12rem` is the same
+   floor the grid gives it, and this table is `td.wide`'s only user, so the override is
+   local despite the shared selector. Title is also the one cell that wraps, so with a
+   floor rather than a ceiling it takes whatever the bounded columns leave. */
+.scroll-y td:nth-child(3) { max-width:  8rem; overflow: hidden; text-overflow: ellipsis; }
+.scroll-y td:nth-child(5) { max-width: 11rem; overflow: hidden; text-overflow: ellipsis; }
+.scroll-y td.wide { min-width: 12rem; }
+
+/* The last section's Reason cell and its trailing action cell. Both take their colour
+   from the same tokens as everything else, so the theme toggle restamping
+   `data-theme` reaches them too. The action column is sized to its button and holds
+   nothing else, which is what keeps it from stealing width from the title. */
+.scroll-y td.reason { color: var(--ink-faint); }
+.scroll-y td.act, .scroll-y th.act { width: 1%; text-align: right; }
 """
 
 
@@ -360,20 +391,34 @@ _MARK_COMMAND = "/hireshire:mark-applied"
 
 #: The two outcomes, as (action, label). `applied` counts toward the Jobs applied tile;
 #: `declined` writes no application at all and files the job under Jobs Filtered.
+#:
+#: Which of the two a section offers is not cosmetic. A job the funnel already dropped
+#: has no `applied` row and is not shortlisted, so `Database.decline_job` would delete
+#: nothing and un-shortlist nothing — offering it there would hand the user a command
+#: that reports `nothing_to_change`. `_APPLIED_ONLY` is that subset.
 _MARK_ACTIONS = (
     ("applied", "I applied to this"),
     ("declined", "Not pursuing this"),
 )
 
+#: For the two sections holding jobs the funnel dropped: Jobs Filtered and the tail.
+_APPLIED_ONLY = _MARK_ACTIONS[:1]
 
-def _mark_buttons(job_id: str | None) -> str:
-    """The two hand-recorded outcomes, as buttons carrying data and no inline script."""
+#: The same action in the last section, which is a table cell rather than a row body
+#: and has room for two words. Spelled once here rather than inline in `_SCRIPT`, so
+#: the label and the action it carries cannot drift apart.
+_TAIL_MARK_LABEL = "I applied"
+
+
+def _mark_buttons(job_id: str | None, actions=_MARK_ACTIONS) -> str:
+    """The hand-recorded outcomes a section offers, as buttons carrying data and no
+    inline script."""
     if not job_id:
         return ""
     return "".join(
         f'<button type="button" class="job-mark" data-mark="{action}" '
         f'data-job="{e(job_id)}">{label}</button>'
-        for action, label in _MARK_ACTIONS
+        for action, label in actions
     )
 
 
@@ -462,6 +507,12 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
         actions += f'<a class="src" href="{e(url)}" target="_blank" rel="noopener">Open posting →</a>'
     if attention or (shortlisted and not applied):
         actions += _mark_buttons(job.get("job_id"))
+    elif not applied:
+        # Jobs Filtered: the funnel said no, and the user may have applied anyway. Only
+        # that one outcome — the job is already retired, so there is nothing for
+        # "not pursuing" to change. A finished application gets neither, which is what
+        # the `applied` guard is for.
+        actions += _mark_buttons(job.get("job_id"), _APPLIED_ONLY)
     if actions:
         body += f'<div class="job-act">{actions}</div>'
 
@@ -544,14 +595,26 @@ def _tail_payload(rows: list[dict]) -> str:
     carry the same six. That is not the same thing as printing 0: a dash says
     nothing read this, which is the fact — the same statement `num(None)` makes
     everywhere else on the page. What must not come back is the *key*.
+
+    `r` and `j` are the two keys this section has and the four above it do not, and
+    neither is a score. `r` is the two-word verdict — the one question this section
+    could not answer, since thousands of its rows are title-gate rejections that were
+    dropped for a reason nothing rendered. It comes from either of two columns
+    depending on which half of the section a row is from: `matches.skip_reason` for the
+    jobs the cutoff and the YoE gate dropped, `jobs.gate_reason` for the title gate's
+    own three. Normalised here rather than in the loaders, because this is the one
+    place both halves have already been concatenated. `j` is the job id, which the
+    hand-recorded "I applied" button needs and nothing else on the row does.
     """
     payload = [
         {
             "t": r.get("title") or "",
             "c": r.get("board_token") or "",
             "l": r.get("location") or "",
+            "r": data.short_reason(r.get("skip_reason") or r.get("gate_reason")),
             "x": "—" if r.get("rerank_score") is None else f"{float(r['rerank_score']):.2f}",
             "u": r.get("absolute_url") or "",
+            "j": r.get("job_id") or "",
         }
         for r in rows
     ]
@@ -576,6 +639,9 @@ _SCRIPT = """
   var box = document.getElementById("ov-filter");
   var scroller = document.getElementById("ov-scroll");
   var PAGE = 200, shown = 0, view = rows;
+  // The button's label, injected from `_TAIL_MARK_LABEL` rather than spelled here, so
+  // the wording lives beside the action it carries.
+  var MARK_LABEL = "__MARK_LABEL__";
 
   // Rank is stamped server-side so it survives filtering: row 4,102 stays row
   // 4,102 rather than becoming "the third result for nurse".
@@ -597,10 +663,20 @@ _SCRIPT = """
       // The LLM cell is a literal dash, not a value: nothing here was ever read by
       // a judge. The column exists so this section carries the same six as the
       // three above it; the payload deliberately has no key behind it.
+      //
+      // The trailing cell is the one outcome a user can record about a job the funnel
+      // dropped — they applied to it themselves. Only when the row carries an id: the
+      // command is addressed by job_id, so without one the button would copy a
+      // command that cannot name anything, and an empty cell is the honest version.
+      var act = r.j
+        ? '<button type="button" class="job-mark" data-mark="applied" data-job="' +
+          esc(r.j) + '">' + MARK_LABEL + "</button>"
+        : "";
       html += "<tr><td class='rank-cell'>" + r.n + "</td><td class='wide'>" + title +
-        "</td><td>" + esc(r.c) + "</td><td>" + esc(r.l) +
+        "</td><td>" + esc(r.c) + "</td><td class='reason'>" + esc(r.r) +
+        "</td><td>" + esc(r.l) +
         "</td><td class='numeric blank'>—</td><td class='numeric'>" + esc(r.x) +
-        "</td></tr>";
+        "</td><td class='act'>" + act + "</td></tr>";
     }
     body.insertAdjacentHTML("beforeend", html);
     shown += slice.length;
@@ -625,6 +701,10 @@ _SCRIPT = """
 })();
 </script>
 """
+# The one substitution this script needs. `_MARK_SCRIPT` does the same thing with `%`,
+# which cannot be used here: the row-building code is full of string concatenation and
+# a stray `%` would be a formatting error rather than a comment.
+_SCRIPT = _SCRIPT.replace("__MARK_LABEL__", _TAIL_MARK_LABEL)
 
 
 # One script for the three server-rendered lists, not three copies. Their rows are
@@ -1069,7 +1149,7 @@ def build(snapshot: dict[str, Any], label: str | None = None) -> str:
   </div>
   <div class="scroll-y" id="ov-scroll" tabindex="0">
     <table>
-      <thead><tr><th>#</th><th>Title</th><th>Company</th><th>Location</th><th>LLM</th><th>Cross</th></tr></thead>
+      <thead><tr><th>#</th><th>Title</th><th>Company</th><th>Reason</th><th>Location</th><th>LLM</th><th>Cross</th><th class="act"></th></tr></thead>
       <tbody id="ov-rows"></tbody>
     </table>
   </div>
@@ -1095,9 +1175,12 @@ def build(snapshot: dict[str, Any], label: str | None = None) -> str:
     # rendered a list — but there is no point shipping it when none of them did.
     listed = bool(snapshot["applied"] or attention or snapshot["shortlisted"]
                   or snapshot["filtered"])
-    # Only the two sections where the user is the one who has to act carry buttons, so
-    # only they call for the script.
-    markable = bool(attention or snapshot["shortlisted"])
+    # Four of the five sections carry buttons now, so the condition is every section
+    # except Jobs Applied — the one where the outcome is already recorded. Jobs Filtered
+    # and the tail hold jobs the funnel dropped, which the user may have applied to
+    # anyway; leaving them out would omit the copying script from exactly the pages
+    # whose buttons are the only ones on it.
+    markable = bool(attention or snapshot["shortlisted"] or snapshot["filtered"] or seen)
 
     return document(
         f"{TITLE} — {label}" if label and scope != "lifetime" else TITLE,

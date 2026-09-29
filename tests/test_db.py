@@ -287,6 +287,60 @@ def test_marking_a_shortlisted_job_applied_builds_its_row_from_the_match(tmp_pat
     assert db.load_pending_applications("1970-01-01T00:00:00+00:00") == []
 
 
+def test_the_title_gates_verdict_survives_the_hydration_upsert(tmp_path):
+    """`record_gate_reasons` writes onto a row `insert_jobs` owns, and that writer is
+    `INSERT OR REPLACE` — so the one thing this has to prove is that re-inserting the
+    job to attach its description does not blank the reason."""
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    db.insert_jobs(run_id, [_job("j1"), _job("j2"), _job("j3")])
+    db.record_gate_reasons(run_id, [("j1", "title_excluded"),
+                                    ("j2", "title_low_relevance")])
+
+    db.insert_jobs(run_id, [_job("j1")])  # the hydration upsert
+
+    rows = {r["job_id"]: r for r in db.load_unmatched_jobs(run_id, 50)}
+    assert rows["j1"]["gate_reason"] == "title_excluded"
+    assert rows["j2"]["gate_reason"] == "title_low_relevance"
+    # A job the gate let through carries no reason, and reads as one rather than as "".
+    assert rows["j3"]["gate_reason"] == ""
+    db.record_gate_reasons(run_id, [])  # no-op
+
+
+def test_a_reason_recorded_on_any_sweep_wins_at_lifetime_scope(tmp_path):
+    """The `SeenStore` skips a job an earlier sweep judged, so the later run's row has
+    no reason at all. A bare column could hand back that NULL and lose the verdict."""
+    db = _db(tmp_path)
+    db.insert_jobs("2026-07-07T00-00-00Z", [_job("j1")])
+    db.record_gate_reasons("2026-07-07T00-00-00Z", [("j1", "title_excluded")])
+    db.insert_jobs("2026-07-08T00-00-00Z", [_job("j1")])
+
+    rows = db.load_unmatched_jobs(None, 50)
+    assert [r["gate_reason"] for r in rows] == ["title_excluded"]
+
+
+def test_marking_a_title_gated_job_applied_builds_its_row_from_jobs(tmp_path):
+    """The case with no `matches` row at all: the free title gate threw it out, so it
+    appears under Total Jobs Seen and nowhere else. Before `jobs` was the third source
+    of identity this answered `unknown` and wrote nothing."""
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    db.insert_jobs(run_id, [_job("j1")])
+    db.record_gate_reasons(run_id, [("j1", "title_excluded")])
+
+    assert db.mark_applied_by_hand("j1", "2026-07-08T09:00:00+00:00") == "inserted"
+
+    row = next(r for r in db.load_applied() if r["job_id"] == "j1")
+    assert row["status"] == "submitted"
+    # The three columns `load_applied_matches` falls back on, none of them blanked.
+    assert row["board_token"] == "acme"
+    assert row["title"] == "Backend Engineer"
+    assert row["absolute_url"] == "https://example.com/jobs/j1"
+    # And it is out of the last section, which is what the user clicked the button for.
+    assert db.load_unmatched_jobs(run_id, 50)[0]["job_id"] == "j1"  # still unmatched
+    assert "j1" in {r["job_id"] for r in db.load_applied()}
+
+
 def test_marking_applied_is_idempotent_and_refuses_a_job_it_cannot_find(tmp_path):
     db = _db(tmp_path)
     run_id = "2026-07-07T00-00-00Z"

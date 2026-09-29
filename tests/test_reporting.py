@@ -334,7 +334,8 @@ class _ReportDB:
     def load_unmatched_jobs(self, run_id, limit, run_ids=None):
         return [{"job_id": "direct:google:99", "board_token": "google",
                  "title": "Barista", "location": "Mountain View, CA",
-                 "absolute_url": "https://example.com/j99"}]
+                 "absolute_url": "https://example.com/j99",
+                 "gate_reason": "title_excluded"}]
 
     def run_progress(self, run_id):
         return {"run_id": run_id, "companies_total": 9641, "companies_done": 9641,
@@ -550,6 +551,37 @@ def test_known_skip_reasons_get_a_readable_label(reason, expected):
 def test_an_unknown_skip_reason_is_shown_verbatim_not_bucketed():
     """A reason nobody has labelled yet is exactly the one worth reading."""
     assert data.reason_label("some_new_failure") == "Some new failure"
+
+
+@pytest.mark.parametrize("reason,expected", [
+    ("title_excluded", "Title excluded"),
+    ("rerank_below_cutoff", "Below cutoff"),
+    ("yoe_below_requirement", "Experience gap"),
+    (DECLINED_BY_USER, "You declined"),
+    # No reason on the row: written before the column existed. A dash, the same
+    # statement the score columns make, rather than a reason invented for it.
+    ("", "—"),
+    (None, "—"),
+    # Unlabelled, so the first two words of its own key — something, rather than a
+    # blank column, and short enough for the cell it goes in.
+    ("some_new_failure", "Some new"),
+])
+def test_the_tails_reason_column_is_two_words_or_a_dash(reason, expected):
+    assert data.short_reason(reason) == expected
+
+
+def test_every_long_label_has_a_short_one():
+    """The column and the sub-line answer the same question at two lengths. A reason
+    labelled in one and not the other reads as a bug in whichever page shows it.
+
+    `""` is the deliberate exception and the tables disagree about it on purpose. To
+    the long table it means "scored by the LLM", the verdict a judged job carries. In
+    the short one it can only mean the row records no reason at all — a judged job
+    never reaches the tail — so it reads as an em dash.
+    """
+    assert set(data.REASON_LABELS) - {""} <= set(data.SHORT_REASONS)
+    assert data.reason_label("") == "Scored by the LLM"
+    assert data.short_reason("") == "—"
 
 
 # --- staying fresh while a sweep runs -----------------------------------------
