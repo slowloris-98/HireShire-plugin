@@ -1281,8 +1281,10 @@ def test_a_page_with_nothing_to_act_on_ships_no_mark_script(tmp_path):
     html = overview.build(_snapshot(db), RUN)
     assert "navigator.clipboard" not in html
     # The markup, not the attribute selector or the comment the stylesheet carries
-    # either way.
-    assert '<button type="button"' not in html
+    # either way. It names the class rather than `<button type="button"`, because the
+    # theme toggle is a button too and ships on every page — the old spelling would
+    # pass or fail on attribute ordering, which is nobody's intent.
+    assert 'class="job-mark"' not in html
 
 
 # --- the per-company cap's hold line ----------------------------------------
@@ -1338,3 +1340,106 @@ def test_the_report_reads_the_cap_the_worker_would(tmp_path, monkeypatch):
     cfg.unlink()
     assert data._company_limit() is None
 
+
+# --- the theme toggle -------------------------------------------------------
+
+
+def _theme_script(html: str) -> str:
+    """The body-tail half of the toggle, isolated the way the state-script tests do it."""
+    return html.split('var TKEY = "hs-overview-theme"')[1]
+
+
+def test_every_scope_carries_the_theme_toggle(tmp_path):
+    """One control, three pages. The scopes share one renderer, so the toggle is added
+    once — but that is exactly the kind of thing a later scope-specific branch drops, and
+    a dashboard whose sibling has the button and it does not is worse than none having
+    it."""
+    db = _populated(tmp_path)
+    for snap, label in ((_snapshot(db), RUN),
+                        (data.overview_snapshot(db, None), None),
+                        (data.overview_snapshot(db, None, run_ids=[RUN]), DAY)):
+        html = overview.build(snap, label)
+        assert html.count('class="theme-toggle"') == 1
+        assert html.count('id="hs-theme"') == 1
+        # Inside the subtitle row, which is already a flex line carrying the chip.
+        subtitle = html.split('<p class="subtitle">')[1].split("</p>")[0]
+        assert 'class="theme-toggle"' in subtitle
+
+
+def test_the_toggle_ships_even_with_nothing_to_act_on(tmp_path):
+    """Unlike the filter and mark scripts, this one is not conditional on a list. The
+    theme is a property of the page, not of its rows, so an empty sweep's dashboard is
+    just as readable-or-not as a full one's."""
+    db = _db(tmp_path)
+    db.record_company(RUN, "acme", "greenhouse", "ok", 0, 0.1, None)
+    html = overview.build(_snapshot(db), RUN)
+    assert 'class="theme-toggle"' in html
+    assert 'var TKEY = "hs-overview-theme"' in html
+
+
+def test_the_stored_theme_is_applied_before_the_body(tmp_path):
+    """The whole reason `document()` has a head hook.
+
+    From the body tail the restore would paint the stylesheet's default and then swap
+    it — on every one of the meta refresh's reloads, which is the case the accordion
+    state script already exists for. So the stamp has to happen in `<head>`.
+    """
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    stamp = html.index('root.setAttribute("data-theme", v)')
+    assert stamp < html.index("<body>")
+    assert stamp < html.index('<p class="subtitle">')
+    # And the marker that reveals the button is stamped whatever storage does, so a
+    # throwing sessionStorage leaves a working control rather than a hidden one.
+    head = html.split("</head>")[0]
+    assert head.index('"data-hs-js"') < head.index("sessionStorage")
+
+
+def test_an_explicit_choice_wins_without_losing_the_system_default(tmp_path):
+    """Both stamps and the fallback, all three of which the page needs.
+
+    `[data-theme="dark"]` is what a click can reach; the media query is what an
+    un-stamped page follows; and the `:not([data-theme="light"])` guard inside it is the
+    only thing that lets a reader on a dark OS choose light. Drop any one and the toggle
+    is half a control.
+    """
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert ':root[data-theme="dark"] {' in html
+    assert "@media (prefers-color-scheme: dark) {" in html
+    assert ':root:not([data-theme="light"]) {' in html
+    # The label follows the same three places, or a stamped page keeps offering the
+    # theme it is already on.
+    assert ':root[data-theme="dark"] .theme-toggle .t-off { display: inline; }' in html
+    assert ':root:not([data-theme="light"]) .theme-toggle .t-off' in html
+
+
+def test_the_ua_chrome_follows_the_theme_too(tmp_path):
+    """`color-scheme` is what makes scrollbars and the filter inputs dark on a dark
+    page. It needs all three places for the reason the tokens do: a value defined only
+    inside the media query is simply absent in the un-stamped state."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert "color-scheme: light;" in html
+    assert html.count("color-scheme: dark;") == 2
+
+
+def test_the_theme_script_survives_storage_being_unavailable(tmp_path):
+    """Same posture as the state script: a file:// origin can be opaque enough that
+    touching storage throws, so the write is guarded and the click still works for the
+    page in front of the reader. The head half returns rather than dying."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    head = html.split("</head>")[0]
+    assert 'try { v = window.sessionStorage.getItem("hs-overview-theme"); }' in head
+    assert "catch (e) { return; }" in head
+    body = _theme_script(html)
+    assert "try { window.sessionStorage.setItem(TKEY, value); } catch (e) {}" in body
+    # The OS reading is guarded too — matchMedia is absent in old enough engines, and
+    # the page must not lose its toggle over the label's wording.
+    assert body.count("catch (e) {") >= 2
+
+
+def test_the_two_scripts_do_not_share_a_key(tmp_path):
+    """The accordion state and the theme are separate preferences, and three tests
+    isolate the state script by splitting on its key literal — a second occurrence
+    breaks the split rather than an assertion, which reads as nonsense."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert html.count('KEY = "hs-overview-open"') == 1
+    assert html.count('TKEY = "hs-overview-theme"') == 1

@@ -1,12 +1,13 @@
-Add light mode to the dashboard (if possible in static file)
+Add light mode to the dashboard (if possible in static file) - implemented
 
 Add the applied button in the jobs filtered as well as total jobs seen section as well
 Total jobs should also have a column for two word reason why they were rejected (column should be before location)
 
 Can we add this plugin in codex?
 
+
 If a backlog application is applied in current run, it should also reflect in the applied role
-    (a single line that it was backlog from last run)
+(a single line that it was backlog from last run) - done
 
 Ask user if they want to use codex for applying similar to scoring, and fall back to claude, similar to scoring.
 

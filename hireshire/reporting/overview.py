@@ -192,6 +192,31 @@ OVERVIEW_CSS = """
 .job-mark[data-mark="applied"]:hover { color: var(--accent); border-color: var(--accent); }
 .job-mark[data-mark="declined"]:hover { color: var(--warn); border-color: var(--warn); }
 .job-mark.done { color: var(--accent); border-color: var(--accent); }
+/* The theme toggle, at the right-hand end of the subtitle row. BASE_CSS already defines
+   every colour for an explicit `data-theme` stamp, so this control adds no colours of
+   its own — its whole job is to write that attribute. It stays hidden until the head
+   script stamps `data-hs-js`: a button that cannot work is worse than no button. */
+.theme-toggle { display: none; }
+:root[data-hs-js] .theme-toggle {
+  display: inline-flex; align-items: center; gap: .4rem; margin-left: auto;
+  font-family: "IBM Plex Mono", monospace; font-size: .7rem; letter-spacing: .08em;
+  text-transform: uppercase; cursor: pointer; color: var(--ink-soft);
+  background: none; border: 1px solid var(--rule); border-radius: 3px;
+  padding: .3rem .55rem;
+}
+.theme-toggle:hover { color: var(--ink); border-color: var(--ink-faint); }
+/* Which of the two labels shows is decided in CSS, not by script. The server cannot know
+   the reader's theme, so a script-written label would flash the wrong word on every one
+   of the meta refresh's reloads. Same three-place pattern as the tokens: the media query
+   needs the explicit-light escape hatch, and the explicit dark stamp needs its own rule,
+   or a stamped page keeps offering the theme it is already on. */
+.theme-toggle .t-off { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-toggle .t-on { display: none; }
+  :root:not([data-theme="light"]) .theme-toggle .t-off { display: inline; }
+}
+:root[data-theme="dark"] .theme-toggle .t-on { display: none; }
+:root[data-theme="dark"] .theme-toggle .t-off { display: inline; }
 /* The fallback when neither clipboard route is available: the command itself, so the
    user can select it by hand. Selected for them by the script. */
 .job-cmd {
@@ -727,6 +752,89 @@ _MARK_SCRIPT = """
 """ % {"command": _MARK_COMMAND}
 
 
+# Restores the reader's theme choice before the first paint, and is the one reason
+# `document()` has a head hook at all. From the body tail this would paint the
+# stylesheet's default and then swap it, on every one of the REFRESH_S reloads.
+#
+# `data-hs-js` is stamped first and unconditionally, because it only claims that script
+# ran — the toggle works on the current page whether or not storage does, so a throwing
+# `sessionStorage` must not leave the control hidden.
+#
+# `sessionStorage`, matching _STATE_SCRIPT below: reopening the file tomorrow should give
+# the resting state, which here means following the operating system again. That is also
+# what keeps a two-state toggle honest — one click opts the page out of
+# `prefers-color-scheme`, and closing the browser is the way back in.
+_THEME_HEAD = """<script>
+(function () {
+  var root = document.documentElement;
+  root.setAttribute("data-hs-js", "1");
+  var v;
+  try { v = window.sessionStorage.getItem("hs-overview-theme"); }
+  catch (e) { return; }
+  if (v === "light" || v === "dark") root.setAttribute("data-theme", v);
+})();
+</script>
+"""
+
+# The visible label lives in two spans and CSS shows one of them; only what a stylesheet
+# cannot reach is left to script. Rendered at every scope, since the page is the same
+# markup fed different data.
+_THEME_BUTTON = (
+    '<button type="button" class="theme-toggle" id="hs-theme" aria-pressed="false">'
+    '<span class="t-on">☾ Dark</span>'
+    '<span class="t-off">☀ Light</span>'
+    "</button>"
+)
+
+# Everything about the toggle a stylesheet cannot do: the attribute flip, the stored
+# choice, and the two ARIA states. No label writing — see the CSS comment.
+_THEME_SCRIPT = """
+<script>
+(function () {
+  var TKEY = "hs-overview-theme";
+  var root = document.documentElement;
+  var btn = document.getElementById("hs-theme");
+  if (!btn) return;
+
+  function remember(value) {
+    try { window.sessionStorage.setItem(TKEY, value); } catch (e) {}
+  }
+  // The attribute when one is stamped, the operating system otherwise. Reading the
+  // attribute alone is not enough: with no stored choice the page is following
+  // `prefers-color-scheme` and nothing on the element says which way that went.
+  function effective() {
+    var v = root.getAttribute("data-theme");
+    if (v === "light" || v === "dark") return v;
+    try { return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; }
+    catch (e) { return "light"; }
+  }
+  function sync() {
+    var dark = effective() === "dark";
+    btn.setAttribute("aria-pressed", dark ? "true" : "false");
+    btn.setAttribute("aria-label",
+      dark ? "Switch to the light theme" : "Switch to the dark theme");
+  }
+  btn.addEventListener("click", function () {
+    var next = effective() === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    remember(next);
+    sync();
+  });
+  // While the page is still following the operating system, a reader who flips their
+  // system theme would otherwise be left with a button announcing the theme they are
+  // already on. Once an explicit choice is stamped this does nothing.
+  try {
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    var onChange = function () { if (!root.getAttribute("data-theme")) sync(); };
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  } catch (e) {}
+  sync();
+})();
+</script>
+"""
+
+
 # Every `<details>` on the page carries a stable id, and this puts the open ones back
 # after a reload. Not a nicety: while a sweep is running the page meta-refreshes every
 # REFRESH_S seconds, and without this it slams shut every accordion the reader had
@@ -970,7 +1078,7 @@ def build(snapshot: dict[str, Any], label: str | None = None) -> str:
 
     body = f"""<div class="wrap">
   <h1>HireShire</h1>
-  <p class="subtitle"><span>{e(heading)}</span>{live_chip}</p>
+  <p class="subtitle"><span>{e(heading)}</span>{live_chip}{_THEME_BUTTON}</p>
   {_progress_block(snapshot.get("progress") or [])}
 
   <div class="stats">{''.join(tiles)}</div>
@@ -994,9 +1102,10 @@ def build(snapshot: dict[str, Any], label: str | None = None) -> str:
     return document(
         f"{TITLE} — {label}" if label and scope != "lifetime" else TITLE,
         body + (_SCRIPT if seen else "") + (_FILTER_SCRIPT if listed else "")
-        + (_MARK_SCRIPT if markable else "") + _STATE_SCRIPT,
+        + (_MARK_SCRIPT if markable else "") + _STATE_SCRIPT + _THEME_SCRIPT,
         refresh_s=REFRESH_S if snapshot["live"] else None,
         extra_css=OVERVIEW_CSS,
+        extra_head=_THEME_HEAD,
     )
 
 
