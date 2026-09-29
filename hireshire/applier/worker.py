@@ -563,10 +563,15 @@ async def run_apply_worker(
                         "No shortlisted match row to retire for %s — %s; it may be "
                         "re-queued from the backlog.", company, title)
             else:
+                # `from_backlog` is recorded here and nowhere else: this is the only
+                # writer that can produce a `submitted` row, and the Jobs Applied
+                # section is the only place the fact is shown. The `excluded` write
+                # never reaches that section, and the expiry pass is backlog-only by
+                # definition, so the flag would say nothing there.
                 await asyncio.to_thread(
                     db.record_applied, job_id, company, title, job.get("job_url") or "",
                     datetime.now(timezone.utc).isoformat(), outcome.status,
-                    outcome.screenshot, outcome.error,
+                    outcome.screenshot, outcome.error, from_backlog=from_backlog,
                 )
                 stats[outcome.status] += 1
                 logger.info("Applied (%s): %s — %s%s", outcome.status, company, title,

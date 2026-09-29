@@ -196,6 +196,56 @@ def _attempt(db: Database, job_id: str, status: str = "error") -> None:
                       "Stuck on a required question — check whether it was submitted.")
 
 
+def test_where_an_application_came_from_round_trips(tmp_path):
+    """The backlog flag is stored because it cannot be derived: `applied` has no
+    `run_id`, so after the fact nothing can tell which sweep did the applying."""
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    _shortlisted(db, "j1", run_id)
+    _shortlisted(db, "j2", run_id, url="https://example.com/k")
+    db.record_applied("j1", "acme", "Backend Engineer", "https://example.com/j",
+                      "2026-07-08T09:00:00+00:00", "submitted", None, None,
+                      from_backlog=True)
+    db.record_applied("j2", "acme", "Backend Engineer", "https://example.com/k",
+                      "2026-07-08T09:05:00+00:00", "submitted", None, None)
+
+    rows = {r["job_id"]: r["applied_from_backlog"]
+            for r in db.load_applied_matches(run_id)}
+    assert rows == {"j1": True, "j2": False}
+
+
+def test_an_older_database_gains_the_backlog_column_and_reads_false(tmp_path):
+    """`_ADDED_COLUMNS`, not `_SCHEMA`: `CREATE TABLE IF NOT EXISTS` is a no-op on a
+    file that already has the table, so a column added to the schema alone never
+    reaches an existing install and the next INSERT fails with "no such column".
+
+    False is the right reading for a row written before the column existed. The fact
+    was never recorded and cannot be reconstructed, so the page shows such rows as
+    ordinary applications rather than guessing."""
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE applied (job_id TEXT PRIMARY KEY, board_token TEXT, "
+            "title TEXT, absolute_url TEXT, applied_at TEXT, status TEXT, "
+            "dry_run INTEGER, screenshot TEXT, error TEXT)")
+        conn.execute("INSERT INTO applied VALUES ('j1', 'acme', 'Backend Engineer', "
+                     "'https://example.com/j', '2026-07-08T09:00:00+00:00', "
+                     "'submitted', 0, NULL, NULL)")
+
+    db = Database(path)
+    run_id = "2026-07-07T00-00-00Z"
+    _shortlisted(db, "j1", run_id)
+    assert db.load_applied_matches(run_id)[0]["applied_from_backlog"] is False
+
+    # And the widened writer works against the migrated file.
+    db.record_applied("j1", "acme", "Backend Engineer", "https://example.com/j",
+                      "2026-07-09T09:00:00+00:00", "submitted", None, None,
+                      from_backlog=True)
+    assert db.load_applied_matches(run_id)[0]["applied_from_backlog"] is True
+
+
 def test_marking_an_attempt_applied_promotes_the_row_it_already_has(tmp_path):
     """The Needs Attention case: the columns a pruned install depends on survive.
 

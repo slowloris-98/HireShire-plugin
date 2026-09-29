@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from hireshire.applier import worker
+from hireshire.applier import reasons, worker
 from hireshire.models.job import Job, Location
 from hireshire import run_ids
 from hireshire.reporting import data, overview
@@ -107,10 +107,11 @@ def _match(db: Database, run_id: str, job_id: str, *, score=78, shortlisted=Fals
 
 
 def _apply(db: Database, job_id: str, status: str = "submitted",
-           error: str | None = None) -> None:
+           error: str | None = None, from_backlog: bool = False) -> None:
     db.record_applied(
         job_id, "acme", "Backend Engineer", f"https://example.com/jobs/{job_id}",
         "2026-09-09T08:00:00+00:00", status, None, error,
+        from_backlog=from_backlog,
     )
 
 
@@ -1028,6 +1029,40 @@ def test_the_applied_stamp_stays_a_subline(tmp_path):
     """Status plus timestamp, which is two facts and not a column either."""
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
     assert '<span class="job-sub">submitted ' in _job_block(html, "j1")
+
+
+def test_an_application_off_the_backlog_says_so_and_only_it_does(tmp_path):
+    """The one thing that separates a backlog application from any other on the page.
+
+    Both rows read `submitted <time>`; without the clause the user cannot tell that
+    j6 was shortlisted by an earlier sweep and only applied to now. It is a plain
+    `job-sub`, not `warn` — a note about where the job came from, not a problem —
+    and it must not reach a job applied to by the sweep that found it.
+    """
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=80, shortlisted=True)
+    _apply(db, "j6", from_backlog=True)
+
+    html = overview.build(_snapshot(db), RUN)
+    backlog, ordinary = _job_block(html, "j6"), _job_block(html, "j1")
+    assert '<span class="job-sub">submitted ' in backlog
+    assert backlog.count(f"· {e(reasons.FROM_BACKLOG)}</span>") == 1
+    assert '<span class="job-sub">submitted ' in ordinary
+    assert reasons.FROM_BACKLOG not in ordinary
+
+
+def test_needs_attention_never_carries_the_backlog_clause(tmp_path):
+    """That section's question is what the user has to do now, so its line stays the
+    cause. A backlog job that stopped short is recorded the same way as any other."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=80, shortlisted=True)
+    _apply(db, "j6", status="error", error="Posting closed", from_backlog=True)
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j6") == ["attention"]
+    assert reasons.FROM_BACKLOG not in overview.build(snap, RUN)
 
 
 def test_the_cross_encoder_column_reads_the_same_everywhere(tmp_path):

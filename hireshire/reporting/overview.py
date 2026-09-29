@@ -403,10 +403,14 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
         sub = f"{line} · {local_time(job.get('applied_at'))}"
         tip = f' title="{e(full)}"' if full != line else ""
     elif applied:
+        # Where it came from, when it is not the sweep that found it. A backlog job may
+        # be many sweeps old — at a 4-hour poll, up to ~18 — so the clause names no run.
+        # Absent on rows written before the applier recorded it, which read as ordinary
+        # applications because the fact was never stored and cannot be recovered.
         status = job.get("applied_status") or "applied"
-        sub = " · ".join(
-            x for x in (sub, f"{status} {local_time(job.get('applied_at'))}") if x
-        )
+        stamp = f"{status} {local_time(job.get('applied_at'))}"
+        origin = reasons.FROM_BACKLOG if job.get("applied_from_backlog") else ""
+        sub = " · ".join(x for x in (sub, stamp, origin) if x)
     elif shortlisted and job.get("hold_until"):
         # Held by the per-company cap (`data.mark_holds`). Without this line a held job
         # reads exactly like one the applier simply has not reached yet.

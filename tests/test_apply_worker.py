@@ -137,6 +137,13 @@ def _statuses(db: Database) -> dict[str, str]:
     return {r["job_id"]: r["status"] for r in db.load_applied()}
 
 
+def _applied_rows(db: Database) -> list[dict]:
+    """Raw `applied` rows. `load_applied` does not select every column, and these
+    tests are about one it leaves out."""
+    with db._lock:
+        return [dict(r) for r in db._conn.execute("SELECT * FROM applied")]
+
+
 # --- how the session is launched --------------------------------------------
 
 def test_the_prompt_goes_on_stdin_and_never_in_argv(tmp_path, launcher, monkeypatch):
@@ -858,6 +865,42 @@ def test_a_job_in_both_the_backlog_and_the_stream_is_applied_to_once(tmp_path, l
     stats, _ = _run(tmp_path, [_job("j1")], db=db, backlog=True)
     assert len(calls) == 1
     assert stats["submitted"] == 1
+
+
+def test_an_application_off_the_backlog_is_recorded_as_one(tmp_path, launcher):
+    """The fact has to be written when it is known. `applied` has no `run_id`, so
+    nothing downstream can tell a job the backlog handed over from one this sweep
+    found, and the Jobs Applied section would render the two identically."""
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "old")                       # shortlisted by an earlier sweep
+    _run(tmp_path, [_job("j1")], db=db, backlog=True)
+
+    flags = {r["job_id"]: r["applied_from_backlog"]
+             for r in db.load_applied_matches()}
+    assert flags == {"old": True, "j1": False}
+
+
+def test_the_verdicts_no_session_produces_do_not_claim_a_backlog_origin(
+        tmp_path, launcher):
+    """`excluded` never reaches Jobs Applied, and the expiry pass is backlog-only by
+    definition, so the flag would say nothing on either. Both keep the default."""
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "excl")
+    _stale(db, "gone")
+    db.upsert_match("r0", "excl", "Google", "Account Manager", 80, True, False, None,
+                    "r0", datetime.now(timezone.utc).isoformat(),
+                    json.dumps({"job_id": "excl", "board_token": "Google",
+                                "title": "Account Manager",
+                                "absolute_url": "https://example.com/jobs/excl",
+                                "relevance_score": 80,
+                                "cluster_representative": None},
+                               separators=(",", ":")))
+
+    _run(tmp_path, [], db=db, backlog=True)
+
+    rows = {r["job_id"]: (r["status"], r["from_backlog"]) for r in _applied_rows(db)}
+    assert rows["excl"] == ("excluded", 0)
+    assert rows["gone"] == (worker.EXPIRED_STATUS, 0)
 
 
 def test_the_applier_bar_counts_every_streamed_job_but_not_the_backlog(

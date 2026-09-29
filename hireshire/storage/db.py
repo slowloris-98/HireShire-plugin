@@ -173,7 +173,11 @@ CREATE TABLE IF NOT EXISTS applied (
     status       TEXT,
     dry_run      INTEGER,
     screenshot   TEXT,
-    error        TEXT
+    error        TEXT,
+    -- Whether this application came off an earlier sweep's shortlist (the backlog)
+    -- rather than the sweep that found the job. Known only when it is written:
+    -- `applied` has no run_id, so nothing downstream can work it out afterwards.
+    from_backlog INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -239,6 +243,10 @@ class Database:
         ("matches", "yoe_required", "REAL"),
         ("pipeline_results", "encoder_score", "REAL"),
         ("pipeline_results", "rerank_score_wide", "REAL"),
+        # Applications made off the backlog. Rows written before this column existed
+        # take the default, which reads as "not known to be backlog" — the fact was
+        # never recorded for them and cannot be reconstructed.
+        ("applied", "from_backlog", "INTEGER NOT NULL DEFAULT 0"),
     )
 
     def _init_schema(self) -> None:
@@ -727,7 +735,7 @@ class Database:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT a.job_id, a.board_token, a.title, a.absolute_url, "
-                "       a.applied_at, a.status, a.error, "
+                "       a.applied_at, a.status, a.error, a.from_backlog, "
                 f"       {self._MATCH_COLUMNS} "
                 "FROM applied a "
                 "LEFT JOIN matches m ON m.rowid = ("
@@ -752,6 +760,7 @@ class Database:
             record["applied_at"] = r["applied_at"]
             record["applied_status"] = r["status"]
             record["applied_error"] = r["error"]
+            record["applied_from_backlog"] = bool(r["from_backlog"])
             out.append(record)
         return out
 
@@ -1438,7 +1447,18 @@ class Database:
         status: str,
         screenshot: str | None,
         error: str | None,
+        *,
+        from_backlog: bool = False,
     ) -> None:
+        """Write the outcome of one application.
+
+        `from_backlog` says the job came off an earlier sweep's shortlist rather than
+        the sweep that found it. It is **stored** because it cannot be derived later:
+        `applied` has no `run_id`, so nothing downstream can tell which sweep did the
+        applying, and `applied_at` against `scored_at` is a guess rather than a fact.
+        Keyword-only with a default, so the writers that have no opinion — the
+        `excluded` row, the expiry pass, `applier/store.py` — stay as they were.
+        """
         # The legacy `dry_run` column is written as 0 rather than left NULL, so old
         # readers that still coerce it with bool() see "not a rehearsal" instead of
         # tripping over None.
@@ -1446,10 +1466,10 @@ class Database:
             self._conn.execute(
                 "INSERT OR REPLACE INTO applied"
                 "(job_id, board_token, title, absolute_url, applied_at, status, "
-                " dry_run, screenshot, error) "
-                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                " dry_run, screenshot, error, from_backlog) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
                 (job_id, board_token, title, absolute_url, applied_at, status,
-                 screenshot, error),
+                 screenshot, error, int(from_backlog)),
             )
 
     # -- outcomes the user records by hand -----------------------------------

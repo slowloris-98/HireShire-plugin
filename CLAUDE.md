@@ -869,6 +869,17 @@ Four things about the applier that are easy to break:
   `backlog_hours`) retries it next sweep — the only road back, because the matcher
   never streams a judged job twice. Three launch failures in a row stop the applier
   for the sweep.
+
+  **That a job came off the backlog is stored, not derived.** `record_applied` takes a
+  keyword-only `from_backlog` and `applied.from_backlog` holds it, so the overview's
+  Jobs Applied row can add `reasons.FROM_BACKLOG` to its `submitted <time>` sub-line.
+  It has to be written at the moment it is known: `applied` has no `run_id`, so nothing
+  downstream can tell which sweep did the applying, and `applied_at` against `scored_at`
+  is a guess. Only the verdict writer passes it — the `excluded` row never reaches Jobs
+  Applied and the expiry pass is backlog-only by definition — and Needs Attention rows
+  deliberately do not show it, because that section's question is what the user must do
+  now. Rows written before the column read `False`, which is the honest answer rather
+  than a reconstruction.
 - **The backlog's window closing is itself recorded, on the window and never on a
   count.** `backlog_hours` is measured against `scored_at`, which never advances — the
   matcher retires a judged job — so a job whose sessions keep failing to launch stops
