@@ -86,6 +86,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     scraped_at   TEXT,
     content_text TEXT,
     raw_json     TEXT NOT NULL,
+    -- Why the free title gate dropped this job. It is the only record of that
+    -- verdict for the tens of thousands of jobs a sweep keeps out of `matches`
+    -- entirely. Written by the matcher, never by `insert_jobs` -- see
+    -- `record_gate_reasons` for why that separation is load-bearing. NULL means
+    -- "not dropped by the gate, or dropped before this column existed".
+    gate_reason  TEXT,
     PRIMARY KEY (run_id, job_id)
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_run ON jobs(run_id);
@@ -173,7 +179,11 @@ CREATE TABLE IF NOT EXISTS applied (
     status       TEXT,
     dry_run      INTEGER,
     screenshot   TEXT,
-    error        TEXT
+    error        TEXT,
+    -- Whether this application came off an earlier sweep's shortlist (the backlog)
+    -- rather than the sweep that found the job. Known only when it is written:
+    -- `applied` has no run_id, so nothing downstream can work it out afterwards.
+    from_backlog INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -239,6 +249,14 @@ class Database:
         ("matches", "yoe_required", "REAL"),
         ("pipeline_results", "encoder_score", "REAL"),
         ("pipeline_results", "rerank_score_wide", "REAL"),
+        # Applications made off the backlog. Rows written before this column existed
+        # take the default, which reads as "not known to be backlog" — the fact was
+        # never recorded for them and cannot be reconstructed.
+        ("applied", "from_backlog", "INTEGER NOT NULL DEFAULT 0"),
+        # The title gate's verdict, for the jobs that never get a `matches` row.
+        # NULL on rows written before it existed, which the overview renders as an
+        # em dash: the reason was never stored and cannot be reconstructed.
+        ("jobs", "gate_reason", "TEXT"),
     )
 
     def _init_schema(self) -> None:
@@ -637,7 +655,19 @@ class Database:
         `title_low_relevance` — which `matcher.py` deliberately keeps out of `matches`
         because there can be tens of thousands of them per run. They exist only in
         `jobs`, so this is the only way onto the overview page, and they carry no
-        score of any kind: nothing read their descriptions.
+        score of any kind: nothing read their descriptions. What they do carry is
+        `gate_reason`, the gate's own verdict, which `record_gate_reasons` wrote onto
+        the row the scraper had already made.
+
+        **`MAX(j.gate_reason)` rather than the bare column**, because a job can have
+        a `jobs` row in several runs and only some of them gated it: the `SeenStore`
+        skips a job an earlier sweep already judged, so the later row's reason is
+        NULL, and a bare column would hand back that NULL and lose the verdict on the
+        lifetime page. `MAX` ignores NULLs, so any run that recorded a reason wins.
+        It does mean the other bare columns come from the row holding that maximum
+        rather than an arbitrary one — which changes nothing, since title, company,
+        location and url are properties of the posting and identical across runs by
+        construction.
 
         The `NOT EXISTS` is **not** correlated on `run_id`, and that is the whole
         subtlety. A job the `SeenStore` skipped this sweep because an earlier one
@@ -667,7 +697,8 @@ class Database:
         )
         with self._lock:
             rows = self._conn.execute(
-                "SELECT j.job_id, j.board_token, j.title, j.location, j.url "
+                "SELECT j.job_id, j.board_token, j.title, j.location, j.url, "
+                "       MAX(j.gate_reason) AS gate_reason "
                 "FROM jobs j "
                 "WHERE NOT EXISTS ("
                 "    SELECT 1 FROM matches m WHERE m.job_id = j.job_id)"
@@ -682,6 +713,7 @@ class Database:
                 "title": r["title"] or "",
                 "location": r["location"] or "",
                 "absolute_url": r["url"] or "",
+                "gate_reason": r["gate_reason"] or "",
             }
             for r in rows
         ]
@@ -727,7 +759,7 @@ class Database:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT a.job_id, a.board_token, a.title, a.absolute_url, "
-                "       a.applied_at, a.status, a.error, "
+                "       a.applied_at, a.status, a.error, a.from_backlog, "
                 f"       {self._MATCH_COLUMNS} "
                 "FROM applied a "
                 "LEFT JOIN matches m ON m.rowid = ("
@@ -752,6 +784,7 @@ class Database:
             record["applied_at"] = r["applied_at"]
             record["applied_status"] = r["status"]
             record["applied_error"] = r["error"]
+            record["applied_from_backlog"] = bool(r["from_backlog"])
             out.append(record)
         return out
 
@@ -1106,7 +1139,17 @@ class Database:
             )
 
     def insert_jobs(self, run_id: str, jobs: list[Job]) -> None:
-        """Batch-insert one company's jobs in a single transaction. No-op if empty."""
+        """Batch-insert one company's jobs in a single transaction. No-op if empty.
+
+        **An upsert naming its own columns, not `INSERT OR REPLACE`**, and the
+        difference is the whole reason this is written the long way. `OR REPLACE`
+        *deletes the row and inserts a new one*, so a column this writer does not name
+        is not left alone — it comes back as its default. `jobs.gate_reason` is written
+        by `record_gate_reasons`, and `matcher._persist_hydrated_details` calls this
+        again on the same rows to attach their descriptions, so under `OR REPLACE` that
+        second call silently erased the title gate's verdict. Leaving the column out of
+        the statement was not enough; it has to be left out of the *update*.
+        """
         if not jobs:
             return
         rows = []
@@ -1129,11 +1172,47 @@ class Database:
             ))
         with self._lock, self._conn:
             self._conn.executemany(
-                "INSERT OR REPLACE INTO jobs"
+                "INSERT INTO jobs"
                 "(run_id, job_id, board_token, source, title, location, url, "
                 " updated_at, scraped_at, content_text, raw_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(run_id, job_id) DO UPDATE SET "
+                "  board_token = excluded.board_token, source = excluded.source, "
+                "  title = excluded.title, location = excluded.location, "
+                "  url = excluded.url, updated_at = excluded.updated_at, "
+                "  scraped_at = excluded.scraped_at, "
+                "  content_text = excluded.content_text, "
+                "  raw_json = excluded.raw_json",
                 rows,
+            )
+
+    def record_gate_reasons(self, run_id: str, pairs: list[tuple[str, str]]) -> None:
+        """Why the free title gate dropped these jobs. One statement, no-op if empty.
+
+        The title gate rejects tens of thousands of jobs a sweep, so `matcher.py`
+        deliberately writes them no `matches` row — which left its verdict recorded
+        nowhere at all, and the overview's last section listing thousands of jobs with
+        no way to say why any of them was there. This puts the reason on the row the
+        scraper had already made, which costs one UPDATE per rejected job in a single
+        batched statement rather than a row in a table the reports group.
+
+        **`insert_jobs` must never name this column**, and that is the whole reason
+        this is a separate writer. That one is `INSERT OR REPLACE`, and
+        `matcher._persist_hydrated_details` re-inserts a job to attach its description,
+        so a reason written here would be blanked by an upsert that knows nothing
+        about it.
+
+        An `UPDATE` rather than an upsert because the row is guaranteed to exist: the
+        scraper writes it (`storage/json_store.py`) before the batch ever reaches the
+        matcher. A pair naming a row that is somehow gone updates nothing and is not
+        an error — the reason is a label on a job, not a fact the sweep depends on.
+        """
+        if not pairs:
+            return
+        with self._lock, self._conn:
+            self._conn.executemany(
+                "UPDATE jobs SET gate_reason = ? WHERE run_id = ? AND job_id = ?",
+                [(reason, run_id, job_id) for job_id, reason in pairs],
             )
 
     def load_jobs(self, run_id: str) -> list[Job]:
@@ -1438,7 +1517,18 @@ class Database:
         status: str,
         screenshot: str | None,
         error: str | None,
+        *,
+        from_backlog: bool = False,
     ) -> None:
+        """Write the outcome of one application.
+
+        `from_backlog` says the job came off an earlier sweep's shortlist rather than
+        the sweep that found it. It is **stored** because it cannot be derived later:
+        `applied` has no `run_id`, so nothing downstream can tell which sweep did the
+        applying, and `applied_at` against `scored_at` is a guess rather than a fact.
+        Keyword-only with a default, so the writers that have no opinion — the
+        `excluded` row, the expiry pass, `applier/store.py` — stay as they were.
+        """
         # The legacy `dry_run` column is written as 0 rather than left NULL, so old
         # readers that still coerce it with bool() see "not a rehearsal" instead of
         # tripping over None.
@@ -1446,10 +1536,10 @@ class Database:
             self._conn.execute(
                 "INSERT OR REPLACE INTO applied"
                 "(job_id, board_token, title, absolute_url, applied_at, status, "
-                " dry_run, screenshot, error) "
-                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                " dry_run, screenshot, error, from_backlog) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
                 (job_id, board_token, title, absolute_url, applied_at, status,
-                 screenshot, error),
+                 screenshot, error, int(from_backlog)),
             )
 
     # -- outcomes the user records by hand -----------------------------------
@@ -1469,9 +1559,15 @@ class Database:
         """Record that the user applied to this job themselves. Idempotent.
 
         Returns `"updated"` when an existing attempt was promoted, `"inserted"` when a
-        shortlisted job had no `applied` row yet, or `"unknown"` when nothing on record
-        names this job — which is the only honest answer to a job_id the database has
-        never seen, and is why this does not blindly insert.
+        job had no `applied` row yet, or `"unknown"` when nothing on record names this
+        job — which is the only honest answer to a job_id the database has never seen,
+        and is why this does not blindly insert.
+
+        **Three sources for the job's identity, in order**, because the page offers
+        this on every section a user can act on: an existing `applied` row, then the
+        canonical `matches` row, then `jobs`. The last one is not a nicety — a
+        title-gate rejection never gets a `matches` row at all, and it is exactly the
+        job a user is likeliest to have applied to behind the funnel's back.
 
         **A narrow `UPDATE`, not `record_applied`.** That writer is `INSERT OR REPLACE`
         on the `job_id` primary key, so re-recording through it would blank
@@ -1508,18 +1604,41 @@ class Database:
             row = self._conn.execute(
                 f"SELECT * FROM ({canonical}) WHERE job_id = ?", (job_id,)
             ).fetchone()
-            if row is None:
-                return "unknown"
-            try:
-                url = (json.loads(row["raw_json"]) or {}).get("absolute_url") or ""
-            except (TypeError, ValueError):
-                url = ""
+            if row is not None:
+                try:
+                    url = (json.loads(row["raw_json"]) or {}).get("absolute_url") or ""
+                except (TypeError, ValueError):
+                    url = ""
+                board_token, title = row["board_token"] or "", row["title"] or ""
+            else:
+                # Neither an attempt nor a match row: a job the free title gate threw
+                # out, which is why it has no `matches` row at all and why it appears
+                # under Total Jobs Seen rather than anywhere else. The user applied to
+                # it themselves, so `jobs` is where its identity has to come from —
+                # without this branch the page's button copied a command that answered
+                # `unknown` and wrote nothing, for the largest section on it.
+                #
+                # Newest row, by the same rule `_canonical_matches_sql` follows:
+                # `jobs` is keyed `(run_id, job_id)`, so a job seen on several sweeps
+                # has several rows. `MAX(scraped_at)` with bare columns is SQLite's
+                # documented pick-that-row form.
+                job = self._conn.execute(
+                    "SELECT board_token, title, url, MAX(scraped_at) FROM jobs "
+                    "WHERE job_id = ? GROUP BY job_id",
+                    (job_id,),
+                ).fetchone()
+                if job is None:
+                    # In no table this database has. Still the only honest answer.
+                    return "unknown"
+                board_token = job["board_token"] or ""
+                title = job["title"] or ""
+                url = job["url"] or ""
             self._conn.execute(
                 "INSERT OR REPLACE INTO applied"
                 "(job_id, board_token, title, absolute_url, applied_at, status, "
                 " dry_run, screenshot, error) "
                 "VALUES (?, ?, ?, ?, ?, 'submitted', 0, NULL, NULL)",
-                (job_id, row["board_token"] or "", row["title"] or "", url, applied_at),
+                (job_id, board_token, title, url, applied_at),
             )
         return "inserted"
 

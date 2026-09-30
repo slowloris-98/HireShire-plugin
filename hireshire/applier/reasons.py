@@ -70,6 +70,12 @@ def required(topic: str) -> str:
 #: is holding (`limits.py`). It is spelled here because this is where labels live.
 COMPANY_LIMIT = "Company limit reached"
 
+#: Not a Needs Attention label either: the extra clause on a *submitted* job that came
+#: off an earlier sweep's shortlist rather than the sweep that found it. Deliberately
+#: not in `_RULES` below — that table maps text already **stored** in `applied.error`
+#: onto a label, and this clause is never stored text.
+FROM_BACKLOG = "Backlog from an earlier sweep"
+
 
 def span(hours: int) -> str:
     """`72` → `3 days`, `36` → `36h`: a window as a person would say it."""

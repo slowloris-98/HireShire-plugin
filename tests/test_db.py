@@ -196,6 +196,56 @@ def _attempt(db: Database, job_id: str, status: str = "error") -> None:
                       "Stuck on a required question — check whether it was submitted.")
 
 
+def test_where_an_application_came_from_round_trips(tmp_path):
+    """The backlog flag is stored because it cannot be derived: `applied` has no
+    `run_id`, so after the fact nothing can tell which sweep did the applying."""
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    _shortlisted(db, "j1", run_id)
+    _shortlisted(db, "j2", run_id, url="https://example.com/k")
+    db.record_applied("j1", "acme", "Backend Engineer", "https://example.com/j",
+                      "2026-07-08T09:00:00+00:00", "submitted", None, None,
+                      from_backlog=True)
+    db.record_applied("j2", "acme", "Backend Engineer", "https://example.com/k",
+                      "2026-07-08T09:05:00+00:00", "submitted", None, None)
+
+    rows = {r["job_id"]: r["applied_from_backlog"]
+            for r in db.load_applied_matches(run_id)}
+    assert rows == {"j1": True, "j2": False}
+
+
+def test_an_older_database_gains_the_backlog_column_and_reads_false(tmp_path):
+    """`_ADDED_COLUMNS`, not `_SCHEMA`: `CREATE TABLE IF NOT EXISTS` is a no-op on a
+    file that already has the table, so a column added to the schema alone never
+    reaches an existing install and the next INSERT fails with "no such column".
+
+    False is the right reading for a row written before the column existed. The fact
+    was never recorded and cannot be reconstructed, so the page shows such rows as
+    ordinary applications rather than guessing."""
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE applied (job_id TEXT PRIMARY KEY, board_token TEXT, "
+            "title TEXT, absolute_url TEXT, applied_at TEXT, status TEXT, "
+            "dry_run INTEGER, screenshot TEXT, error TEXT)")
+        conn.execute("INSERT INTO applied VALUES ('j1', 'acme', 'Backend Engineer', "
+                     "'https://example.com/j', '2026-07-08T09:00:00+00:00', "
+                     "'submitted', 0, NULL, NULL)")
+
+    db = Database(path)
+    run_id = "2026-07-07T00-00-00Z"
+    _shortlisted(db, "j1", run_id)
+    assert db.load_applied_matches(run_id)[0]["applied_from_backlog"] is False
+
+    # And the widened writer works against the migrated file.
+    db.record_applied("j1", "acme", "Backend Engineer", "https://example.com/j",
+                      "2026-07-09T09:00:00+00:00", "submitted", None, None,
+                      from_backlog=True)
+    assert db.load_applied_matches(run_id)[0]["applied_from_backlog"] is True
+
+
 def test_marking_an_attempt_applied_promotes_the_row_it_already_has(tmp_path):
     """The Needs Attention case: the columns a pruned install depends on survive.
 
@@ -235,6 +285,60 @@ def test_marking_a_shortlisted_job_applied_builds_its_row_from_the_match(tmp_pat
     assert row["absolute_url"] == "https://example.com/jobs/j1"
     # And it is out of the applier's reach for good.
     assert db.load_pending_applications("1970-01-01T00:00:00+00:00") == []
+
+
+def test_the_title_gates_verdict_survives_the_hydration_upsert(tmp_path):
+    """`record_gate_reasons` writes onto a row `insert_jobs` owns, and that writer is
+    `INSERT OR REPLACE` — so the one thing this has to prove is that re-inserting the
+    job to attach its description does not blank the reason."""
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    db.insert_jobs(run_id, [_job("j1"), _job("j2"), _job("j3")])
+    db.record_gate_reasons(run_id, [("j1", "title_excluded"),
+                                    ("j2", "title_low_relevance")])
+
+    db.insert_jobs(run_id, [_job("j1")])  # the hydration upsert
+
+    rows = {r["job_id"]: r for r in db.load_unmatched_jobs(run_id, 50)}
+    assert rows["j1"]["gate_reason"] == "title_excluded"
+    assert rows["j2"]["gate_reason"] == "title_low_relevance"
+    # A job the gate let through carries no reason, and reads as one rather than as "".
+    assert rows["j3"]["gate_reason"] == ""
+    db.record_gate_reasons(run_id, [])  # no-op
+
+
+def test_a_reason_recorded_on_any_sweep_wins_at_lifetime_scope(tmp_path):
+    """The `SeenStore` skips a job an earlier sweep judged, so the later run's row has
+    no reason at all. A bare column could hand back that NULL and lose the verdict."""
+    db = _db(tmp_path)
+    db.insert_jobs("2026-07-07T00-00-00Z", [_job("j1")])
+    db.record_gate_reasons("2026-07-07T00-00-00Z", [("j1", "title_excluded")])
+    db.insert_jobs("2026-07-08T00-00-00Z", [_job("j1")])
+
+    rows = db.load_unmatched_jobs(None, 50)
+    assert [r["gate_reason"] for r in rows] == ["title_excluded"]
+
+
+def test_marking_a_title_gated_job_applied_builds_its_row_from_jobs(tmp_path):
+    """The case with no `matches` row at all: the free title gate threw it out, so it
+    appears under Total Jobs Seen and nowhere else. Before `jobs` was the third source
+    of identity this answered `unknown` and wrote nothing."""
+    db = _db(tmp_path)
+    run_id = "2026-07-07T00-00-00Z"
+    db.insert_jobs(run_id, [_job("j1")])
+    db.record_gate_reasons(run_id, [("j1", "title_excluded")])
+
+    assert db.mark_applied_by_hand("j1", "2026-07-08T09:00:00+00:00") == "inserted"
+
+    row = next(r for r in db.load_applied() if r["job_id"] == "j1")
+    assert row["status"] == "submitted"
+    # The three columns `load_applied_matches` falls back on, none of them blanked.
+    assert row["board_token"] == "acme"
+    assert row["title"] == "Backend Engineer"
+    assert row["absolute_url"] == "https://example.com/jobs/j1"
+    # And it is out of the last section, which is what the user clicked the button for.
+    assert db.load_unmatched_jobs(run_id, 50)[0]["job_id"] == "j1"  # still unmatched
+    assert "j1" in {r["job_id"] for r in db.load_applied()}
 
 
 def test_marking_applied_is_idempotent_and_refuses_a_job_it_cannot_find(tmp_path):

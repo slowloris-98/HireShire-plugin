@@ -773,10 +773,8 @@ class ClaudeCodeBackend:
 # Codex backend — scores on the user's ChatGPT plan through `codex exec`
 # ---------------------------------------------------------------------------
 
-# Model names that belong to the claude_code provider. The shipped default is
-# `sonnet`, so switching `provider` alone would otherwise send it to OpenAI and fail
-# on the first call with an error that does not say why.
-_CLAUDE_MODEL_RE = re.compile(r"^(claude|sonnet|opus|haiku|fable)\b", re.IGNORECASE)
+# The Claude-model guard lives in `codex_cli.is_claude_model`: the applier accepts a
+# Codex model from config too, and one regex serves both rather than two drifting.
 
 
 class CodexBackend:
@@ -802,7 +800,7 @@ class CodexBackend:
             raise EnvironmentError(
                 "codex CLI not found on PATH. Install Codex and run `codex login`."
             )
-        if not settings.model or _CLAUDE_MODEL_RE.match(settings.model):
+        if not settings.model or codex_cli.is_claude_model(settings.model):
             raise ValueError(
                 f"matcher.model is {settings.model!r}, which is not a Codex model. "
                 "Run /hireshire:setup and choose a model for the codex provider."

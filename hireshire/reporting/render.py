@@ -49,6 +49,7 @@ FONTS = (
 BASE_CSS = """
 *, *::before, *::after { box-sizing: border-box; }
 :root {
+  color-scheme: light;
   --ground: #F5F6F3;
   --panel: #FFFFFF;
   --ink: #14180F;
@@ -63,6 +64,7 @@ BASE_CSS = """
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --ground: #0F120E; --panel: #171B15; --ink: #E9EDE4; --ink-soft: #A9B2A3;
     --ink-faint: #7C866F; --rule: #2A3126; --accent: #7FC3A2; --accent-soft: #21301F;
     --warn: #D8A94E; --warn-soft: #302713;
@@ -70,6 +72,7 @@ BASE_CSS = """
   }
 }
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --ground: #0F120E; --panel: #171B15; --ink: #E9EDE4; --ink-soft: #A9B2A3;
   --ink-faint: #7C866F; --rule: #2A3126; --accent: #7FC3A2; --accent-soft: #21301F;
   --warn: #D8A94E; --warn-soft: #302713;
@@ -82,7 +85,8 @@ body {
 }
 .wrap { max-width: 64rem; margin: 0 auto; padding: 3.5rem 1.5rem 6rem; }
 a { color: inherit; }
-a:focus-visible, summary:focus-visible, input:focus-visible {
+a:focus-visible, summary:focus-visible, input:focus-visible,
+button:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 3px;
 }
 h1, h2, h3, h4, p, ul, ol, figure { margin: 0; }
@@ -338,7 +342,7 @@ def listing(job: dict, key: str, title: str, css: str) -> str:
 
 
 def document(title: str, body: str, refresh_s: int | None = None,
-             extra_css: str = "") -> str:
+             extra_css: str = "", extra_head: str = "") -> str:
     """A complete standalone HTML document. The only envelope there is.
 
     ``refresh_s`` arms a meta refresh, and is passed only while a sweep is actually
@@ -348,6 +352,12 @@ def document(title: str, body: str, refresh_s: int | None = None,
     ``extra_css`` is not optional decoration: a caller that defines its own rules
     and cannot pass them here has written dead CSS, silently, which is exactly what
     once happened to a page whose own rules never reached it.
+
+    ``extra_head`` is the only way a caller gets markup into the head, and it exists
+    for one thing: script that has to run before the first paint. Every other script
+    on these pages is appended to the body, which is correct for anything reading the
+    rendered rows — but a theme restore there paints one theme and then swaps it, on
+    every one of the meta refresh's reloads. The head is not a preference here.
     """
     meta = f'<meta http-equiv="refresh" content="{int(refresh_s)}">\n' if refresh_s else ""
     return (
@@ -355,5 +365,6 @@ def document(title: str, body: str, refresh_s: int | None = None,
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"{meta}<title>{e(title)}</title>\n{FONTS}\n"
-        f"<style>{BASE_CSS}{extra_css}</style>\n</head>\n<body>\n{body}\n</body>\n</html>\n"
+        f"<style>{BASE_CSS}{extra_css}</style>\n{extra_head}</head>\n"
+        f"<body>\n{body}\n</body>\n</html>\n"
     )

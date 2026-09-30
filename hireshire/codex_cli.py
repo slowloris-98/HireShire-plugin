@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -56,10 +57,36 @@ JUDGE_DISABLED_FEATURES = (
     "personality",
 )
 
+# The applier strips the same features, and that it is the same list is the point: an
+# MCP server is *config*, not a feature, so nothing has to be lifted to give the apply
+# session a browser. Two entries look like the ones to lift and must not be:
+# `browser_use` and `computer_use` are Codex's OWN browser and screen control, and a
+# session holding two browsers can drive the one that honours neither the Playwright
+# server's `--output-dir` nor the roots rule `applier.worker.session_dirs` exists to
+# enforce — so the screenshot the user is shown would not be the form that was filled.
+# `shell_tool`/`unified_exec` stay off because `apply_one.md` already forbids commands
+# and `scripts/approve.py` deliberately approves no shell for applying.
+#
+# Kept as its own name rather than an alias, because the two lists answer to different
+# sessions and a future release may well need to free a tool for one and not the other.
+APPLY_DISABLED_FEATURES = JUDGE_DISABLED_FEATURES
+
 # Keywords OpenAI strict Structured Outputs does not accept. `maxLength` is advertised
 # by `ScoringSchema` as a cost hint; the field validators still clip to it after
 # parsing, so dropping it here loses the hint and nothing else.
 _UNSUPPORTED_KEYWORDS = frozenset({"default", "title", "maxLength", "minLength"})
+
+
+# Model names that belong to the `claude_code` provider. Shared by every caller that
+# accepts a Codex model from config, because `provider` can be switched on its own: the
+# matcher's shipped default is `sonnet`, and a name like that reaching `codex exec`
+# fails on the first call with an error that does not say why.
+_CLAUDE_MODEL_RE = re.compile(r"^(claude|sonnet|opus|haiku|fable)\b", re.IGNORECASE)
+
+
+def is_claude_model(name: str) -> bool:
+    """Whether `name` is a Claude model, and so cannot be sent to `codex exec`."""
+    return bool(_CLAUDE_MODEL_RE.match(name or ""))
 
 
 def subscription_env() -> dict[str, str]:

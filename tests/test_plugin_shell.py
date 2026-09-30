@@ -467,3 +467,77 @@ def test_requirements_exclude_the_dropped_heavy_dependencies():
         assert dropped not in reqs
     # The reranker must not add a package — CrossEncoder ships inside this one.
     assert "sentence-transformers" in reqs
+
+
+def test_setup_asks_which_cli_applies_inside_the_auto_apply_branch():
+    """The apply-provider question belongs to question 11, not a question of its own.
+
+    Asked outside that branch it would run `codex-check` for users who never enabled
+    the applier and write a setting with no effect. It also has to reuse the two command
+    shapes `scripts/approve.py` already recognises — a new subcommand would widen a
+    security boundary for a question `set applier` already answers.
+    """
+    text = (ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+
+    question = text.index("**Which CLI drives the browser**")
+    assert text.index("How many applications may go to one company?") < question, \
+        "the apply-provider question escaped question 11's auto-apply branch"
+    # The one that writes the gate, which is the call the answer joins — not the
+    # resume-path write far earlier in the skill.
+    writes_the_gate = text.index('set applier --json \'{"enable_applier": true')
+    assert question < writes_the_gate, "the answer is written before it is asked"
+
+    # It must say the choice is independent of the scoring backend, or a user who picked
+    # Codex for scoring will assume this followed.
+    assert "separate choice" in text[question:question + 400]
+    # And it must not offer to sign the user in: the browser sign-in is theirs to do.
+    # Whitespace-normalised, because the prose is wrapped and a phrase spans lines.
+    tail = " ".join(text[question:writes_the_gate].split())
+    assert "Do not run either for them" in tail
+    for command in ("scripts/setup_cli.py codex-check", "set applier --json"):
+        assert command in text
+
+
+def test_every_provider_branch_writes_its_own_provider_key():
+    """A provider a branch offers but never writes leaves the previous one in place.
+
+    These config files live in the data directory and survive, so setup is editing what
+    the last run left behind rather than filling in a blank form. A branch that only
+    *talks about* its provider therefore breaks switching **back**: the user is told they
+    are on Claude while the file still says codex. It shipped that way twice — question
+    10's claude_code and API-key branches never wrote `provider` at all, and question
+    11's claude_code branch did not either — so this is checked over the ```bash blocks,
+    where the writes actually live, and not over the prose that describes them.
+
+    Scoring is the half with teeth: `ClaudeCodeBackend` passes `matcher.model` to
+    `claude -p` and validates nothing, so a Codex model left behind there fails every
+    scoring call in the sweep. Hence `model` is required alongside `provider`.
+    """
+    text = (ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+    blocks = _shell_blocks(text)
+
+    for phase, provider, needs_model in (
+        ("matcher", "claude_code", True),
+        ("matcher", "codex", True),
+        ("matcher", "openai", True),
+        ("applier", "claude_code", False),
+        ("applier", "codex", True),
+    ):
+        writes = [
+            line for line in blocks.splitlines()
+            if f"set {phase} --json" in line and f'"provider": "{provider}"' in line
+        ]
+        assert writes, f"{phase}.provider = {provider} is offered but never written"
+        if needs_model:
+            assert any('"model"' in line for line in writes), \
+                f"{phase}.provider = {provider} is written without a model"
+
+
+def test_setup_says_an_unwritten_setting_keeps_its_old_value():
+    """The reason those writes exist. Without it a later edit reads them as redundant —
+    every value is already the default on a fresh install — and drops them again."""
+    text = " ".join((ROOT / "skills" / "setup" / "SKILL.md")
+                    .read_text(encoding="utf-8").split())
+
+    assert "A key you do not write keeps its old value." in text
+    assert "survive updates and re-runs" in text

@@ -15,6 +15,15 @@ settings:
   resume_path: ""         # your resume PDF, set by /hireshire:setup
   inter_job_delay_s: 10   # seconds to wait between applications
   apply_timeout_s: 900    # give up on one application after this long (recorded as an error to check)
+
+  # Which CLI drives the browser. Empty or claude_code = your Claude subscription;
+  # codex = your ChatGPT plan through the Codex CLI, which you must `codex login` to
+  # first. Only these two: applying needs a CLI that can drive the browser, so the
+  # API-key providers the matcher offers cannot do it. Set by /hireshire:setup, and a
+  # separate choice from matcher.provider — they do not have to match.
+  provider: ""
+  model: ""               # Codex model, pinned at setup; ignored for claude_code
+  effort: low             # Codex reasoning effort: low | medium | high | xhigh | max
   backlog_hours: 72       # each sweep also applies to jobs shortlisted this recently but never applied to
   max_per_company: 2      # at most this many applications to one company...
   company_window_hours: 72  # ...in this many hours; later jobs wait for a slot (0 = no cap)

@@ -4,6 +4,46 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.22.0] — 2026-09-29
+
+### Added
+
+- **Auto-apply can run on your ChatGPT plan.** `/hireshire:setup` now asks which CLI
+  should drive the browser when you switch auto-apply on — your Claude subscription or
+  your ChatGPT plan through the Codex CLI. It is a separate choice from the scoring
+  backend, so you can put the judging on one plan and the applying on the other, and
+  leaving it alone keeps everything as it was.
+- If the chosen CLI is missing or signed out, that sweep simply applies to nothing and
+  says so in the log. Nothing is marked applied, and the same jobs are handed back to
+  the next sweep rather than lost.
+- Each sweep's log now names the CLI that drove the browser, so you can see at a glance
+  which plan an unattended run was spending.
+
+### Fixed
+
+- **Changing your scoring or applying backend now takes effect.** Setup could describe a
+  choice without writing it — picking your Claude subscription after using Codex left the
+  old setting in place, so sweeps carried on using Codex. Every option now writes its own
+  settings, and for scoring that includes the model, which previously could be left as a
+  Codex model your Claude subscription would reject.
+
+## [0.21.0] — 2026-09-29
+
+### Added
+
+- **Tell it you applied to a job it passed on.** The "I applied to this" button now
+  appears on **Jobs Filtered** and **Total Jobs Seen** as well, so a job you found and
+  applied to yourself counts toward Jobs Applied instead of sitting in a list forever.
+  These two sections get that button only — those jobs are already out of the running,
+  so there is nothing left for "Not pursuing this" to change.
+- **Total Jobs Seen now says why each job is there.** A new **Reason** column, before
+  Location, gives the verdict in two words: `Title excluded`, `Low relevance`,
+  `Below cutoff`, `Experience gap`. Jobs seen before this update read as a dash — the
+  reason was never recorded for them, so it cannot be worked out now. Every sweep from
+  here on fills it in.
+- **A light/dark toggle** on every dashboard page, which remembers your choice for the
+  session and otherwise follows the system setting.
+
 ## [0.20.0] — 2026-09-28
 
 ### Added

@@ -214,6 +214,32 @@ Consequences already worked out, which should not be re-derived:
   off for the whole sweep. So `_quote_ambiguous` asks PyYAML about every string it
   writes, and validation runs on the **PyYAML re-parse of the rendered text**, never
   on ruamel's tree — the tree is what passed that file. Do not "simplify" either back.
+- **Setup edits what the last run left behind, so every branch must write its own keys
+  — including the ones whose value is the default.** The config lives in DATA and
+  survives updates and re-runs, so a key setup does not write keeps its old value. That
+  is invisible on a fresh install, where every default is already correct, and it breaks
+  the moment a user *changes* an answer. It shipped that way on all four provider
+  branches: question 10's `claude_code` and API-key options and question 11's
+  `claude_code` option described a provider and never wrote one, so choosing Claude
+  after using Codex left `provider: codex` in the file and the sweep carried on using
+  Codex while the user had just been told otherwise.
+
+  The scoring half also has to write `model`, and that is the sharper edge:
+  `ClaudeCodeBackend` passes `matcher.model` to `claude -p` and validates nothing (the
+  `codex_cli.is_claude_model` guard runs only in the Codex direction), so a Codex model
+  left behind fails every scoring call — the breaker trips and the remainder is
+  `backend_unavailable`, which is at least retryable and printed. **No guard was added
+  for that direction**: a name the regex does not match can still be legitimate, a
+  Bedrock `us.anthropic.claude-*` among them, and the console already prints
+  `provider/model` on every sweep. `applier.model` is genuinely inert for the Claude
+  session, which passes no `--model`, so a leftover there is harmless — and
+  `tests/test_apply_worker.py` pins that, so restoring the flag "for symmetry" cannot
+  break switching back quietly.
+
+  `tests/test_plugin_shell.py::test_every_provider_branch_writes_its_own_provider_key`
+  checks this over the skill's `bash` blocks rather than its prose, because a branch that
+  only *describes* its write is exactly the bug. Same family as the "a shipped default
+  never reaches an existing install" rule behind `exclude_companies`/`amazon`.
 
 ### The funnel is the interesting part
 
@@ -428,7 +454,11 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
 Note that `MatchStore.finalise` records only summary stats — individual rows reach
 the `matches` table via `append_result`. Budget drops and cluster siblings are
 appended explicitly so the user can see what the budget cost; title-gate rejections
-deliberately are not, since there can be tens of thousands per run.
+deliberately are not, since there can be tens of thousands per run. They are not
+unrecorded, though: `matcher._record_gate_reasons` writes the gate's verdict onto
+`jobs.gate_reason`, which is what the overview's last section prints as its `Reason`
+column. A column on a row that already exists is not a row in a table the reports
+group, and that distinction is the whole basis for this split.
 
 **Two files come out of a run, and they are not interchangeable.**
 `<stamp>_results.json` is the shortlist the apply skill consumes via
@@ -649,6 +679,21 @@ the button copies the command rather than pretending to record anything — with
 `execCommand` fallback and then a selectable `<code>`, because a local file is not
 reliably a secure context and `navigator.clipboard` can simply be absent.
 
+**Four of the five sections carry buttons, and which buttons is a statement about the
+row, not a style choice.** Needs Attention and Jobs Shortlisted get both outcomes.
+Jobs Filtered and `Total Jobs Seen` get **`applied` only** (`_APPLIED_ONLY`): those
+jobs are already un-shortlisted or were never shortlisted and have no `applied` row,
+so `decline_job` would delete nothing and un-shortlist nothing, and offering it would
+hand the user a command that answers `nothing_to_change`. Jobs Applied gets neither —
+the outcome is recorded. Do not "restore" the pair for symmetry.
+
+Putting the button on those two sections forced a third source of identity in
+`Database.mark_applied_by_hand`: an `applied` row, then the canonical `matches` row,
+then **`jobs`**. A title-gate rejection has neither of the first two — that is why it
+is in `Total Jobs Seen` and nowhere else — so without that branch the button copied a
+command that answered `unknown` and wrote nothing, for the largest section on the page.
+`"unknown"` still means what it said: a `job_id` in no table at all.
+
 **All five sections read the same way, and the rows stay `<details>` for one
 load-bearing reason.** Each section is a filter box over a sticky six-column header
 (`# | Title | Company | Location | LLM | Cross`) over a `.scroll-y` box. Three of them
@@ -730,8 +775,56 @@ judged it would otherwise be listed here with a blank score, as though nothing h
 ever read it. The price, accepted, is that on later sweeps the five sections no longer
 sum to the `Jobs in scope` tile. Its payload carries **no LLM key** — a key holding 0
 invites a renderer to print it as a verdict — while the renderer still prints an em
-dash in that column, so the six columns match the sections above. A printed dash and
-an absent key are not the same thing; only the key is dangerous.
+dash in that column, so the six shared columns match the sections above. A printed
+dash and an absent key are not the same thing; only the key is dangerous.
+
+**It is the one section with a `Reason` column, and the only reason it can have one is
+that the verdict is now persisted.** `jobs.gate_reason` holds it, written by
+`matcher._record_gate_reasons` in one batched `UPDATE` per company batch. The title
+gate rejects tens of thousands of jobs a sweep and `matcher.py` deliberately writes
+them no `matches` row for that reason — which left the verdict recorded nowhere, and
+thousands of rows on a page with no way to say why any of them was there. A column on
+a row the scraper had already made costs an UPDATE, not a row in a table the reports
+group. Four consequences:
+
+- **The scraper must not write the column, and `insert_jobs` had to stop being
+  `INSERT OR REPLACE` for that to hold.** `OR REPLACE` *deletes the row and inserts a
+  new one*, so a column the statement does not name comes back as its default —
+  leaving it out was not enough, it has to be left out of an `ON CONFLICT … DO UPDATE`.
+  `matcher._persist_hydrated_details` re-inserts a job to attach its description, so
+  under the old writer that second call silently erased the gate's verdict.
+- **`load_unmatched_jobs` reads `MAX(j.gate_reason)`, not the bare column.** A job can
+  have a `jobs` row in several runs and only some of them gated it — the `SeenStore`
+  skips a job an earlier sweep judged — so a bare column hands back the later row's
+  NULL and loses the verdict at lifetime scope. `MAX` ignores NULLs, so any run that
+  recorded a reason wins; the other bare columns then come from that row, which
+  changes nothing, since title, company, location and url are properties of the
+  posting.
+- **The column is fed by two different columns and `_tail_payload` normalises them**:
+  `matches.skip_reason` for the jobs the cutoff and the YoE gate dropped,
+  `jobs.gate_reason` for the title gate's own three. That is done there rather than in
+  either loader because it is the one place both halves have already been
+  concatenated. `data.short_reason` is a **second** label table, not a truncation of
+  `REASON_LABELS`: the short form is a different phrase, and the two disagree about
+  `""` on purpose — "scored by the LLM" to the long one, an em dash to the short one,
+  since a judged job never reaches this section.
+- **Three columns are now bounded, not one, and all three take the widths the grid
+  above them already uses** — company `8rem`, location `11rem` (the ceiling of its
+  `minmax(6rem, 11rem)`) and a `12rem` *floor* on `td.wide` overriding BASE_CSS's
+  18rem. Reason plus the action cell take ~230px the six-column table did not, and on
+  real data one cap was no longer enough: measured on a live install the row ran 1,131px
+  in a 951px box and the "I applied" button, the last column, was off the edge. The
+  location cap is `td:nth-child(5)`, since Reason sits ahead of Location — a stale
+  index truncates a two-word verdict and lets the locations run off instead, the exact
+  regression the rule exists to stop. Title is the one cell that wraps, so a floor
+  rather than a ceiling lets it absorb whatever the bounded columns leave.
+
+The trailing cell holding the `I applied` button is the second thing this section has
+that the others do not, and it is a cell rather than a row body because these rows are
+built by a script from a payload: `_STATE_SCRIPT` can only reopen a row already in the
+document, which is why the tail is not `<details>` in the first place. The payload's
+`j` key is the job id the button needs; a row without one gets an empty cell, never a
+button that cannot name anything.
 
 Five things about it that are easy to get wrong:
 
@@ -843,11 +936,12 @@ own `config/<phase>.yaml`. All tabular data lives in one SQLite DB (WAL); every
 phase writes rows keyed by a shared `run_id`.
 
 Applying is **not** a third engine phase with a `main()`, but it is on the queue. The
-work is driving a browser, and that stays on the Claude side of the line: forms differ
+work is driving a browser, and that stays on the agent side of the line: forms differ
 per employer and the questions need a model that has read the resume.
 `hireshire/applier/worker.py` is only the consumer — for each shortlisted job it
-launches one `claude -p` session over `apply_one.md` (the per-job rules), which uses the plugin's Playwright MCP and returns an
-`ApplyOutcome` via `--json-schema`; the engine records it. `orchestrate.py` wires the
+launches one CLI session over `apply_one.md` (the per-job rules), which uses the plugin's Playwright MCP and returns an
+`ApplyOutcome` as a structured result; `applier.provider` decides whether that is
+`claude -p` or `codex exec`, and the engine records what comes back. `orchestrate.py` wires the
 phases over asyncio queues with exactly one `None` sentinel per queue, always sent in
 a `finally`:
 
@@ -869,6 +963,17 @@ Four things about the applier that are easy to break:
   `backlog_hours`) retries it next sweep — the only road back, because the matcher
   never streams a judged job twice. Three launch failures in a row stop the applier
   for the sweep.
+
+  **That a job came off the backlog is stored, not derived.** `record_applied` takes a
+  keyword-only `from_backlog` and `applied.from_backlog` holds it, so the overview's
+  Jobs Applied row can add `reasons.FROM_BACKLOG` to its `submitted <time>` sub-line.
+  It has to be written at the moment it is known: `applied` has no `run_id`, so nothing
+  downstream can tell which sweep did the applying, and `applied_at` against `scored_at`
+  is a guess. Only the verdict writer passes it — the `excluded` row never reaches Jobs
+  Applied and the expiry pass is backlog-only by definition — and Needs Attention rows
+  deliberately do not show it, because that section's question is what the user must do
+  now. Rows written before the column read `False`, which is the honest answer rather
+  than a reconstruction.
 - **The backlog's window closing is itself recorded, on the window and never on a
   count.** `backlog_hours` is measured against `scored_at`, which never advances — the
   matcher retires a judged job — so a job whose sessions keep failing to launch stops
@@ -1008,6 +1113,60 @@ Four things about the applier that are easy to break:
   plugin — measured, it did not, and the namespaced tools were simply absent. So in
   that session the tools are `mcp__playwright__*`, and `apply_one.md` names them that
   way. Do not "fix" the worker to use the namespaced names.
+- **Either CLI can drive the browser, and there is no failover between them.**
+  `applier.provider` (empty → `claude_code`, or `codex`) picks one session class in
+  `hireshire/applier/sessions.py`, which mirrors `matcher.make_backend` deliberately:
+  one provider, built once, and a raise if it cannot be. `run_apply_worker` turns that
+  raise into its existing **`blocked`** state — no `applied` rows, no expiry pass, every
+  job left shortlisted for the backlog. That is forced, not chosen: retrying the job on
+  the other CLI would be a second browser session against a form the first may already
+  have submitted, which is the one thing the applier must never risk. So the pydantic
+  validator on `provider` **rejects a typo** rather than falling back, because "unset"
+  and "misspelled" must not collapse into each other. The keys are the applier's own
+  (`provider`/`model`/`effort` in `applier.yaml`), not `matcher.*`: the judge is one text
+  call and this drives a browser for minutes. `applier.model` has no default for the
+  same reason `matcher.model` has none, and `codex_cli.is_claude_model` is shared by
+  both so a `sonnet` cannot reach `codex exec`.
+
+  Four things about the codex session were settled by probing codex-cli 0.157.0 against
+  a real form, and each fails silently if undone:
+
+  - **`approval_policy="never"` alone denies every MCP tool call** — measured, on the
+    first navigate: `"MCP tool call requires approval, but approval policy is never"`.
+    The browser never moves. `mcp_servers.playwright.default_tools_approval_mode` must
+    be `"approve"`; the accepted values are `auto | prompt | writes | approve` and
+    **`auto` is not the permissive one**. It is set in `worker._mcp_overrides`, which
+    renders the same `ROOT/.mcp.json` the Claude session gets as `-c` pairs, so the two
+    providers cannot drift on the server's command or version pin.
+  - **The sandbox is `workspace-write`, not the judge's `read-only`.** Codex's sandbox
+    reaches the MCP server's operations and not merely its own shell: under `read-only`
+    a `file://` navigation failed outright. No `network_access` override is needed —
+    the browser is its own process. The writable root is `-C`, which is `dirs.cwd`, and
+    `session_dirs` already guarantees cwd contains `out_dir`, so the screenshot is
+    inside the writable root by construction. `--ignore-user-config` is the
+    `--strict-mcp-config` analogue: it keeps the user's own servers out of an
+    unattended session.
+  - **Codex exposes MCP tools under their BARE names**, with the server as a separate
+    event field. So `apply_one.md` carries one `{{TOOL_PREFIX}}` token that
+    `build_prompt` substitutes, and is **never forked** — the no-fabrication rules, the
+    bot-question rule, the location rule and the Needs Attention labels stay in one
+    place. A test asserts no prompt reaches a model with the token still in it.
+  - **A failed turn is `SUBMIT_UNCONFIRMED`, not a deferral**, and this is where the
+    mapping deliberately differs from `CodexBackend`'s, which raises for the matcher to
+    retry. A session that drove a form for ten minutes and then failed its turn may
+    already have submitted it. A *non-zero exit* is still a deferral for both CLIs.
+    Reading the answer stays `codex_cli.parse_events`, i.e. the **last** `agent_message`,
+    and here that is load-bearing rather than tidy: one real run emitted three premature
+    `{"status":"submitted","screenshot":null}` messages before the form had been touched.
+
+  `--output-schema` does survive with MCP tools active at this version with this
+  `--disable` list, which openai/codex#15451 warns it may not. That was the gate the
+  feature had to clear before any of it was written, and it is worth re-checking rather
+  than assuming if a Codex upgrade starts returning unreadable outcomes.
+  `codex_cli.APPLY_DISABLED_FEATURES` holds the same 15 names as the judge's list on
+  purpose — an MCP server is *config*, not a feature, so nothing had to be lifted, and
+  `browser_use`/`computer_use` stay off precisely *because* this session has a browser:
+  Codex's own would honour neither `--output-dir` nor the roots rule above.
 - **Screenshots go to the run's own folder; the session runs in the WORKSPACE.** Those
   are two different questions and `worker.session_dirs` answers them separately, from
   the `run_dir` `orchestrate` hands the worker — the same `results_dir` the CSV, JSON
@@ -1191,8 +1350,11 @@ suppresses Rich in favour of `logging` — required under the monitor.
     tally's `caches=False` keeps the no-cache warning from blaming the prompt.
   - OpenAI counts cached tokens *inside* `input_tokens`, and there is no price, so
     `cost_usd` is None rather than 0.
-  `model` has no Codex default: setup pins one from `setup_cli.py codex-check`, and
-  the backend refuses a Claude name, because `provider` alone can be switched.
+  Neither `matcher.model` nor `applier.model` has a Codex default: setup pins one from
+  `setup_cli.py codex-check`, and both refuse a Claude name through the shared
+  `codex_cli.is_claude_model`, because `provider` alone can be switched. The applier
+  reaches `codex exec` with its own rules — see the applier bullets above, and note its
+  sandbox and approval settings are **not** the judge's.
 - **`userConfig` is not used** for anything load-bearing — its enable-time prompt
   has open bugs. The `setup` skill is the source of truth.
 - **`.claude/settings.json` is gitignored, and must stay that way.** Same argument as

@@ -137,6 +137,13 @@ def _statuses(db: Database) -> dict[str, str]:
     return {r["job_id"]: r["status"] for r in db.load_applied()}
 
 
+def _applied_rows(db: Database) -> list[dict]:
+    """Raw `applied` rows. `load_applied` does not select every column, and these
+    tests are about one it leaves out."""
+    with db._lock:
+        return [dict(r) for r in db._conn.execute("SELECT * FROM applied")]
+
+
 # --- how the session is launched --------------------------------------------
 
 def test_the_prompt_goes_on_stdin_and_never_in_argv(tmp_path, launcher, monkeypatch):
@@ -175,8 +182,12 @@ def test_the_session_brings_its_own_browser_server(tmp_path, launcher):
     assert args[:len(shipped["mcpServers"]["playwright"]["args"])] == \
         shipped["mcpServers"]["playwright"]["args"]
     assert args[args.index("--output-dir") + 1] == str(_applied(tmp_path) / ".browser" / "j1")
-    # The per-job rules must name the tools as that server exposes them.
-    assert "mcp__playwright__browser_navigate" in worker.PROMPT_PATH.read_text(encoding="utf-8")
+    # The per-job rules must name the tools as that server exposes them — checked on
+    # the prompt the session was actually sent, not on the file, so this also proves
+    # `TOOL_PREFIX_TOKEN` was substituted for the provider that ran.
+    sent = calls[0]["proc"].sent.decode("utf-8")
+    assert "mcp__playwright__browser_navigate" in sent
+    assert worker.TOOL_PREFIX_TOKEN not in sent
 
 
 def _inputs(call) -> dict:
@@ -860,6 +871,42 @@ def test_a_job_in_both_the_backlog_and_the_stream_is_applied_to_once(tmp_path, l
     assert stats["submitted"] == 1
 
 
+def test_an_application_off_the_backlog_is_recorded_as_one(tmp_path, launcher):
+    """The fact has to be written when it is known. `applied` has no `run_id`, so
+    nothing downstream can tell a job the backlog handed over from one this sweep
+    found, and the Jobs Applied section would render the two identically."""
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "old")                       # shortlisted by an earlier sweep
+    _run(tmp_path, [_job("j1")], db=db, backlog=True)
+
+    flags = {r["job_id"]: r["applied_from_backlog"]
+             for r in db.load_applied_matches()}
+    assert flags == {"old": True, "j1": False}
+
+
+def test_the_verdicts_no_session_produces_do_not_claim_a_backlog_origin(
+        tmp_path, launcher):
+    """`excluded` never reaches Jobs Applied, and the expiry pass is backlog-only by
+    definition, so the flag would say nothing on either. Both keep the default."""
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "excl")
+    _stale(db, "gone")
+    db.upsert_match("r0", "excl", "Google", "Account Manager", 80, True, False, None,
+                    "r0", datetime.now(timezone.utc).isoformat(),
+                    json.dumps({"job_id": "excl", "board_token": "Google",
+                                "title": "Account Manager",
+                                "absolute_url": "https://example.com/jobs/excl",
+                                "relevance_score": 80,
+                                "cluster_representative": None},
+                               separators=(",", ":")))
+
+    _run(tmp_path, [], db=db, backlog=True)
+
+    rows = {r["job_id"]: (r["status"], r["from_backlog"]) for r in _applied_rows(db)}
+    assert rows["excl"] == ("excluded", 0)
+    assert rows["gone"] == (worker.EXPIRED_STATUS, 0)
+
+
 def test_the_applier_bar_counts_every_streamed_job_but_not_the_backlog(
         tmp_path, launcher):
     """A deferral or a location skip writes no `applied` row, so a bar counting rows
@@ -1193,3 +1240,106 @@ def test_hold_until_is_when_the_count_drops_below_the_cap(tmp_path):
     assert abs((until - (now + timedelta(hours=22))).total_seconds()) < 1
     assert limits.hold_until(stamps[:1], s, now) is None
 
+
+
+# --- which CLI applies, and what happens when none can ------------------------------
+
+def test_an_unset_provider_still_runs_the_claude_session(tmp_path, launcher):
+    """Empty `applier.provider` means claude_code, so an install predating the setting
+    keeps the session it already had."""
+    calls, _, _ = launcher
+
+    stats, db = _run(tmp_path, [_job("j1")])
+
+    assert stats["submitted"] == 1
+    assert calls[0]["argv"][0] == "claude"
+
+
+def test_an_unbuildable_provider_records_nothing_and_leaves_every_job_pending(
+        tmp_path, launcher, monkeypatch, caplog):
+    """The whole contract of having a provider choice at all.
+
+    There is no failover to the other CLI, mirroring `matcher.make_backend` — so a
+    missing `codex`, an empty `applier.model` or a typo has to be a DEFERRAL: nothing
+    launched, no `applied` rows, no expiry rows, and every job still shortlisted for the
+    next sweep's backlog. Retrying the job on Claude instead would be a second browser
+    session against a form the first may already have submitted; recording anything
+    would retire a job over an install's problem.
+    """
+    calls, _, _ = launcher
+    monkeypatch.setattr("shutil.which", lambda name: None)      # no codex on PATH
+    db = Database(tmp_path / "test.db")
+    _stale(db)
+
+    stats, _ = _run(tmp_path, [_job("j1")],
+                    settings=_settings(tmp_path, provider="codex", model="gpt-5.6-terra"),
+                    db=db, backlog=True)
+
+    assert calls == [], "a session was launched with no usable provider"
+    assert _statuses(db) == {}, "a job was retired over an unavailable CLI"
+    assert stats["expired"] == 0 and stats["submitted"] == 0
+    for row in db._conn.execute("SELECT shortlisted FROM matches"):
+        assert row["shortlisted"] == 1, "the backlog can no longer retry this job"
+    assert "apply provider unavailable" in caplog.text, \
+        "the user was not told why nothing applied"
+
+
+def test_the_apply_prompt_names_the_tools_the_session_actually_has(tmp_path, launcher):
+    """The prompt's tool naming follows the provider, and nothing reaches a model with
+    the placeholder still in it — a session told to call tools it does not have cannot
+    apply to anything."""
+    calls, _, _ = launcher
+
+    _run(tmp_path, [_job("j1")])
+    sent = calls[0]["proc"].sent.decode("utf-8")
+
+    assert worker.TOOL_PREFIX_TOKEN not in sent
+    assert "mcp__playwright__browser_navigate" in sent
+    # And the file itself still carries the placeholder, so neither name is hardcoded.
+    assert worker.TOOL_PREFIX_TOKEN in worker.PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def test_the_sweep_says_which_cli_applied(tmp_path, launcher, caplog):
+    """The matcher has always printed its provider and model; the applier printed
+    nothing, which is what let a stale `applier.provider` run a whole sweep unnoticed —
+    a user who switched to Codex and believed they had switched back.
+
+    Once per sweep, and never on the blocked path, where the error line has already said
+    why nothing will run.
+    """
+    import logging
+    caplog.set_level(logging.INFO)
+
+    _run(tmp_path, [_job("j1")])
+
+    assert "driving the browser with claude_code" in caplog.text
+
+
+def test_a_blocked_sweep_does_not_announce_a_session_it_never_built(
+        tmp_path, launcher, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    _run(tmp_path, [_job("j1")],
+         settings=_settings(tmp_path, provider="codex", model="gpt-5.6-terra"))
+
+    assert "driving the browser" not in caplog.text
+    assert "apply provider unavailable" in caplog.text
+
+
+def test_a_codex_model_left_behind_does_not_reach_the_claude_session(tmp_path, launcher):
+    """Switching back: setup rewrites `provider` but may leave `model` and `effort` as
+    the Codex ones. They are inert here — this session passes neither flag — and this
+    test exists so a future "pass the model through for symmetry" cannot silently send
+    `claude -p` a model it will reject.
+    """
+    calls, _, _ = launcher
+
+    stats, _ = _run(tmp_path, [_job("j1")], settings=_settings(
+        tmp_path, provider="claude_code", model="gpt-5.6-terra", effort="xhigh"))
+
+    argv = calls[0]["argv"]
+    assert stats["submitted"] == 1
+    assert "--model" not in argv and "--effort" not in argv
+    assert not any("gpt-5.6" in a for a in argv)

@@ -350,3 +350,33 @@ def test_ordinary_strings_are_not_quoted():
     assert isinstance(cw._quote_ambiguous("no"), DoubleQuotedScalarString)
     assert [type(v) for v in cw._quote_ambiguous(["on", "senior"])] == [
         DoubleQuotedScalarString, str]
+
+
+def test_the_applier_provider_offers_only_the_clis_that_can_drive_a_browser(data_dir):
+    """Applying needs a CLI that can drive the Playwright browser, so the applier's
+    enum is deliberately shorter than the matcher's — an API-key provider has no
+    browser to drive, and writing one would leave the applier unbuildable every sweep.
+    """
+    cw.write_config("applier", {"provider": "codex", "model": "gpt-5.6-terra",
+                                "effort": "low"})
+    text = (data_dir / "config" / "applier.yaml").read_text(encoding="utf-8")
+    # Quoted, because the shipped value is `""` and ruamel keeps the style it found.
+    assert cw.read_config("applier")["provider"] == "codex"
+    assert cw.read_config("applier")["model"] == "gpt-5.6-terra"
+    assert "Codex model, pinned at setup" in text, "the explaining comment was lost"
+
+    with pytest.raises(ValueError):
+        cw.write_config("applier", {"provider": "openai"})
+    # Still fine for the judge, which does not need a browser.
+    cw.write_config("matcher", {"provider": "openai"})
+
+
+def test_the_applier_ships_with_no_provider_pinned(data_dir):
+    """Empty means claude_code. It has to be a real pydantic default rather than a
+    shipped value, because a user's applier.yaml lives in DATA and never receives a
+    shipped default — the same lesson as `exclude_companies` and `amazon`."""
+    from hireshire.applier.config import load_applier_config
+
+    settings = load_applier_config(data_dir / "config" / "applier.yaml").settings
+    assert settings.provider == "" and settings.model == ""
+    assert settings.effort == "low"

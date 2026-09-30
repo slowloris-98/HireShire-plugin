@@ -60,17 +60,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
-from hireshire import claude_cli, paths
+from hireshire import codex_cli, paths
 from hireshire.applier import limits, reasons
 from hireshire.applier.config import ApplierSettings
+from hireshire.applier.sessions import ApplySession, UnreadableResult, make_session
 from hireshire.storage.db import Database, get_db
 
 logger = logging.getLogger(__name__)
 
 #: The per-job instructions each apply session follows.
 PROMPT_PATH = Path(__file__).resolve().parent / "apply_one.md"
+
+#: Stands in `apply_one.md` for however the running session names the browser tools.
+#: `build_prompt` substitutes it; nothing may reach a model unsubstituted.
+TOOL_PREFIX_TOKEN = "{{TOOL_PREFIX}}"
 
 #: Consecutive launch failures before the worker stops launching for the rest of the
 #: sweep. A missing Playwright MCP server or a logged-out CLI fails every job the same
@@ -256,18 +261,46 @@ def scratch_dir(dirs: SessionDirs, job: dict) -> Path:
     return dirs.out_dir / SCRATCH_DIRNAME / _safe_name(str(job.get("job_id") or "unknown"))
 
 
-def _mcp_config(output_dir: Path) -> str:
-    """The plugin's `.mcp.json`, with the browser server's output sent to `output_dir`.
+def _mcp_server(output_dir: Path) -> dict:
+    """The shipped browser server's definition, with its output sent to `output_dir`.
 
-    `--output-dir` only covers files the server names itself; an explicit filename
-    resolves against the root instead, which is why the prompt hands the model an
-    absolute `screenshot_path` — and why the screenshot lands in `out_dir` while
-    everything else lands in the per-session `scratch_dir`.
+    The one reader of `.mcp.json`, so the two providers cannot drift on the server's
+    command or its version pin. `--output-dir` only covers files the server names
+    itself; an explicit filename resolves against the root instead, which is why the
+    prompt hands the model an absolute `screenshot_path` — and why the screenshot lands
+    in `out_dir` while everything else lands in the per-session `scratch_dir`.
     """
     config = json.loads((paths.ROOT / ".mcp.json").read_text(encoding="utf-8"))
     server = config["mcpServers"]["playwright"]
     server["args"] = [*server.get("args", []), "--output-dir", str(output_dir)]
-    return json.dumps(config)
+    return config
+
+
+def _mcp_config(output_dir: Path) -> str:
+    """`_mcp_server` as the JSON string `claude -p --mcp-config` takes."""
+    return json.dumps(_mcp_server(output_dir))
+
+
+def _mcp_overrides(output_dir: Path) -> list[str]:
+    """`_mcp_server` as the `-c mcp_servers.playwright.*` pairs `codex exec` takes.
+
+    Codex configures MCP servers through config rather than a file, so the same server
+    reaches it as TOML overrides. Three of them are not optional:
+    `default_tools_approval_mode="approve"` is the only value that pre-approves the
+    server's tools — with `approval_policy="never"` and nothing else, every browser
+    call is denied, measured on the first navigate — and the startup timeout covers
+    `npx` fetching the package on a first run. Paths go through `codex_cli.toml_path`,
+    because a Windows path separator inside a basic TOML string is read as an escape
+    and would fail to parse.
+    """
+    server = _mcp_server(output_dir)["mcpServers"]["playwright"]
+    args = ", ".join(codex_cli.toml_path(a) for a in server.get("args", []))
+    return [
+        "-c", f"mcp_servers.playwright.command={codex_cli.toml_path(server['command'])}",
+        "-c", f"mcp_servers.playwright.args=[{args}]",
+        "-c", "mcp_servers.playwright.startup_timeout_sec=120",
+        "-c", 'mcp_servers.playwright.default_tools_approval_mode="approve"',
+    ]
 
 
 def _screenshot_name(job: dict) -> str:
@@ -276,8 +309,15 @@ def _screenshot_name(job: dict) -> str:
 
 
 def build_prompt(job: dict, settings: ApplierSettings, dirs: SessionDirs,
-                 resume_text: str) -> str:
-    """The shared per-job instructions, plus this job's inputs and how to finish."""
+                 resume_text: str, tool_prefix: str = "") -> str:
+    """The shared per-job instructions, plus this job's inputs and how to finish.
+
+    `tool_prefix` is how the session about to run names the browser tools, and it is
+    substituted into `apply_one.md` rather than forked into a second copy of it:
+    Claude Code namespaces them `mcp__playwright__*` while Codex exposes the bare
+    names. Everything else in that file — the no-fabrication rules, the bot-question
+    rule, the location rule, the Needs Attention labels — must stay in one place.
+    """
     inputs = {
         "job": {
             "job_id": job.get("job_id"),
@@ -315,7 +355,7 @@ def build_prompt(job: dict, settings: ApplierSettings, dirs: SessionDirs,
         "generate_cover_letter": settings.generate_cover_letter,
     }
     return (
-        PROMPT_PATH.read_text(encoding="utf-8")
+        PROMPT_PATH.read_text(encoding="utf-8").replace(TOOL_PREFIX_TOKEN, tool_prefix)
         + "\n\n## How to finish\n\n"
         "Return the outcome as your structured result. Do not run shell commands and "
         "do not record the application anywhere — HireShire records it from your "
@@ -326,7 +366,7 @@ def build_prompt(job: dict, settings: ApplierSettings, dirs: SessionDirs,
 
 
 async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
-                    resume_text: str) -> ApplyOutcome:
+                    resume_text: str, session: ApplySession) -> ApplyOutcome:
     """Run one apply session and return what it reported.
 
     Raises `ApplyLaunchError` when the session never reached a verdict. A timeout or
@@ -334,47 +374,32 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
     the form may already have been submitted — see the module docstring.
     """
     global _apply_proc
-    prompt = build_prompt(job, settings, dirs, resume_text)
-    schema = json.dumps(ApplyOutcome.model_json_schema())
+    prompt = build_prompt(job, settings, dirs, resume_text, session.tool_prefix)
 
-    # The prompt goes on stdin, never in argv: it opens with a Markdown heading today,
-    # but the SKILL.md it was split out of opened with `---`, which the CLI parsed as
-    # an option and failed every apply phase with. stdin also has no length limit and
-    # keeps the resume off the process table. `--no-session-persistence` for the
-    # scorer's reason: one transcript and one billed title per job, for nothing.
-    #
-    # The session brings its own browser server. A `claude -p` the engine starts is not
-    # guaranteed to load the plugin, and measured on a dev machine it did not: the
-    # `mcp__plugin_hireshire_playwright__*` tools were absent and only an unrelated
-    # user-level server was there. `--strict-mcp-config` pins it to the plugin's own
-    # `.mcp.json` whatever is installed, which also keeps the user's other MCP servers
-    # out of an unattended session — at the cost that the tools are named
-    # `mcp__playwright__*` here, which `apply_one.md` says.
+    # Everything provider-independent lives here and is written exactly once: the
+    # prompt, the scratch dir, the timeout, the teardown, and which endings are a
+    # deferral rather than a verdict. Only the argv and how the answer is read differ,
+    # and those are `hireshire.applier.sessions` — including why the prompt goes on
+    # stdin rather than in argv, for both CLIs.
     #
     # It runs in the user's workspace — see `session_dirs` — and never in the sweep's
     # own working directory, ROOT: every plugin update replaces that, and it is outside
-    # the roots the browser server may upload the resume from. The config goes as a
-    # JSON string, the same way `--json-schema` does, because it carries the session's
-    # `scratch_dir` — which the caller deletes once the outcome is recorded.
+    # the roots the browser server may upload the resume from. The session's
+    # `scratch_dir` reaches the browser server through its argv, and the caller deletes
+    # that directory once the outcome is recorded.
     scratch = scratch_dir(dirs, job)
     try:
         scratch.mkdir(parents=True, exist_ok=True)
         proc = await asyncio.create_subprocess_exec(
-            "claude", "-p",
-            "--permission-mode", "auto",
-            "--no-session-persistence",
-            "--mcp-config", _mcp_config(scratch),
-            "--strict-mcp-config",
-            "--output-format", "json",
-            "--json-schema", schema,
+            *session.argv(scratch, dirs),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=claude_cli.subscription_env(),
+            env=session.env(),
             cwd=str(dirs.cwd),
         )
     except OSError as exc:
-        raise ApplyLaunchError(f"could not start the claude CLI: {exc}") from exc
+        raise ApplyLaunchError(f"could not start the apply session: {exc}") from exc
 
     _apply_proc = proc
     try:
@@ -398,21 +423,21 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
         _apply_proc = None
 
     if proc.returncode != 0:
-        # The reason lives in the envelope's `is_error`/`result`, and it is reported in
-        # place of the raw stream it came from. Reading those by name is what fixed the
-        # night of nine `exited 1` deferrals that logged their token counts and nothing
-        # else — `envelope_failure` carries the argument.
-        out = stdout.decode(errors="replace")
-        raise ApplyLaunchError(
-            f"claude CLI exited {claude_cli.describe_exit(proc.returncode)}: "
-            f"{claude_cli.exit_detail(claude_cli.envelope_failure(out) or out, stderr)}"
-        )
+        # A non-zero exit is a DEFERRAL for either CLI: the session never reached a
+        # verdict about the job, so nothing is recorded and the backlog retries it. The
+        # session reads the reason out of its own stream — `claude` hides it in the
+        # envelope's `is_error`/`result`, `codex` in a `turn.failed` event — which is
+        # what fixed the night of nine `exited 1` deferrals that logged their token
+        # counts and nothing else.
+        raise ApplyLaunchError(session.exit_detail(stdout, stderr, proc.returncode))
 
-    raw = stdout.decode(errors="replace")
     try:
-        return ApplyOutcome.model_validate(claude_cli.unwrap_envelope(json.loads(raw)))
-    except (json.JSONDecodeError, RuntimeError, ValidationError):
-        logger.error("Unreadable apply result for %s: %s", job.get("job_id"), raw[:500])
+        return session.parse(stdout)
+    except UnreadableResult as exc:
+        # A VERDICT, not a deferral: the session exited cleanly, so it may already have
+        # clicked submit. Recorded as an `error` telling the user to check, because the
+        # alternative is a second application to the same employer.
+        logger.error("Unreadable apply result for %s: %s", job.get("job_id"), exc)
         return ApplyOutcome(
             status="error",
             error=reasons.SUBMIT_UNCONFIRMED,
@@ -455,6 +480,7 @@ async def run_apply_worker(
     resume_path = paths.resolve_data(settings.resume_path) if settings.resume_path else None
     blocked = None
     dirs: SessionDirs | None = None
+    session: ApplySession | None = None
     if resume_path is None or not resume_path.exists():
         blocked = f"resume not found at {settings.resume_path or '(not set)'}"
     else:
@@ -462,8 +488,23 @@ async def run_apply_worker(
             dirs = session_dirs(resume_path, run_dir)
         except OSError as exc:
             blocked = f"could not prepare the apply directory ({exc})"
+    if not blocked:
+        try:
+            session = make_session(settings)
+        except (EnvironmentError, ValueError) as exc:
+            # A missing `codex`, an empty or Claude-named `applier.model`, or a typo in
+            # `applier.provider`. Blocked, and therefore a DEFERRAL: no `applied` rows,
+            # no expiry pass, every job left shortlisted for the next sweep's backlog.
+            # There is deliberately no failover to the other CLI — see `sessions`.
+            blocked = f"apply provider unavailable ({exc})"
     if blocked:
         logger.error("Applier: %s — not applying to anything this sweep.", blocked)
+    else:
+        # Which CLI is about to drive the browser, once per sweep. The matcher has always
+        # printed its provider and model; the applier printing nothing is what let a
+        # stale `applier.provider` — a user who switched to Codex and thought they had
+        # switched back — run a whole sweep with nobody able to tell.
+        logger.info("Applier: driving the browser with %s", session.label)
 
     async def handle(job: dict, from_backlog: bool) -> None:
         job_id = job.get("job_id")
@@ -525,7 +566,7 @@ async def run_apply_worker(
         # browser can still hold a file, and tidying up is never worth a job.
         try:
             try:
-                outcome = await apply_one(job, settings, dirs, resume_text)
+                outcome = await apply_one(job, settings, dirs, resume_text, session)
             except ApplyLaunchError as exc:
                 stats["deferred"] += 1
                 state["consecutive"] += 1
@@ -563,10 +604,15 @@ async def run_apply_worker(
                         "No shortlisted match row to retire for %s — %s; it may be "
                         "re-queued from the backlog.", company, title)
             else:
+                # `from_backlog` is recorded here and nowhere else: this is the only
+                # writer that can produce a `submitted` row, and the Jobs Applied
+                # section is the only place the fact is shown. The `excluded` write
+                # never reaches that section, and the expiry pass is backlog-only by
+                # definition, so the flag would say nothing there.
                 await asyncio.to_thread(
                     db.record_applied, job_id, company, title, job.get("job_url") or "",
                     datetime.now(timezone.utc).isoformat(), outcome.status,
-                    outcome.screenshot, outcome.error,
+                    outcome.screenshot, outcome.error, from_backlog=from_backlog,
                 )
                 stats[outcome.status] += 1
                 logger.info("Applied (%s): %s — %s%s", outcome.status, company, title,

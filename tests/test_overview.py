@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from hireshire.applier import worker
+from hireshire.applier import reasons, worker
 from hireshire.models.job import Job, Location
 from hireshire import run_ids
 from hireshire.reporting import data, overview
@@ -107,10 +107,11 @@ def _match(db: Database, run_id: str, job_id: str, *, score=78, shortlisted=Fals
 
 
 def _apply(db: Database, job_id: str, status: str = "submitted",
-           error: str | None = None) -> None:
+           error: str | None = None, from_backlog: bool = False) -> None:
     db.record_applied(
         job_id, "acme", "Backend Engineer", f"https://example.com/jobs/{job_id}",
         "2026-09-09T08:00:00+00:00", status, None, error,
+        from_backlog=from_backlog,
     )
 
 
@@ -854,7 +855,9 @@ def test_a_never_scored_job_carries_no_score_key_at_all(tmp_path):
         html.split('id="ov-tail-data">')[1].split("</script>")[0].replace("<\\/", "</")
     )
     assert payload and "relevance_score" not in payload[0]
-    assert set(payload[0]) == {"t", "c", "l", "x", "u"}
+    # `r` is the two-word verdict and `j` the job id the "I applied" button needs.
+    # Neither is a score, which is the thing this exact set exists to hold the line on.
+    assert set(payload[0]) == {"t", "c", "l", "r", "x", "u", "j"}
     # The column still exists, so all four sections carry the same six — rendered
     # as a literal dash by a script that has no number to print. An absent key and
     # a printed dash are not the same thing; only the key would invite a verdict.
@@ -964,6 +967,65 @@ def _all_four(tmp_path) -> dict:
     return _snapshot(db)
 
 
+def test_the_tail_says_why_each_job_is_there(tmp_path):
+    """The one question this section could not answer. Its two halves get the reason
+    from two different columns — `matches.skip_reason` for the jobs a paid-for gate
+    dropped, `jobs.gate_reason` for the title gate's own — and both land in one
+    column."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j9", title="Barista")])
+    db.record_gate_reasons(RUN, [("j9", "title_excluded")])
+
+    html = overview.build(_snapshot(db), RUN)
+    payload = json.loads(
+        html.split('id="ov-tail-data">')[1].split("</script>")[0].replace("<\\/", "</")
+    )
+    by_id = {r["j"]: r for r in payload}
+    assert by_id["j9"]["r"] == "Title excluded"
+    # j3 is in the same section, from `matches`, dropped by the cross-encoder.
+    assert by_id["j3"]["r"] == "Below cutoff"
+    assert "<th>Reason</th>" in html
+    # The caps are on the columns they name, at the widths the grid above them uses.
+    # Reason sits ahead of Location, so a stale index truncates a two-word verdict and
+    # lets the locations — the thing the rule was written for — run off the right edge.
+    # On real data all three are needed at once: with any of them missing the last
+    # column, which is now the "I applied" button, goes off the edge of the box.
+    assert ".scroll-y td:nth-child(3) { max-width:  8rem;" in html   # company, as 8rem
+    assert ".scroll-y td:nth-child(5) { max-width: 11rem;" in html   # location, as 11rem
+    assert ".scroll-y td.wide { min-width: 12rem; }" in html         # title, as 12rem
+    assert ".scroll-y td:nth-child(4) {" not in html
+
+
+def test_a_tail_row_with_no_recorded_reason_reads_as_a_dash(tmp_path):
+    """Rows written before the column existed. An em dash, the same statement the
+    score columns make: nothing here is known, rather than a reason invented for it."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j9", title="Barista")])
+
+    html = overview.build(_snapshot(db), RUN)
+    payload = json.loads(
+        html.split('id="ov-tail-data">')[1].split("</script>")[0].replace("<\\/", "</")
+    )
+    assert next(r for r in payload if r["j"] == "j9")["r"] == "—"
+
+
+def test_the_tail_offers_the_one_outcome_its_jobs_can_have(tmp_path):
+    """A title-gated job was never shortlisted and has no `applied` row, so the only
+    thing left to record about it is that the user applied to it themselves. The cell
+    is in the row because the tail has no row body to put it in."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j9", title="Barista")])
+
+    html = overview.build(_snapshot(db), RUN)
+    assert overview._TAIL_MARK_LABEL in html
+    assert '__MARK_LABEL__' not in html
+    assert 'data-mark="applied"' in html
+    # The script that copies the command has to ship with it, or the button is inert.
+    assert "navigator.clipboard" in html
+    # A row with no id gets an empty cell, never a button that cannot name anything.
+    assert "r.j" in html and 'data-job="' in html
+
+
 def test_each_job_list_is_filterable_and_bounded(tmp_path):
     """The whole point of the layout. Three of these sections used to be unbounded
     flat lists beside one that was not, which made a sweep with 300 filtered jobs a
@@ -993,6 +1055,11 @@ def test_all_four_sections_carry_the_same_six_columns(tmp_path):
     html = overview.build(_all_four(tmp_path), RUN)
     for label in ("#", "Title", "Company", "Location", "LLM", "Cross"):
         assert html.count(f">{label}<") == 4, label
+    # And one column the tail has alone, deliberately: thousands of its rows are
+    # title-gate rejections, and why each one is there is the only question the
+    # section could not answer. The four above it say it as a `.job-sub` sentence
+    # instead, which a nowrap column could not hold.
+    assert html.count(">Reason<") == 1
 
 
 def test_a_row_carries_a_lowercased_filter_haystack(tmp_path):
@@ -1028,6 +1095,40 @@ def test_the_applied_stamp_stays_a_subline(tmp_path):
     """Status plus timestamp, which is two facts and not a column either."""
     html = overview.build(_snapshot(_populated(tmp_path)), RUN)
     assert '<span class="job-sub">submitted ' in _job_block(html, "j1")
+
+
+def test_an_application_off_the_backlog_says_so_and_only_it_does(tmp_path):
+    """The one thing that separates a backlog application from any other on the page.
+
+    Both rows read `submitted <time>`; without the clause the user cannot tell that
+    j6 was shortlisted by an earlier sweep and only applied to now. It is a plain
+    `job-sub`, not `warn` — a note about where the job came from, not a problem —
+    and it must not reach a job applied to by the sweep that found it.
+    """
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=80, shortlisted=True)
+    _apply(db, "j6", from_backlog=True)
+
+    html = overview.build(_snapshot(db), RUN)
+    backlog, ordinary = _job_block(html, "j6"), _job_block(html, "j1")
+    assert '<span class="job-sub">submitted ' in backlog
+    assert backlog.count(f"· {e(reasons.FROM_BACKLOG)}</span>") == 1
+    assert '<span class="job-sub">submitted ' in ordinary
+    assert reasons.FROM_BACKLOG not in ordinary
+
+
+def test_needs_attention_never_carries_the_backlog_clause(tmp_path):
+    """That section's question is what the user has to do now, so its line stays the
+    cause. A backlog job that stopped short is recorded the same way as any other."""
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j6")])
+    _match(db, RUN, "j6", score=80, shortlisted=True)
+    _apply(db, "j6", status="error", error="Posting closed", from_backlog=True)
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j6") == ["attention"]
+    assert reasons.FROM_BACKLOG not in overview.build(snap, RUN)
 
 
 def test_the_cross_encoder_column_reads_the_same_everywhere(tmp_path):
@@ -1212,10 +1313,12 @@ def test_both_hand_recorded_states_keep_the_partition_whole(tmp_path):
             assert len(_section_of(snap, job_id)) == 1, (run_id, job_id)
 
 
-def test_only_the_sections_the_user_must_act_on_carry_buttons(tmp_path):
+def test_each_section_offers_only_the_outcomes_it_can_actually_record(tmp_path):
     """A `file://` page cannot write to the database, so the button copies the command
-    that can. It belongs on the two sections where the user is the one who has to act —
-    not on a finished application, and not on a job the funnel already dropped."""
+    that can. Which buttons a section gets is not cosmetic: a job the funnel already
+    dropped has no `applied` row and is not shortlisted, so `decline_job` would change
+    nothing there — offering it would hand the user a command that reports
+    `nothing_to_change`. A finished application gets neither."""
     db = _populated(tmp_path)
     db.insert_jobs(RUN, [_job("j6")])
     _match(db, RUN, "j6", score=80, shortlisted=True, rerank=7.90)
@@ -1224,11 +1327,15 @@ def test_only_the_sections_the_user_must_act_on_carry_buttons(tmp_path):
     snap = _snapshot(db)
     html = overview.build(snap, RUN)
 
-    # j6 needs attention, j1 is a finished application, j2 lost on its score.
+    # j6 needs attention: both outcomes are open to the user.
     assert 'data-mark="applied"' in _job_block(html, "j6")
     assert 'data-mark="declined"' in _job_block(html, "j6")
+    # j2 lost on its score — they may have applied anyway, but there is nothing left
+    # to decline.
+    assert 'data-mark="applied"' in _job_block(html, "j2")
+    assert 'data-mark="declined"' not in _job_block(html, "j2")
+    # j1 is a finished application. Nothing to record.
     assert "job-mark" not in _job_block(html, "j1")
-    assert "job-mark" not in _job_block(html, "j2")
     # The command is the skill's, and the script that copies it shipped with the page.
     assert overview._MARK_COMMAND == "/hireshire:mark-applied"
     assert "navigator.clipboard" in html and "execCommand" in html
@@ -1246,8 +1353,10 @@ def test_a_page_with_nothing_to_act_on_ships_no_mark_script(tmp_path):
     html = overview.build(_snapshot(db), RUN)
     assert "navigator.clipboard" not in html
     # The markup, not the attribute selector or the comment the stylesheet carries
-    # either way.
-    assert '<button type="button"' not in html
+    # either way. It names the class rather than `<button type="button"`, because the
+    # theme toggle is a button too and ships on every page — the old spelling would
+    # pass or fail on attribute ordering, which is nobody's intent.
+    assert 'class="job-mark"' not in html
 
 
 # --- the per-company cap's hold line ----------------------------------------
@@ -1303,3 +1412,106 @@ def test_the_report_reads_the_cap_the_worker_would(tmp_path, monkeypatch):
     cfg.unlink()
     assert data._company_limit() is None
 
+
+# --- the theme toggle -------------------------------------------------------
+
+
+def _theme_script(html: str) -> str:
+    """The body-tail half of the toggle, isolated the way the state-script tests do it."""
+    return html.split('var TKEY = "hs-overview-theme"')[1]
+
+
+def test_every_scope_carries_the_theme_toggle(tmp_path):
+    """One control, three pages. The scopes share one renderer, so the toggle is added
+    once — but that is exactly the kind of thing a later scope-specific branch drops, and
+    a dashboard whose sibling has the button and it does not is worse than none having
+    it."""
+    db = _populated(tmp_path)
+    for snap, label in ((_snapshot(db), RUN),
+                        (data.overview_snapshot(db, None), None),
+                        (data.overview_snapshot(db, None, run_ids=[RUN]), DAY)):
+        html = overview.build(snap, label)
+        assert html.count('class="theme-toggle"') == 1
+        assert html.count('id="hs-theme"') == 1
+        # Inside the subtitle row, which is already a flex line carrying the chip.
+        subtitle = html.split('<p class="subtitle">')[1].split("</p>")[0]
+        assert 'class="theme-toggle"' in subtitle
+
+
+def test_the_toggle_ships_even_with_nothing_to_act_on(tmp_path):
+    """Unlike the filter and mark scripts, this one is not conditional on a list. The
+    theme is a property of the page, not of its rows, so an empty sweep's dashboard is
+    just as readable-or-not as a full one's."""
+    db = _db(tmp_path)
+    db.record_company(RUN, "acme", "greenhouse", "ok", 0, 0.1, None)
+    html = overview.build(_snapshot(db), RUN)
+    assert 'class="theme-toggle"' in html
+    assert 'var TKEY = "hs-overview-theme"' in html
+
+
+def test_the_stored_theme_is_applied_before_the_body(tmp_path):
+    """The whole reason `document()` has a head hook.
+
+    From the body tail the restore would paint the stylesheet's default and then swap
+    it — on every one of the meta refresh's reloads, which is the case the accordion
+    state script already exists for. So the stamp has to happen in `<head>`.
+    """
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    stamp = html.index('root.setAttribute("data-theme", v)')
+    assert stamp < html.index("<body>")
+    assert stamp < html.index('<p class="subtitle">')
+    # And the marker that reveals the button is stamped whatever storage does, so a
+    # throwing sessionStorage leaves a working control rather than a hidden one.
+    head = html.split("</head>")[0]
+    assert head.index('"data-hs-js"') < head.index("sessionStorage")
+
+
+def test_an_explicit_choice_wins_without_losing_the_system_default(tmp_path):
+    """Both stamps and the fallback, all three of which the page needs.
+
+    `[data-theme="dark"]` is what a click can reach; the media query is what an
+    un-stamped page follows; and the `:not([data-theme="light"])` guard inside it is the
+    only thing that lets a reader on a dark OS choose light. Drop any one and the toggle
+    is half a control.
+    """
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert ':root[data-theme="dark"] {' in html
+    assert "@media (prefers-color-scheme: dark) {" in html
+    assert ':root:not([data-theme="light"]) {' in html
+    # The label follows the same three places, or a stamped page keeps offering the
+    # theme it is already on.
+    assert ':root[data-theme="dark"] .theme-toggle .t-off { display: inline; }' in html
+    assert ':root:not([data-theme="light"]) .theme-toggle .t-off' in html
+
+
+def test_the_ua_chrome_follows_the_theme_too(tmp_path):
+    """`color-scheme` is what makes scrollbars and the filter inputs dark on a dark
+    page. It needs all three places for the reason the tokens do: a value defined only
+    inside the media query is simply absent in the un-stamped state."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert "color-scheme: light;" in html
+    assert html.count("color-scheme: dark;") == 2
+
+
+def test_the_theme_script_survives_storage_being_unavailable(tmp_path):
+    """Same posture as the state script: a file:// origin can be opaque enough that
+    touching storage throws, so the write is guarded and the click still works for the
+    page in front of the reader. The head half returns rather than dying."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    head = html.split("</head>")[0]
+    assert 'try { v = window.sessionStorage.getItem("hs-overview-theme"); }' in head
+    assert "catch (e) { return; }" in head
+    body = _theme_script(html)
+    assert "try { window.sessionStorage.setItem(TKEY, value); } catch (e) {}" in body
+    # The OS reading is guarded too — matchMedia is absent in old enough engines, and
+    # the page must not lose its toggle over the label's wording.
+    assert body.count("catch (e) {") >= 2
+
+
+def test_the_two_scripts_do_not_share_a_key(tmp_path):
+    """The accordion state and the theme are separate preferences, and three tests
+    isolate the state script by splitting on its key literal — a second occurrence
+    breaks the split rather than an assertion, which reads as nonsense."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert html.count('KEY = "hs-overview-open"') == 1
+    assert html.count('TKEY = "hs-overview-theme"') == 1
