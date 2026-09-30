@@ -499,6 +499,12 @@ async def run_apply_worker(
             blocked = f"apply provider unavailable ({exc})"
     if blocked:
         logger.error("Applier: %s — not applying to anything this sweep.", blocked)
+    else:
+        # Which CLI is about to drive the browser, once per sweep. The matcher has always
+        # printed its provider and model; the applier printing nothing is what let a
+        # stale `applier.provider` — a user who switched to Codex and thought they had
+        # switched back — run a whole sweep with nobody able to tell.
+        logger.info("Applier: driving the browser with %s", session.label)
 
     async def handle(job: dict, from_backlog: bool) -> None:
         job_id = job.get("job_id")

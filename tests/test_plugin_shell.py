@@ -496,3 +496,48 @@ def test_setup_asks_which_cli_applies_inside_the_auto_apply_branch():
     assert "Do not run either for them" in tail
     for command in ("scripts/setup_cli.py codex-check", "set applier --json"):
         assert command in text
+
+
+def test_every_provider_branch_writes_its_own_provider_key():
+    """A provider a branch offers but never writes leaves the previous one in place.
+
+    These config files live in the data directory and survive, so setup is editing what
+    the last run left behind rather than filling in a blank form. A branch that only
+    *talks about* its provider therefore breaks switching **back**: the user is told they
+    are on Claude while the file still says codex. It shipped that way twice — question
+    10's claude_code and API-key branches never wrote `provider` at all, and question
+    11's claude_code branch did not either — so this is checked over the ```bash blocks,
+    where the writes actually live, and not over the prose that describes them.
+
+    Scoring is the half with teeth: `ClaudeCodeBackend` passes `matcher.model` to
+    `claude -p` and validates nothing, so a Codex model left behind there fails every
+    scoring call in the sweep. Hence `model` is required alongside `provider`.
+    """
+    text = (ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+    blocks = _shell_blocks(text)
+
+    for phase, provider, needs_model in (
+        ("matcher", "claude_code", True),
+        ("matcher", "codex", True),
+        ("matcher", "openai", True),
+        ("applier", "claude_code", False),
+        ("applier", "codex", True),
+    ):
+        writes = [
+            line for line in blocks.splitlines()
+            if f"set {phase} --json" in line and f'"provider": "{provider}"' in line
+        ]
+        assert writes, f"{phase}.provider = {provider} is offered but never written"
+        if needs_model:
+            assert any('"model"' in line for line in writes), \
+                f"{phase}.provider = {provider} is written without a model"
+
+
+def test_setup_says_an_unwritten_setting_keeps_its_old_value():
+    """The reason those writes exist. Without it a later edit reads them as redundant —
+    every value is already the default on a fresh install — and drops them again."""
+    text = " ".join((ROOT / "skills" / "setup" / "SKILL.md")
+                    .read_text(encoding="utf-8").split())
+
+    assert "A key you do not write keeps its old value." in text
+    assert "survive updates and re-runs" in text

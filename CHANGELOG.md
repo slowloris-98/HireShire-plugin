@@ -16,6 +16,16 @@ All notable changes to this plugin are documented here. Versions follow
 - If the chosen CLI is missing or signed out, that sweep simply applies to nothing and
   says so in the log. Nothing is marked applied, and the same jobs are handed back to
   the next sweep rather than lost.
+- Each sweep's log now names the CLI that drove the browser, so you can see at a glance
+  which plan an unattended run was spending.
+
+### Fixed
+
+- **Changing your scoring or applying backend now takes effect.** Setup could describe a
+  choice without writing it — picking your Claude subscription after using Codex left the
+  old setting in place, so sweeps carried on using Codex. Every option now writes its own
+  settings, and for scoring that includes the model, which previously could be left as a
+  Codex model your Claude subscription would reject.
 
 ## [0.21.0] — 2026-09-29
 

@@ -1297,3 +1297,49 @@ def test_the_apply_prompt_names_the_tools_the_session_actually_has(tmp_path, lau
     assert "mcp__playwright__browser_navigate" in sent
     # And the file itself still carries the placeholder, so neither name is hardcoded.
     assert worker.TOOL_PREFIX_TOKEN in worker.PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def test_the_sweep_says_which_cli_applied(tmp_path, launcher, caplog):
+    """The matcher has always printed its provider and model; the applier printed
+    nothing, which is what let a stale `applier.provider` run a whole sweep unnoticed —
+    a user who switched to Codex and believed they had switched back.
+
+    Once per sweep, and never on the blocked path, where the error line has already said
+    why nothing will run.
+    """
+    import logging
+    caplog.set_level(logging.INFO)
+
+    _run(tmp_path, [_job("j1")])
+
+    assert "driving the browser with claude_code" in caplog.text
+
+
+def test_a_blocked_sweep_does_not_announce_a_session_it_never_built(
+        tmp_path, launcher, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    _run(tmp_path, [_job("j1")],
+         settings=_settings(tmp_path, provider="codex", model="gpt-5.6-terra"))
+
+    assert "driving the browser" not in caplog.text
+    assert "apply provider unavailable" in caplog.text
+
+
+def test_a_codex_model_left_behind_does_not_reach_the_claude_session(tmp_path, launcher):
+    """Switching back: setup rewrites `provider` but may leave `model` and `effort` as
+    the Codex ones. They are inert here — this session passes neither flag — and this
+    test exists so a future "pass the model through for symmetry" cannot silently send
+    `claude -p` a model it will reject.
+    """
+    calls, _, _ = launcher
+
+    stats, _ = _run(tmp_path, [_job("j1")], settings=_settings(
+        tmp_path, provider="claude_code", model="gpt-5.6-terra", effort="xhigh"))
+
+    argv = calls[0]["argv"]
+    assert stats["submitted"] == 1
+    assert "--model" not in argv and "--effort" not in argv
+    assert not any("gpt-5.6" in a for a in argv)

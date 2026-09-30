@@ -275,3 +275,19 @@ def test_there_is_no_failover_between_the_two_clis():
     src = Path(sessions.__file__).read_text(encoding="utf-8")
     code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
     assert "os.environ" not in code and "getenv" not in code
+
+
+def test_the_codex_label_names_the_model_being_billed(tmp_path, codex_dir):
+    """What the sweep logs. The model is included because it is what the ChatGPT plan is
+    billed for, and the setting most likely to be wrong just after a switch."""
+    assert CodexApplySession(_settings()).label == "codex/gpt-5.6-terra"
+    assert ClaudeApplySession(ApplierSettings()).label == "claude_code"
+
+
+def test_the_claude_label_names_no_model_even_when_one_is_configured(tmp_path):
+    """A Codex model left behind by a switch back must not be reported as the model the
+    sweep used — that session passes no `--model` at all."""
+    session = ClaudeApplySession(ApplierSettings(provider="claude_code",
+                                                model="gpt-5.6-terra"))
+    assert session.label == "claude_code"
+    assert "gpt-5.6" not in session.label

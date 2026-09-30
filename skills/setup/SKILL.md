@@ -178,8 +178,14 @@ rather than one call per question:
 So it is `set matcher --json '{"exclude_keywords": [...]}'` — **not**
 `'{"title_filter": {"exclude_keywords": [...]}}'`, which is rejected.
 
-Three things that trip people up:
+Four things that trip people up:
 
+- **A key you do not write keeps its old value.** These files live in the plugin's data
+  directory and survive updates and re-runs, so this skill is editing whatever the last
+  run left behind — it is not filling in a blank form. That matters most when the user is
+  *changing* an answer: write every key the answer covers, including the ones whose value
+  is the default, or a setting they just changed will stay as it was with nothing saying
+  so. The provider questions below say exactly which keys that means.
 - `matcher` and `funnel` are two whitelists over the *same* `matcher.yaml`. Writing
   one never disturbs the other, but the phase has to match the key.
 - List keys (`location_filter`, `enabled_platforms`, `include_keywords`,
@@ -595,6 +601,14 @@ Three things that trip people up:
      `effort` (low / medium / high / xhigh / max; low is the default and usually
      enough).
 
+     Write all three, not just the ones they changed — this is the branch whose `model`
+     the engine passes to `claude -p`, so a Codex model left over from a previous run
+     would fail every scoring call in the sweep:
+
+     ```bash
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "claude_code", "model": "<model>", "effort": "low"}'
+     ```
+
      This model judges jobs during a sweep and nothing else. It has no bearing on the
      exclusions, targets or profile drafted in question 6 — those are written by
      whichever model is running this setup conversation, which is why that list gets
@@ -621,7 +635,12 @@ Three things that trip people up:
      sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "codex", "model": "<model>", "effort": "low"}'
      ```
    - **An API key** (`openai` etc.) — tell them to put the key in their
-     environment and install `requirements-byo-key.txt` into the plugin venv.
+     environment and install `requirements-byo-key.txt` into the plugin venv. Write the
+     provider and a model for it, for the reason above:
+
+     ```bash
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "openai", "model": "<model>"}'
+     ```
 
 11. **Auto-apply?** → `applier.enable_applier`. Default to **no**, and only turn it
     on if they ask for it. If yes, gather two things before writing anything.
@@ -708,7 +727,11 @@ Three things that trip people up:
     **Which CLI drives the browser** → `applier.provider`. This is a separate choice
     from the scoring backend in question 10; they do not have to match.
 
-    - **Their Claude subscription** (`claude_code`) — the default. Nothing more to ask.
+    - **Their Claude subscription** (`claude_code`) — the default. Nothing more to ask,
+      but it is still written: `"provider": "claude_code"` is in the `set applier` call
+      below, and it has to stay there. Leaving it out keeps whatever the last run left in
+      the file, so a user moving *back* from Codex would be told they were on Claude
+      while the sweep went on using Codex.
     - **Their ChatGPT plan, through the Codex CLI** (`codex`). First check it can work,
       with the same command question 10 uses:
 
@@ -725,8 +748,16 @@ Three things that trip people up:
       When both are true, ask which model to use, offering only the `models` entries it
       printed (by `name`), and then `effort`, offering only that model's `efforts`
       list, with low as the default. Pin both — never leave `model` as a Claude name,
-      the engine refuses it for this provider. Add `"provider": "codex", "model":
-      "<model>", "effort": "low"` to the `set applier` call below.
+      the engine refuses it for this provider:
+
+      ```bash
+      sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set applier --json '{"provider": "codex", "model": "<model>", "effort": "low"}'
+      ```
+
+      A call of its own, rather than editing the long `set applier` below: these three
+      keys are the ones that change when the user switches, and burying them in that
+      JSON is how the default got left unwritten in the first place. Run it after the
+      call below, so it wins.
 
     If question 10 already ran `codex-check` in this conversation, reuse what it
     printed rather than running it again. Say nothing about whether Codex is installed
@@ -737,7 +768,7 @@ Three things that trip people up:
 
     ```bash
     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py \
-        set applier --json '{"enable_applier": true, "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "linkedin_url": "...", "github_url": "...", "portfolio_url": "...", "postal_code": "02139", "education": [{"school": "...", "degree": "B.S.", "field": "Computer Science", "graduation": "2024-05"}], "work_authorized": true, "requires_sponsorship": false, "willing_to_relocate": false, "gender": "decline", "race_ethnicity": "decline", "disability": "decline", "veteran_status": "decline", "max_per_company": 2, "company_window_hours": 72}'
+        set applier --json '{"enable_applier": true, "provider": "claude_code", "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "linkedin_url": "...", "github_url": "...", "portfolio_url": "...", "postal_code": "02139", "education": [{"school": "...", "degree": "B.S.", "field": "Computer Science", "graduation": "2024-05"}], "work_authorized": true, "requires_sponsorship": false, "willing_to_relocate": false, "gender": "decline", "race_ethnicity": "decline", "disability": "decline", "veteran_status": "decline", "max_per_company": 2, "company_window_hours": 72}'
     ```
 
     Tell them what the applier does with the rest, in two sentences: essay questions

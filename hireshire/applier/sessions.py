@@ -72,6 +72,18 @@ class ApplySession:
     #: bare Playwright tool names. Substituted into `apply_one.md`.
     tool_prefix: str = ""
 
+    @property
+    def label(self) -> str:
+        """What to call this session in the log, naming the model where one is chosen.
+
+        On the session rather than derived by the caller, for the same reason
+        `tool_prefix` is: only the provider knows which of its settings it actually
+        uses. The matcher has printed its `provider/model` since it gained a second
+        backend (`matcher.py`); the applier printing nothing is what let a stale
+        `applier.provider` run a whole sweep unnoticed.
+        """
+        raise NotImplementedError
+
     def argv(self, scratch: Path, dirs) -> list[str]:
         raise NotImplementedError
 
@@ -111,6 +123,12 @@ class ClaudeApplySession(ApplySession):
 
     def __init__(self, settings: ApplierSettings) -> None:
         self._settings = settings
+
+    @property
+    def label(self) -> str:
+        # No model: this session passes no `--model`, so naming one would claim a choice
+        # the sweep did not make — including a Codex model left behind by an earlier run.
+        return "claude_code"
 
     def argv(self, scratch: Path, dirs) -> list[str]:
         from hireshire.applier import worker
@@ -195,6 +213,12 @@ class CodexApplySession(ApplySession):
         self._disabled = [
             f for f in codex_cli.APPLY_DISABLED_FEATURES if known is None or f in known
         ]
+
+    @property
+    def label(self) -> str:
+        # With the model, because it is what the ChatGPT plan is billed for and the one
+        # setting most likely to be wrong after a switch.
+        return f"codex/{self._settings.model}"
 
     def argv(self, scratch: Path, dirs) -> list[str]:
         from hireshire.applier import worker

@@ -214,6 +214,32 @@ Consequences already worked out, which should not be re-derived:
   off for the whole sweep. So `_quote_ambiguous` asks PyYAML about every string it
   writes, and validation runs on the **PyYAML re-parse of the rendered text**, never
   on ruamel's tree — the tree is what passed that file. Do not "simplify" either back.
+- **Setup edits what the last run left behind, so every branch must write its own keys
+  — including the ones whose value is the default.** The config lives in DATA and
+  survives updates and re-runs, so a key setup does not write keeps its old value. That
+  is invisible on a fresh install, where every default is already correct, and it breaks
+  the moment a user *changes* an answer. It shipped that way on all four provider
+  branches: question 10's `claude_code` and API-key options and question 11's
+  `claude_code` option described a provider and never wrote one, so choosing Claude
+  after using Codex left `provider: codex` in the file and the sweep carried on using
+  Codex while the user had just been told otherwise.
+
+  The scoring half also has to write `model`, and that is the sharper edge:
+  `ClaudeCodeBackend` passes `matcher.model` to `claude -p` and validates nothing (the
+  `codex_cli.is_claude_model` guard runs only in the Codex direction), so a Codex model
+  left behind fails every scoring call — the breaker trips and the remainder is
+  `backend_unavailable`, which is at least retryable and printed. **No guard was added
+  for that direction**: a name the regex does not match can still be legitimate, a
+  Bedrock `us.anthropic.claude-*` among them, and the console already prints
+  `provider/model` on every sweep. `applier.model` is genuinely inert for the Claude
+  session, which passes no `--model`, so a leftover there is harmless — and
+  `tests/test_apply_worker.py` pins that, so restoring the flag "for symmetry" cannot
+  break switching back quietly.
+
+  `tests/test_plugin_shell.py::test_every_provider_branch_writes_its_own_provider_key`
+  checks this over the skill's `bash` blocks rather than its prose, because a branch that
+  only *describes* its write is exactly the bug. Same family as the "a shipped default
+  never reaches an existing install" rule behind `exclude_companies`/`amazon`.
 
 ### The funnel is the interesting part
 
