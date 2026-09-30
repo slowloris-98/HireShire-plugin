@@ -9,9 +9,10 @@ file-level internals.
 
 Everything runs on your machine except scoring. The sweep and the funnel never send
 anything out; only the jobs that survive the funnel are sent to Claude, each with
-your resume so it can be judged against it, on your own subscription. (With the
-`codex` provider the judge is an OpenAI model on your ChatGPT plan instead, called
-through the local Codex CLI the same way.)
+your resume so it can be judged against it, on your own subscription. (With
+`matcher.provider: codex` the judge is an OpenAI model on your ChatGPT plan instead,
+called through the local Codex CLI the same way; `applier.provider` does the same for
+the sessions that fill in applications, and the two are chosen separately.)
 
 ```mermaid
 flowchart TD
@@ -42,7 +43,7 @@ flowchart TD
     FUN -->|"survivors only"| CLAUDE
     CLAUDE --> OUT
     CLAUDE -->|"each shortlisted job, straight away"| APP
-    APP -->|"on: a browser fills and submits"| EMP
+    APP -->|"on: Claude or Codex drives a browser, fills and submits"| EMP
 
     classDef off fill:#f5f5f5,stroke:#9e9e9e,color:#424242,stroke-dasharray:4 3
     classDef away fill:#fff4e5,stroke:#e69100,color:#7a4f00

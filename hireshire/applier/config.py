@@ -22,6 +22,15 @@ RaceEthnicity = Literal[
 Disability = Literal["", "yes", "no", "decline"]
 VeteranStatus = Literal["", "protected_veteran", "not_protected_veteran", "decline"]
 
+# Which CLI drives the apply browser. Deliberately NOT `config_writer.PROVIDERS`, the
+# scoring list: applying needs a CLI that can drive the Playwright MCP browser, and an
+# API-key provider has no browser to drive. Empty means `claude_code`, exactly as an
+# empty `matcher.provider` does.
+APPLY_PROVIDERS = ("claude_code", "codex")
+
+#: Reasoning levels the apply session accepts, the same set the judge takes.
+APPLY_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 
 def answer_options(kind: Any) -> list[str]:
     """The values a self-identification field accepts, never-asked included."""
@@ -58,7 +67,6 @@ class ApplierSettings(BaseModel):
     # `applied` row — how a session that failed to launch gets retried, since the
     # matcher never streams a judged job twice.
     backlog_hours: int = 72
-    max_steps: int = 40
 
     # At most `max_per_company` submitted applications to one company (board_token)
     # per `company_window_hours`; 0 turns the cap off. A job over the cap is held, not
@@ -125,7 +133,38 @@ class ApplierSettings(BaseModel):
         return v
 
     generate_cover_letter: bool = True
-    model: str = "gpt-4o-mini"
+
+    # Which CLI drives the browser for each application. Empty means `claude_code`, so
+    # an install predating this keeps the session it already had. There is NO runtime
+    # failover between the two, mirroring `matcher.make_backend`: a provider that
+    # cannot be built blocks the applier for the sweep, which leaves every job
+    # shortlisted for the backlog — a deferral, never a verdict about the job.
+    provider: str = ""
+    # No default, the same rule as `matcher.model`: setup pins one from
+    # `setup_cli.py codex-check`, and `codex` with an empty model raises rather than
+    # guessing. Ignored by the `claude_code` session, which passes no `--model` at all.
+    model: str = ""
+    effort: str = "low"
+
+    @field_validator("provider")
+    @classmethod
+    def _known_provider(cls, v: str) -> str:
+        # Unset must mean claude_code while a TYPO must fail loudly — the two cannot be
+        # allowed to collapse into each other. A rejected value fails `ApplierSettings`,
+        # which `run_apply_worker` turns into the blocked deferral above; falling back
+        # instead would silently apply on a CLI the user did not choose.
+        if v and v not in APPLY_PROVIDERS:
+            raise ValueError(
+                f"provider must be one of {', '.join(APPLY_PROVIDERS)} (or empty)"
+            )
+        return v
+
+    @field_validator("effort")
+    @classmethod
+    def _known_effort(cls, v: str) -> str:
+        if v not in APPLY_EFFORTS:
+            raise ValueError(f"effort must be one of {', '.join(APPLY_EFFORTS)}")
+        return v
 
 
 class ApplierConfig(BaseModel):

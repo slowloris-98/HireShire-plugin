@@ -4,6 +4,19 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.22.0] — 2026-09-29
+
+### Added
+
+- **Auto-apply can run on your ChatGPT plan.** `/hireshire:setup` now asks which CLI
+  should drive the browser when you switch auto-apply on — your Claude subscription or
+  your ChatGPT plan through the Codex CLI. It is a separate choice from the scoring
+  backend, so you can put the judging on one plan and the applying on the other, and
+  leaving it alone keeps everything as it was.
+- If the chosen CLI is missing or signed out, that sweep simply applies to nothing and
+  says so in the log. Nothing is marked applied, and the same jobs are handed back to
+  the next sweep rather than lost.
+
 ## [0.21.0] — 2026-09-29
 
 ### Added

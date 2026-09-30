@@ -7,7 +7,7 @@ anywhere else, and do not apply to any other job.
 
 The browser tools you need are `browser_navigate`, `browser_snapshot`, `browser_type`,
 `browser_click`, `browser_select_option`, `browser_file_upload` and
-`browser_take_screenshot`, named `mcp__playwright__browser_navigate` and so on: the
+`browser_take_screenshot`, named `{{TOOL_PREFIX}}browser_navigate` and so on: the
 sweep that started you loads the plugin's browser server directly.
 
 The resume is the ground truth for every question about the applicant, followed by the

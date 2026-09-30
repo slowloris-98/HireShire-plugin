@@ -32,7 +32,8 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 from hireshire import paths
 from hireshire.applier.config import (
-    ApplierSettings, Disability, Gender, RaceEthnicity, VeteranStatus, answer_options,
+    APPLY_PROVIDERS, ApplierSettings, Disability, Gender, RaceEthnicity, VeteranStatus,
+    answer_options,
 )
 from hireshire.config import ScraperSettings
 from hireshire.funnel.config import FunnelConfig
@@ -249,6 +250,22 @@ PHASE_SPECS: dict[str, PhaseSpec] = {
             "enable_applier": FieldSpec(
                 ("settings", "enable_applier"), "bool",
                 "Run the applier after each pipeline run.",
+            ),
+            # The applier's own backend, independent of `matcher.provider`: the judge
+            # is one text call and this drives a browser for minutes, so a user may
+            # well want a different plan behind each.
+            "provider": FieldSpec(
+                ("settings", "provider"), "enum",
+                "Which CLI drives the apply browser. Empty means claude_code.",
+                options=list(APPLY_PROVIDERS),
+            ),
+            "model": FieldSpec(
+                ("settings", "model"), "str",
+                "Codex model for applying; ignored for claude_code.",
+            ),
+            "effort": FieldSpec(
+                ("settings", "effort"), "enum",
+                "Codex reasoning effort for applying.", options=EFFORTS,
             ),
             "resume_path": FieldSpec(
                 ("settings", "resume_path"), "str", "Resume PDF to upload.",

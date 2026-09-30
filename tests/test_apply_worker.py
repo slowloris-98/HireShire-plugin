@@ -182,8 +182,12 @@ def test_the_session_brings_its_own_browser_server(tmp_path, launcher):
     assert args[:len(shipped["mcpServers"]["playwright"]["args"])] == \
         shipped["mcpServers"]["playwright"]["args"]
     assert args[args.index("--output-dir") + 1] == str(_applied(tmp_path) / ".browser" / "j1")
-    # The per-job rules must name the tools as that server exposes them.
-    assert "mcp__playwright__browser_navigate" in worker.PROMPT_PATH.read_text(encoding="utf-8")
+    # The per-job rules must name the tools as that server exposes them — checked on
+    # the prompt the session was actually sent, not on the file, so this also proves
+    # `TOOL_PREFIX_TOKEN` was substituted for the provider that ran.
+    sent = calls[0]["proc"].sent.decode("utf-8")
+    assert "mcp__playwright__browser_navigate" in sent
+    assert worker.TOOL_PREFIX_TOKEN not in sent
 
 
 def _inputs(call) -> dict:
@@ -1236,3 +1240,60 @@ def test_hold_until_is_when_the_count_drops_below_the_cap(tmp_path):
     assert abs((until - (now + timedelta(hours=22))).total_seconds()) < 1
     assert limits.hold_until(stamps[:1], s, now) is None
 
+
+
+# --- which CLI applies, and what happens when none can ------------------------------
+
+def test_an_unset_provider_still_runs_the_claude_session(tmp_path, launcher):
+    """Empty `applier.provider` means claude_code, so an install predating the setting
+    keeps the session it already had."""
+    calls, _, _ = launcher
+
+    stats, db = _run(tmp_path, [_job("j1")])
+
+    assert stats["submitted"] == 1
+    assert calls[0]["argv"][0] == "claude"
+
+
+def test_an_unbuildable_provider_records_nothing_and_leaves_every_job_pending(
+        tmp_path, launcher, monkeypatch, caplog):
+    """The whole contract of having a provider choice at all.
+
+    There is no failover to the other CLI, mirroring `matcher.make_backend` — so a
+    missing `codex`, an empty `applier.model` or a typo has to be a DEFERRAL: nothing
+    launched, no `applied` rows, no expiry rows, and every job still shortlisted for the
+    next sweep's backlog. Retrying the job on Claude instead would be a second browser
+    session against a form the first may already have submitted; recording anything
+    would retire a job over an install's problem.
+    """
+    calls, _, _ = launcher
+    monkeypatch.setattr("shutil.which", lambda name: None)      # no codex on PATH
+    db = Database(tmp_path / "test.db")
+    _stale(db)
+
+    stats, _ = _run(tmp_path, [_job("j1")],
+                    settings=_settings(tmp_path, provider="codex", model="gpt-5.6-terra"),
+                    db=db, backlog=True)
+
+    assert calls == [], "a session was launched with no usable provider"
+    assert _statuses(db) == {}, "a job was retired over an unavailable CLI"
+    assert stats["expired"] == 0 and stats["submitted"] == 0
+    for row in db._conn.execute("SELECT shortlisted FROM matches"):
+        assert row["shortlisted"] == 1, "the backlog can no longer retry this job"
+    assert "apply provider unavailable" in caplog.text, \
+        "the user was not told why nothing applied"
+
+
+def test_the_apply_prompt_names_the_tools_the_session_actually_has(tmp_path, launcher):
+    """The prompt's tool naming follows the provider, and nothing reaches a model with
+    the placeholder still in it — a session told to call tools it does not have cannot
+    apply to anything."""
+    calls, _, _ = launcher
+
+    _run(tmp_path, [_job("j1")])
+    sent = calls[0]["proc"].sent.decode("utf-8")
+
+    assert worker.TOOL_PREFIX_TOKEN not in sent
+    assert "mcp__playwright__browser_navigate" in sent
+    # And the file itself still carries the placeholder, so neither name is hardcoded.
+    assert worker.TOOL_PREFIX_TOKEN in worker.PROMPT_PATH.read_text(encoding="utf-8")

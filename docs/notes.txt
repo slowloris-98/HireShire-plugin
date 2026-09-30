@@ -1,14 +1,9 @@
-Add light mode to the dashboard (if possible in static file) - done
-
-Add the applied button in the jobs filtered as well as total jobs seen section as well
-Total jobs should also have a column for two word reason why they were rejected (column should be before location)
-
 Can we add this plugin in codex?
 
-If a backlog application is applied in current run, it should also reflect in the applied role
-(a single line that it was backlog from last run) - done
+Reduce the cost for applier. maybe start the session in different view (maybe large moniter size) 
+    so that a single ss can fetch all fields
 
-Ask user if they want to use codex for applying similar to scoring, and fall back to claude, similar to scoring.
+Ask user if they want to use codex for applying similar to scoring, and fall back to claude, similar to scoring. - done
 
 smart applier:
     - a human check to approve before applying into jobs
@@ -18,13 +13,7 @@ smart applier:
 3. db balooning and log balooning for users over time
 4. does db load into memory during the sweep?
 
-
-
-4. setup recommendations:
-    option for a single run in the orchestrate. currently it reccurs everytime 
-        - leave it, we want users to use reccuring runs
-
-
 New companies:
 
 Qualcomm
+RV tech

@@ -910,11 +910,12 @@ own `config/<phase>.yaml`. All tabular data lives in one SQLite DB (WAL); every
 phase writes rows keyed by a shared `run_id`.
 
 Applying is **not** a third engine phase with a `main()`, but it is on the queue. The
-work is driving a browser, and that stays on the Claude side of the line: forms differ
+work is driving a browser, and that stays on the agent side of the line: forms differ
 per employer and the questions need a model that has read the resume.
 `hireshire/applier/worker.py` is only the consumer — for each shortlisted job it
-launches one `claude -p` session over `apply_one.md` (the per-job rules), which uses the plugin's Playwright MCP and returns an
-`ApplyOutcome` via `--json-schema`; the engine records it. `orchestrate.py` wires the
+launches one CLI session over `apply_one.md` (the per-job rules), which uses the plugin's Playwright MCP and returns an
+`ApplyOutcome` as a structured result; `applier.provider` decides whether that is
+`claude -p` or `codex exec`, and the engine records what comes back. `orchestrate.py` wires the
 phases over asyncio queues with exactly one `None` sentinel per queue, always sent in
 a `finally`:
 
@@ -1086,6 +1087,60 @@ Four things about the applier that are easy to break:
   plugin — measured, it did not, and the namespaced tools were simply absent. So in
   that session the tools are `mcp__playwright__*`, and `apply_one.md` names them that
   way. Do not "fix" the worker to use the namespaced names.
+- **Either CLI can drive the browser, and there is no failover between them.**
+  `applier.provider` (empty → `claude_code`, or `codex`) picks one session class in
+  `hireshire/applier/sessions.py`, which mirrors `matcher.make_backend` deliberately:
+  one provider, built once, and a raise if it cannot be. `run_apply_worker` turns that
+  raise into its existing **`blocked`** state — no `applied` rows, no expiry pass, every
+  job left shortlisted for the backlog. That is forced, not chosen: retrying the job on
+  the other CLI would be a second browser session against a form the first may already
+  have submitted, which is the one thing the applier must never risk. So the pydantic
+  validator on `provider` **rejects a typo** rather than falling back, because "unset"
+  and "misspelled" must not collapse into each other. The keys are the applier's own
+  (`provider`/`model`/`effort` in `applier.yaml`), not `matcher.*`: the judge is one text
+  call and this drives a browser for minutes. `applier.model` has no default for the
+  same reason `matcher.model` has none, and `codex_cli.is_claude_model` is shared by
+  both so a `sonnet` cannot reach `codex exec`.
+
+  Four things about the codex session were settled by probing codex-cli 0.157.0 against
+  a real form, and each fails silently if undone:
+
+  - **`approval_policy="never"` alone denies every MCP tool call** — measured, on the
+    first navigate: `"MCP tool call requires approval, but approval policy is never"`.
+    The browser never moves. `mcp_servers.playwright.default_tools_approval_mode` must
+    be `"approve"`; the accepted values are `auto | prompt | writes | approve` and
+    **`auto` is not the permissive one**. It is set in `worker._mcp_overrides`, which
+    renders the same `ROOT/.mcp.json` the Claude session gets as `-c` pairs, so the two
+    providers cannot drift on the server's command or version pin.
+  - **The sandbox is `workspace-write`, not the judge's `read-only`.** Codex's sandbox
+    reaches the MCP server's operations and not merely its own shell: under `read-only`
+    a `file://` navigation failed outright. No `network_access` override is needed —
+    the browser is its own process. The writable root is `-C`, which is `dirs.cwd`, and
+    `session_dirs` already guarantees cwd contains `out_dir`, so the screenshot is
+    inside the writable root by construction. `--ignore-user-config` is the
+    `--strict-mcp-config` analogue: it keeps the user's own servers out of an
+    unattended session.
+  - **Codex exposes MCP tools under their BARE names**, with the server as a separate
+    event field. So `apply_one.md` carries one `{{TOOL_PREFIX}}` token that
+    `build_prompt` substitutes, and is **never forked** — the no-fabrication rules, the
+    bot-question rule, the location rule and the Needs Attention labels stay in one
+    place. A test asserts no prompt reaches a model with the token still in it.
+  - **A failed turn is `SUBMIT_UNCONFIRMED`, not a deferral**, and this is where the
+    mapping deliberately differs from `CodexBackend`'s, which raises for the matcher to
+    retry. A session that drove a form for ten minutes and then failed its turn may
+    already have submitted it. A *non-zero exit* is still a deferral for both CLIs.
+    Reading the answer stays `codex_cli.parse_events`, i.e. the **last** `agent_message`,
+    and here that is load-bearing rather than tidy: one real run emitted three premature
+    `{"status":"submitted","screenshot":null}` messages before the form had been touched.
+
+  `--output-schema` does survive with MCP tools active at this version with this
+  `--disable` list, which openai/codex#15451 warns it may not. That was the gate the
+  feature had to clear before any of it was written, and it is worth re-checking rather
+  than assuming if a Codex upgrade starts returning unreadable outcomes.
+  `codex_cli.APPLY_DISABLED_FEATURES` holds the same 15 names as the judge's list on
+  purpose — an MCP server is *config*, not a feature, so nothing had to be lifted, and
+  `browser_use`/`computer_use` stay off precisely *because* this session has a browser:
+  Codex's own would honour neither `--output-dir` nor the roots rule above.
 - **Screenshots go to the run's own folder; the session runs in the WORKSPACE.** Those
   are two different questions and `worker.session_dirs` answers them separately, from
   the `run_dir` `orchestrate` hands the worker — the same `results_dir` the CSV, JSON
@@ -1269,8 +1324,11 @@ suppresses Rich in favour of `logging` — required under the monitor.
     tally's `caches=False` keeps the no-cache warning from blaming the prompt.
   - OpenAI counts cached tokens *inside* `input_tokens`, and there is no price, so
     `cost_usd` is None rather than 0.
-  `model` has no Codex default: setup pins one from `setup_cli.py codex-check`, and
-  the backend refuses a Claude name, because `provider` alone can be switched.
+  Neither `matcher.model` nor `applier.model` has a Codex default: setup pins one from
+  `setup_cli.py codex-check`, and both refuse a Claude name through the shared
+  `codex_cli.is_claude_model`, because `provider` alone can be switched. The applier
+  reaches `codex exec` with its own rules — see the applier bullets above, and note its
+  sandbox and approval settings are **not** the judge's.
 - **`userConfig` is not used** for anything load-bearing — its enable-time prompt
   has open bugs. The `setup` skill is the source of truth.
 - **`.claude/settings.json` is gitignored, and must stay that way.** Same argument as

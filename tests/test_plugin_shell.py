@@ -467,3 +467,32 @@ def test_requirements_exclude_the_dropped_heavy_dependencies():
         assert dropped not in reqs
     # The reranker must not add a package — CrossEncoder ships inside this one.
     assert "sentence-transformers" in reqs
+
+
+def test_setup_asks_which_cli_applies_inside_the_auto_apply_branch():
+    """The apply-provider question belongs to question 11, not a question of its own.
+
+    Asked outside that branch it would run `codex-check` for users who never enabled
+    the applier and write a setting with no effect. It also has to reuse the two command
+    shapes `scripts/approve.py` already recognises — a new subcommand would widen a
+    security boundary for a question `set applier` already answers.
+    """
+    text = (ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+
+    question = text.index("**Which CLI drives the browser**")
+    assert text.index("How many applications may go to one company?") < question, \
+        "the apply-provider question escaped question 11's auto-apply branch"
+    # The one that writes the gate, which is the call the answer joins — not the
+    # resume-path write far earlier in the skill.
+    writes_the_gate = text.index('set applier --json \'{"enable_applier": true')
+    assert question < writes_the_gate, "the answer is written before it is asked"
+
+    # It must say the choice is independent of the scoring backend, or a user who picked
+    # Codex for scoring will assume this followed.
+    assert "separate choice" in text[question:question + 400]
+    # And it must not offer to sign the user in: the browser sign-in is theirs to do.
+    # Whitespace-normalised, because the prose is wrapped and a phrase spans lines.
+    tail = " ".join(text[question:writes_the_gate].split())
+    assert "Do not run either for them" in tail
+    for command in ("scripts/setup_cli.py codex-check", "set applier --json"):
+        assert command in text

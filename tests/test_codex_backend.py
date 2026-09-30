@@ -335,3 +335,13 @@ def test_the_setup_check_lists_only_listed_models_and_judge_efforts():
     models = codex_cli._listed_models(json.dumps(catalog).encode())
 
     assert models == [{"model": "gpt-a", "name": "GPT-A", "efforts": ["low", "max"]}]
+
+
+def test_a_claude_model_name_is_recognised_wherever_codex_is_used():
+    """One regex, shared: the applier accepts a Codex model from config too, and two
+    copies of this rule would drift. `provider` can be switched on its own, so the
+    matcher's shipped `sonnet` must never reach `codex exec`."""
+    for name in ("sonnet", "claude-sonnet-5", "Opus", "haiku", "fable-5-1"):
+        assert codex_cli.is_claude_model(name), name
+    for name in ("gpt-5.6-terra", "o3", "", "sonnetish"):
+        assert not codex_cli.is_claude_model(name), name

@@ -147,10 +147,10 @@ as a ten-item form. Confirm what you understood before writing.
 
 **Use `AskUserQuestion` for every question below that has a small set of sensible
 answers**: locations, posting age, match threshold, jobs per run, job boards, scoring
-backend, scoring effort, poll interval, auto-apply, the company limit, and the title-exclusion list you
-draft in question 6. This skill already names a default or a recommendation for almost
-all of them — put that option first and mark it recommended. The user gets one tap
-instead of typing, and "Other" is always there for anyone who wants something else, so
+backend, scoring effort, poll interval, auto-apply, the company limit, which CLI applies,
+and the title-exclusion list you draft in question 6. This skill already names a
+default or a recommendation for almost all of them — put that option first and mark it
+recommended. The user gets one tap instead of typing, and "Other" is always there for anyone who wants something else, so
 offering options never narrows what they can say.
 
 Three answers stay free text, because they are open-ended and a menu would constrain
@@ -173,7 +173,7 @@ rather than one call per question:
 | `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `poll_interval_hours`, `workspace_dir` |
 | `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
 | `funnel` | `targets`, `top_k`, `rerank_min_score` |
-| `applier` | `enable_applier`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `github_url`, `portfolio_url`, `postal_code`, `education`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate`, `gender`, `race_ethnicity`, `disability`, `veteran_status`, `max_per_company`, `company_window_hours` |
+| `applier` | `enable_applier`, `provider`, `model`, `effort`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `github_url`, `portfolio_url`, `postal_code`, `education`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate`, `gender`, `race_ethnicity`, `disability`, `veteran_status`, `max_per_company`, `company_window_hours` |
 
 So it is `set matcher --json '{"exclude_keywords": [...]}'` — **not**
 `'{"title_filter": {"exclude_keywords": [...]}}'`, which is rejected.
@@ -704,6 +704,33 @@ Three things that trip people up:
     hours (`5`, `168`). If what they typed cannot be read that way, ask once more; do
     not guess. If they pick **No limit**, say in one sentence that every shortlisted
     job at one employer will then go out in the same sweep.
+
+    **Which CLI drives the browser** → `applier.provider`. This is a separate choice
+    from the scoring backend in question 10; they do not have to match.
+
+    - **Their Claude subscription** (`claude_code`) — the default. Nothing more to ask.
+    - **Their ChatGPT plan, through the Codex CLI** (`codex`). First check it can work,
+      with the same command question 10 uses:
+
+      ```bash
+      sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py codex-check
+      ```
+
+      It prints JSON with `installed`, `logged_in` and `models`. If `installed` is
+      false, tell them to install Codex; if `logged_in` is false, tell them to run
+      `codex login` in their own terminal and sign in with ChatGPT. Do not run either
+      for them — the sign-in opens a browser and is theirs to do. Re-run the check once
+      they say it is done, and offer `claude_code` if they would rather not.
+
+      When both are true, ask which model to use, offering only the `models` entries it
+      printed (by `name`), and then `effort`, offering only that model's `efforts`
+      list, with low as the default. Pin both — never leave `model` as a Claude name,
+      the engine refuses it for this provider. Add `"provider": "codex", "model":
+      "<model>", "effort": "low"` to the `set applier` call below.
+
+    If question 10 already ran `codex-check` in this conversation, reuse what it
+    printed rather than running it again. Say nothing about whether Codex is installed
+    or signed in until that command has told you.
 
     Once they have heard the warning below, write it all in one call, alongside the
     gate:
