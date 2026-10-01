@@ -321,3 +321,93 @@ def test_lever_fields_stay_separated_after_stripping():
     assert "ends-herestarts-here" not in job.content_text
     assert "ends-here starts-here" == job.content_text
 
+
+# Greenhouse returns `content` HTML-entity-escaped. `Job.strip_html` makes a single
+# BeautifulSoup pass, which on escaped input decodes the entities and leaves the tags
+# as visible text -- so the reranker and the judge read tag soup unless the scraper
+# unescapes first.
+GREENHOUSE_ENTRY = {
+    "id": 77001,
+    "title": "Staff Platform Engineer",
+    "absolute_url": "https://boards.greenhouse.io/acme/jobs/77001",
+    "updated_at": "2026-09-01T12:00:00-04:00",
+    "location": {"name": "Remote - US"},
+    "content": (
+        "&lt;h2&gt;&lt;strong&gt;About Acme&lt;/strong&gt;&lt;/h2&gt;\n"
+        "&lt;p&gt;We run the platform.&lt;/p&gt;\n"
+        "&lt;ul&gt;&lt;li&gt;5+ years of backend experience&lt;/li&gt;"
+        "&lt;li&gt;Go &amp;amp; Kubernetes&lt;/li&gt;&lt;/ul&gt;"
+    ),
+}
+
+
+def test_greenhouse_escaped_markup_does_not_reach_the_model():
+    """The regression that matters: escaped content left tags as literal text."""
+    from hireshire.scrapers.greenhouse import _parse_job
+
+    job = _parse_job("acme", GREENHOUSE_ENTRY, None,
+                     datetime.now(timezone.utc), detail_required=False)
+    text = job.content_text
+
+    # No markup survives, in either form.
+    assert "<" not in text and ">" not in text
+    assert "&lt;" not in text and "&gt;" not in text and "&amp;" not in text
+    # The posting itself does survive, requirement included.
+    assert "About Acme" in text
+    assert "We run the platform." in text
+    assert "5+ years" in text
+    # A nested entity decodes exactly once: `&amp;amp;` -> `&amp;` -> `&`.
+    assert "Go & Kubernetes" in text
+
+
+def test_greenhouse_one_unescape_pass_is_the_contract():
+    """Pin that a single pass is enough, so nobody later 'hardens' this into a loop
+    -- looping would decode text that legitimately contains an escaped tag."""
+    import html as html_mod
+
+    from hireshire.scrapers.greenhouse import _parse_job
+
+    now = datetime.now(timezone.utc)
+    once = _parse_job("acme", GREENHOUSE_ENTRY, None, now, detail_required=False)
+    twice = _parse_job(
+        "acme",
+        {**GREENHOUSE_ENTRY, "content": html_mod.unescape(GREENHOUSE_ENTRY["content"])},
+        None, now, detail_required=False,
+    )
+    assert once.content_text == twice.content_text
+
+
+def test_greenhouse_already_unescaped_content_still_strips():
+    """A board returning real HTML is handled by the same line: unescape is a no-op
+    when there are no entities, and strip_html removes the tags as it always did."""
+    from hireshire.scrapers.greenhouse import _parse_job
+
+    job = _parse_job(
+        "acme",
+        {**GREENHOUSE_ENTRY, "content": "<p>Plain <b>HTML</b> body</p>"},
+        None, datetime.now(timezone.utc), detail_required=False,
+    )
+    assert job.content_text == "Plain HTML body"
+
+
+def test_greenhouse_falls_back_to_detail_content_and_unescapes_it():
+    from hireshire.scrapers.greenhouse import _parse_job
+
+    now = datetime.now(timezone.utc)
+    entry = {k: v for k, v in GREENHOUSE_ENTRY.items() if k != "content"}
+    detail = {"content": "&lt;p&gt;Detail body with 7+ years&lt;/p&gt;", "questions": []}
+
+    job = _parse_job("acme", entry, detail, now)
+    assert job.content_text == "Detail body with 7+ years"
+    assert job.detail_fetch_failed is False
+
+    # No content anywhere: nothing to store, and the detail flag still reports the
+    # fetch, not the content.
+    missing = _parse_job("acme", entry, None, now, detail_required=True)
+    assert missing.content_text is None
+    assert missing.detail_fetch_failed is True
+
+    deferred = _parse_job("acme", entry, None, now, detail_required=False)
+    assert deferred.content_text is None
+    assert deferred.detail_fetch_failed is False
+
