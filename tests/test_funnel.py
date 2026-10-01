@@ -236,3 +236,88 @@ def test_hydration_validate_strips_html():
         "detail_fetch_failed": False,
     })
     assert rebuilt.content_text == "Build backend services"
+
+
+# Lever splits a posting across prose fields and a structured `lists` array. The
+# stated years-of-experience lives in the latter, and nothing duplicates it into the
+# former, so a parse that reads only the prose leaves the YoE gate with nothing.
+LEVER_ENTRY = {
+    "id": "abc-123",
+    "text": "Senior Data Engineer",
+    "hostedUrl": "https://jobs.lever.co/acme/abc-123",
+    "categories": {"location": "Remote", "team": "Data"},
+    "opening": "<p>About Acme: we build pipelines.</p>",
+    "description": "<p>You will own the warehouse.</p>",
+    "additional": "<p>Acme is an equal opportunity employer.</p>",
+    "lists": [
+        {
+            "text": "What You'll Bring to the Team",
+            "content": "<ul><li>5+ years of production data engineering</li></ul>",
+        },
+        {"text": "Nice-to-haves", "content": "<ul><li>dbt</li></ul>"},
+    ],
+}
+
+
+def test_lever_carries_the_lists_the_yoe_gate_reads():
+    """The regression that matters: the requirement is only in `lists`."""
+    from hireshire.scrapers.lever import _parse_job
+
+    job = _parse_job("acme", LEVER_ENTRY, datetime.now(timezone.utc))
+
+    assert "5+ years" in job.content_text
+    # The section heading survives, so the cross-encoder sees which part of the
+    # posting a requirement came from.
+    assert "What You'll Bring to the Team" in job.content_text
+    # Nothing the old three-field concat captured was displaced by the reordering.
+    assert "we build pipelines" in job.content_text
+    assert "own the warehouse" in job.content_text
+    assert "equal opportunity" in job.content_text
+    # Every later list is included, not just the first.
+    assert "dbt" in job.content_text
+    # strip_html ran, so no markup reaches the reranker or the judge.
+    assert "<" not in job.content_text
+
+
+def test_lever_content_assembly_edges():
+    """A posting whose whole body is in `lists` is the case that gains most; the
+    absent/empty/malformed shapes must not raise, because an escape from here fails
+    the whole slug rather than the one posting."""
+    from hireshire.scrapers.lever import _content
+
+    # The near-blank tail: opening echoes the title, everything else is a list.
+    body_only = {
+        "opening": "Data Engineer",
+        "lists": [{"text": "Requirements", "content": "<ul><li>10 years</li></ul>"}],
+    }
+    assert "10 years" in _content(body_only)
+
+    assert _content({"lists": []}) is None
+    assert _content({"lists": None}) is None
+    assert _content({}) is None
+    # A list element that is not a dict is skipped, not raised on.
+    assert _content({"description": "<p>x</p>", "lists": ["junk", None]}) == "<p>x</p>"
+    # A section with no content contributes nothing, heading included.
+    assert _content({"lists": [{"text": "Empty", "content": ""}]}) is None
+    # A section with no heading still contributes its body.
+    assert _content({"lists": [{"content": "<ul><li>3+ years</li></ul>"}]}) == (
+        "<ul><li>3+ years</li></ul>"
+    )
+
+
+def test_lever_fields_stay_separated_after_stripping():
+    """The fragments are joined, so adjacent sections cannot fuse into one word
+    once the markup is stripped."""
+    from hireshire.scrapers.lever import _parse_job
+
+    entry = {
+        **LEVER_ENTRY,
+        "opening": "ends-here",
+        "description": "starts-here",
+        "additional": "",
+        "lists": [],
+    }
+    job = _parse_job("acme", entry, datetime.now(timezone.utc))
+    assert "ends-herestarts-here" not in job.content_text
+    assert "ends-here starts-here" == job.content_text
+

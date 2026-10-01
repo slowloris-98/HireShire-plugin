@@ -20,6 +20,36 @@ BASE_URL = "https://api.lever.co/v0/postings"
 PAGE_SIZE = 100
 
 
+def _content(entry: dict) -> Optional[str]:
+    """Prose plus the bulleted sections, in the order the hosted page renders them.
+
+    Lever splits a posting across `opening`/`description`, a structured `lists`
+    array of `{text: heading, content: <ul>}` sections, and a closing `additional`
+    block. **The stated years-of-experience almost always lives in `lists`** and is
+    not duplicated into the other fields, so reading only the three prose fields --
+    as this did through 0.22.0 -- left the YoE gate with nothing to parse on 87% of
+    Lever postings, against 19-41% on the other boards (measured over `matches`). Some employers put the whole
+    body in `lists`, which stored a `content_text` of just the echoed title.
+
+    Fragments are emitted as HTML and joined with `<br/>`; `Job.strip_html` does the
+    text conversion for every scraper. The heading is kept so the cross-encoder sees
+    which section a requirement came from.
+
+    A non-dict element is skipped rather than left to raise: `_parse_job` catches
+    `TypeError` but not the `AttributeError` a bare `.get` would give, and an escape
+    from here fails the whole slug rather than the one posting.
+    """
+    sections: list[str] = [entry.get("opening") or "", entry.get("description") or ""]
+    for section in entry.get("lists") or []:
+        if not isinstance(section, dict):
+            continue
+        heading, body = section.get("text") or "", section.get("content") or ""
+        if body:
+            sections.append(f"<p>{heading}</p>{body}" if heading else body)
+    sections.append(entry.get("additional") or "")
+    return "<br/>".join(s for s in sections if s) or None
+
+
 def _parse_job(board_token: str, entry: dict, scraped_at: datetime) -> Optional[Job]:
     try:
         cats = entry.get("categories") or {}
@@ -33,11 +63,7 @@ def _parse_job(board_token: str, entry: dict, scraped_at: datetime) -> Optional[
         if team:
             departments = [Department(id=0, name=team)]
 
-        content_html = (
-            (entry.get("opening") or "")
-            + (entry.get("description") or "")
-            + (entry.get("additional") or "")
-        ) or None
+        content_html = _content(entry)
 
         created_ms: Optional[int] = entry.get("createdAt")
         updated_at = (
