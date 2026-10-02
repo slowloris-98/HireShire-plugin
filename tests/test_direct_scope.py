@@ -15,6 +15,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from hireshire.direct.portal_locations import COUNTRIES
+from hireshire.models.job import Job, Location, Office
 from hireshire.direct.scope import EVERYWHERE, WORLDWIDE, Scope, resolve_scope
 from hireshire.scrapers.handlers import amazon, apple, google, intuit, meta, microsoft
 from scraper import _matches_location
@@ -200,6 +201,92 @@ def test_an_intuit_job_with_a_real_location_is_still_filtered():
     job = intuit._parse_job(_intuit_anchor("Petach Tikva, Israel"), NOW, US_IN)
     assert not job.location_is_placeholder
     assert not _matches_location(job, ["united states", "india"])
+
+
+# --------------------------------------------------------------------------
+# the gate itself, on the multi-tenant boards
+#
+# Greenhouse/Lever/Ashby jobs carry a real location and no placeholder flag, so
+# they get none of the short-circuits above. These are the regressions that cost a
+# user every posting of every employer whose city nobody had listed by hand: Zoox
+# publishes 236 Lever jobs from "Foster City, CA" and 46 of them passed.
+# --------------------------------------------------------------------------
+
+
+def _board_job(location: str, offices: tuple[str, ...] = ()):
+    """A greenhouse-shaped job: real location, no placeholder flag."""
+    return Job(
+        source="lever",
+        board_token="zoox",
+        job_id="1",
+        title="Software Engineer",
+        location=Location(name=location),
+        offices=[Office(id=i, name=o, location=o) for i, o in enumerate(offices)],
+        absolute_url="https://jobs.lever.co/zoox/1",  # type: ignore[arg-type]
+        updated_at=NOW,
+        scraped_at=NOW,
+    )
+
+
+@pytest.mark.parametrize("terms", [
+    ["united states"],      # the country, which the employer never writes
+    ["california"],         # the state, written only as "CA"
+    ["usa"],                # an alias of it; terms are matched as the user typed them
+    ["us"],
+    ["america"],
+])
+def test_an_abbreviated_state_matches_a_country_or_state_term(terms):
+    assert _matches_location(_board_job("Foster City, CA"), terms)
+
+
+def test_a_term_the_employer_does_write_still_matches():
+    assert _matches_location(_board_job("Boston, MA"), ["boston"])
+
+
+def test_an_office_location_is_matched_through_the_same_rule():
+    """No existing test covered the offices half of the haystack at all."""
+    job = _board_job("N/A", offices=("Atlanta, Georgia",))
+    assert _matches_location(job, ["united states"])
+
+
+def test_a_place_outside_the_scope_is_still_dropped():
+    """Fail-closed is deliberate: an unresolvable place must not widen the sweep."""
+    for location in ("Hong Kong", "Portugal", "London, UK", "Toronto, Ontario"):
+        assert not _matches_location(
+            _board_job(location), ["united states", "india"]
+        ), location
+
+
+def test_a_country_filter_works_outside_the_united_states():
+    assert _matches_location(_board_job("Bristol, UK"), ["united kingdom"])
+    assert _matches_location(_board_job("Leeds, England"), ["united kingdom"])
+    assert _matches_location(_board_job("Bengaluru"), ["india"])
+    assert _matches_location(_board_job("Rotterdam, Holland"), ["netherlands"])
+
+
+def test_a_remote_posting_naming_no_country_needs_a_remote_term():
+    """"Remote" cannot be rolled up to a country, so the user's own list decides.
+
+    This is the one place the gate fails open, and only this far: a real place it
+    cannot resolve stays dropped even for a user who asked for remote work.
+    """
+    for location in ("Remote", "Hybrid", "Distributed"):
+        assert not _matches_location(_board_job(location), ["united states"]), location
+        assert _matches_location(
+            _board_job(location), ["united states", "remote"]
+        ), location
+    # Not a licence to admit anywhere: still a verdict about a resolvable place.
+    assert not _matches_location(_board_job("Portugal"), ["united states", "remote"])
+    # A remote posting that DOES name a country is judged on the country, so the
+    # fail-open branch never sees it: `infer_country` is not None.
+    assert _matches_location(_board_job("Remote - US"), ["united states"])
+    assert not _matches_location(
+        _board_job("Remote (Canada)"), ["united states", "remote - us"]
+    )
+    # A BARE "remote" term is a substring of "Remote (Canada)" and matches it on the
+    # first branch. That is pre-existing substring behaviour, not the rule above, and
+    # it is why setup drafts scoped spellings like "remote - us".
+    assert _matches_location(_board_job("Remote (Canada)"), ["remote"])
 
 
 # --------------------------------------------------------------------------

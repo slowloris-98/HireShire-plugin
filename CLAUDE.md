@@ -1232,6 +1232,41 @@ suppresses Rich in favour of `logging` — required under the monitor.
     multi-city job with it. The price, accepted: such a job reaches scoring unchecked
     until the applier's location verdict (`mark_not_shortlisted`) retires it.
 
+- **The location gate normalises the job, never the terms, and must not go back to a
+  raw substring test.** `scraper._matches_location` matches `location_filter` against
+  `locations.filter_haystack(raw)` — the employer's string plus its inferred country,
+  the spelled-out name of a US state written as an abbreviation, and every alias of
+  that country. The two sides are written by different people and almost never agree:
+  users write `california` or `united states`, employers write `Foster City, CA`.
+  Measured on a real install, the raw test **silently discarded 15% of every job
+  scraped** (84.7% → 99.2% of 447,742 rows), and it discarded them per employer rather
+  than at random: all 236 of Zoox's Lever postings bar the 46 whose alternate office
+  happened to be a city someone had typed out by hand. A user naming only a state was
+  worse — `["california"]` admitted 11%, against 28% now.
+
+  Four things here that look redundant and are not:
+
+  - **`filter_haystack` is not `normalize_location`.** The latter appends only the
+    country, and the six direct handlers **store** what it returns, so it is a string a
+    user reads; its exact output is pinned by tests. The haystack is matching-only text
+    and is where new synonyms go. Folding the two together puts `", california, usa,
+    u.s., us, america"` on the overview page.
+  - **The country's aliases are appended because the terms are matched verbatim.**
+    Setup records what the user typed, so `usa`, `us` and `america` have to be found in
+    the haystack — none is a substring of `United States`.
+  - **The gate still fails closed, with one exception.** A location that resolves to no
+    country is dropped, so `Portugal` and `Ukraine` stay out of a US+India scope. The
+    exception is a **remote-shaped** location when the filter contains a `remote` term:
+    `Remote` cannot be rolled up to a country, so inference has nothing to answer with.
+    That is why a setup writing short country terms must still write a `remote` term for
+    a user who wants remote work.
+  - **`US_STATE_BY_ABBREV` is the only state table.** `US_STATES` and
+    `US_STATE_ABBREVS` are derived from it. They were two hand-kept tuples and could
+    not map `CA` → `california` between them, which is the whole reason a state-level
+    filter failed. `_US_MARKER_RE` is derived from the table's aliases for the same
+    reason — the hand-copy it replaced had drifted and lacked bare `us`, so thousands of
+    `Remote - US` postings inferred nothing.
+
   **Every direct portal is plain HTTP, including the two once thought browser-only.**
   Do not bring back a browser path for either:
   - **Microsoft** is `/api/pcsx/search`. The 403 "Not authorized for PCSX" comes from

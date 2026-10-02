@@ -12,6 +12,7 @@ nothing for the next one.
 
 import asyncio
 import logging
+import re
 import time
 
 import httpx
@@ -25,6 +26,7 @@ from hireshire.config import load_config
 from hireshire.http_client import build_client
 from hireshire.scrapers.ashby import AshbyScraper
 from hireshire.scrapers.bamboohr import BambooHRScraper
+from hireshire.direct.locations import filter_haystack, infer_country
 from hireshire.direct.scope import resolve_scope
 from hireshire.scrapers.direct import DirectScraper
 from hireshire.scrapers.exceptions import BoardBlockedError, SlugNotFoundError
@@ -56,14 +58,35 @@ console = Console()
 # `scrape_one` and recorded as an error row for that run only.
 
 
+# A location naming no country at all is dropped (see `_matches_location`), with one
+# exception: it reads as remote and the user asked for remote work. "Remote" cannot be
+# rolled up to a country, so inference has nothing to answer with — unlike "Portugal",
+# which is a real place simply outside the user's scope and must stay dropped.
+_REMOTE_SHAPED = re.compile(
+    r"(?<![a-z])(remote|hybrid|anywhere|distributed|work from home|wfh|telecommute)"
+    r"(?![a-z])",
+    re.I,
+)
+
+
 def _matches_location(job, terms: list[str]) -> bool:
     # A direct-portal job whose list entry named no place carries the search it
     # came from instead; the portal was already scoped to the user's countries.
     if getattr(job, "location_is_placeholder", False):
         return True
-    haystack = [job.location.name.lower()]
-    haystack += [o.location.lower() for o in job.offices if o.location]
-    return any(term in loc for term in terms for loc in haystack)
+    # `filter_haystack`, not the raw string: employers write "Foster City, CA" and a
+    # filter says "california" or "united states", and neither is a substring of the
+    # other. A plain substring test dropped ~15% of one real install's jobs silently,
+    # including every posting of employers whose city nobody had enumerated by hand.
+    raws = [job.location.name] + [o.location for o in job.offices if o.location]
+    if any(term in filter_haystack(raw) for term in terms for raw in raws):
+        return True
+    if any("remote" in term for term in terms):
+        return any(
+            infer_country(raw) is None and _REMOTE_SHAPED.search(raw)
+            for raw in raws if raw
+        )
+    return False
 
 
 class _NoopProgress:
