@@ -37,30 +37,40 @@ class Country:
     microsoft: str | None = None       # careers.microsoft.com `location=` (free text)
 
 
-US_STATES = (
-    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
-    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
-    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine",
-    "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
-    "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey",
-    "new mexico", "new york", "north carolina", "north dakota", "ohio",
-    "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina",
-    "south dakota", "tennessee", "texas", "utah", "vermont", "virginia",
-    "washington", "west virginia", "wisconsin", "wyoming",
-    "district of columbia", "puerto rico",
-)
+# One table for the states, so the abbreviation->name map and the two tuples below
+# cannot drift apart. `locations.filter_haystack` needs the mapping: employers write
+# "Foster City, CA" and a user's filter says "california", so the gate has to be able
+# to spell out an abbreviation. The tuples are derived, never hand-kept.
+#
+# No "AS" (American Samoa): `scope._ABBREVS` lowercases these and matches them against
+# the user's own comma-split terms, so "as" would become a US-resolving word.
+US_STATE_BY_ABBREV: dict[str, str] = {
+    "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas",
+    "CA": "california", "CO": "colorado", "CT": "connecticut", "DE": "delaware",
+    "FL": "florida", "GA": "georgia", "HI": "hawaii", "ID": "idaho",
+    "IL": "illinois", "IN": "indiana", "IA": "iowa", "KS": "kansas",
+    "KY": "kentucky", "LA": "louisiana", "ME": "maine", "MD": "maryland",
+    "MA": "massachusetts", "MI": "michigan", "MN": "minnesota",
+    "MS": "mississippi", "MO": "missouri", "MT": "montana", "NE": "nebraska",
+    "NV": "nevada", "NH": "new hampshire", "NJ": "new jersey",
+    "NM": "new mexico", "NY": "new york", "NC": "north carolina",
+    "ND": "north dakota", "OH": "ohio", "OK": "oklahoma", "OR": "oregon",
+    "PA": "pennsylvania", "RI": "rhode island", "SC": "south carolina",
+    "SD": "south dakota", "TN": "tennessee", "TX": "texas", "UT": "utah",
+    "VT": "vermont", "VA": "virginia", "WA": "washington",
+    "WV": "west virginia", "WI": "wisconsin", "WY": "wyoming",
+    "DC": "district of columbia", "PR": "puerto rico",
+}
 
-US_STATE_ABBREVS = (
-    "AK", "AL", "AR", "AZ", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "HI",
-    "IA", "ID", "IL", "IN", "KS", "KY", "LA", "MA", "MD", "ME", "MI", "MN",
-    "MO", "MS", "MT", "NC", "ND", "NE", "NH", "NJ", "NM", "NV", "NY", "OH",
-    "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VA", "VT", "WA",
-    "WI", "WV", "WY",
-)
+# Matched as a whole word inside a location string; order is irrelevant because
+# `_words` sorts its alternation by length.
+US_STATE_ABBREVS = tuple(US_STATE_BY_ABBREV)
+US_STATES = tuple(US_STATE_BY_ABBREV.values())
 
 INDIA_CITIES = (
     "bengaluru", "bangalore", "hyderabad", "mumbai", "new delhi", "delhi",
     "noida", "gurgaon", "gurugram", "pune", "chennai", "kolkata", "ahmedabad",
+    "mohali",
 )
 
 # Intuit has a country facet only where it currently has openings, so its column
@@ -88,6 +98,18 @@ COUNTRIES: tuple[Country, ...] = (
             "minneapolis", "detroit", "portland", "nashville", "baltimore",
             "washington dc", "washington, dc", "washington d.c.", "st. louis",
             "kansas city", "columbus",
+            # Added from locations real employers wrote that nothing here resolved.
+            # Each is matched as a whole word, so a bare name would steal a foreign
+            # city of the same name: US cities are tried BEFORE the `_OTHERS` loop in
+            # `locations.infer_country`. Hence "chantilly, va" (Chantilly, France) and
+            # hence no bare "trenton" (Trenton, Ontario) or "hanover" (Hanover,
+            # Germany) — those two are deliberately absent.
+            "el segundo", "boca raton", "elmhurst", "lehi", "newport beach",
+            "long beach", "waco", "grants pass", "west olympia",
+            "snowmass village", "santa barbara", "san leandro", "fremont",
+            "coconut grove", "chevy chase", "hayward", "foster city", "hawthorne",
+            "bastrop", "arlington", "starbase", "chantilly, va", "cape canaveral",
+            "garden grove", "suitland", "fort meade", "annapolis junction",
         ),
         apple="united-states-USA", google="United States", intuit="6252001",
         amazon="USA", microsoft="United States",

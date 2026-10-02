@@ -17,7 +17,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from hireshire.direct.locations import infer_country, normalize_location
+from hireshire.direct.locations import (
+    filter_haystack, infer_country, normalize_location,
+)
+from hireshire.direct.portal_locations import (
+    US_STATE_ABBREVS, US_STATE_BY_ABBREV, US_STATES,
+)
 from hireshire.direct.staging import make_job_id
 from hireshire.scrapers.handlers import amazon, apple, google, intuit, meta, microsoft
 
@@ -42,9 +47,74 @@ NOW = datetime(2026, 8, 7, 2, 0, tzinfo=timezone.utc)
     ("Albuquerque, New Mexico", "United States"),     # the state, not Mexico
     ("Hong Kong", None),
     ("", None),
+    # A country's own aliases resolve it, not just its name and the cities we
+    # happened to list. Without these, a user scoped to the UK lost every British
+    # city outside the shipped four.
+    ("Bristol, UK", "United Kingdom"),
+    ("Leeds, England", "United Kingdom"),
+    ("Glasgow, Scotland", "United Kingdom"),
+    ("Rotterdam, Holland", "Netherlands"),
+    ("Seoul, Korea", "South Korea"),
+    # Bare "US" is a US spelling. Thousands of real postings write only this.
+    ("Remote - US", "United States"),
+    ("Remote (US)", "United States"),
+    ("US Remote ", "United States"),          # trailing space: infer_country strips
+    ("US", "United States"),
+    ("Tempe, US", "United States"),
+    # Ordering guards for the city table. US cities are matched BEFORE the
+    # per-country loop, so a bare entry would steal the foreign city of that name.
+    # These three are why "chantilly, va" is qualified and why neither "trenton"
+    # nor "hanover" is in the table at all.
+    ("Chantilly, France", "France"),
+    ("Trenton, Ontario", "Canada"),
+    ("Hanover, Germany", "Germany"),
 ])
 def test_infer_country(raw, expected):
     assert infer_country(raw) == expected
+
+
+@pytest.mark.parametrize("raw", [
+    "Minsk, Belarus", "Aarhus, Denmark", "Mauritius", "Limassol, Cyprus",
+    "Pegasus Bay", "Celsius", "campus", "versus", "Haus", "Busan",
+])
+def test_a_word_merely_containing_us_is_not_the_united_states(raw):
+    """`_US_MARKER_RE` carries bare "us", so the whole-word guard is load-bearing."""
+    assert infer_country(raw) != "United States"
+
+
+def test_the_state_tuples_are_derived_from_one_table():
+    """Two hand-kept tuples drifted once; `US_STATE_BY_ABBREV` is now the only copy."""
+    assert US_STATE_ABBREVS == tuple(US_STATE_BY_ABBREV)
+    assert US_STATES == tuple(US_STATE_BY_ABBREV.values())
+    assert len(US_STATE_BY_ABBREV) == 52          # 50 states + DC + PR
+    assert len(set(US_STATES)) == 52              # no name written twice
+    for abbrev in US_STATE_ABBREVS:
+        assert len(abbrev) == 2 and abbrev.isupper(), abbrev
+    # "AS" would make the bare word "as" resolve to the US in `scope._ABBREVS`.
+    assert "AS" not in US_STATE_BY_ABBREV
+    # `US_STATES` feeds Country.regions, which scope.py resolves as user terms.
+    assert "california" in US_STATES and "puerto rico" in US_STATES
+
+
+def test_filter_haystack_spells_out_an_abbreviated_state():
+    """The gate's own text. A filter saying "california" must match "Foster City, CA"."""
+    hay = filter_haystack("Foster City, CA")
+    assert "california" in hay
+    assert "united states" in hay
+    assert hay == hay.lower()
+
+
+def test_filter_haystack_leaves_normalize_location_alone():
+    """It must not change what the direct handlers store on the job."""
+    assert normalize_location("Foster City, CA") == "Foster City, CA, United States"
+    assert "california" not in normalize_location("Foster City, CA")
+
+
+def test_filter_haystack_does_not_invent_a_state_or_country():
+    assert filter_haystack("") == ""
+    assert filter_haystack("Hong Kong") == "hong kong"
+    # Already spelled out: appended once, never twice.
+    assert filter_haystack("Atlanta, Georgia").count("georgia") == 1
 
 
 def test_normalize_appends_country_so_the_existing_filter_matches():

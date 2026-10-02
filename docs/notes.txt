@@ -13,7 +13,19 @@ smart applier:
 3. db balooning and log balooning for users over time
 4. does db load into memory during the sweep?
 
-New companies:
 
+
+
+
+New companies:
 Qualcomm
 RV tech
+applied materials
+
+
+Debug:
+zoox
+- revisit location filtering
+
+
+applied intuition
