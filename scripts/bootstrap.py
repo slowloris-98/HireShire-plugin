@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from hireshire import sweep_pid  # noqa: E402
 from hireshire.plugin_dirs import MIGRATABLE, legacy_data_dirs, resolve_dirs  # noqa: E402
 from hireshire.process_liveness import is_alive  # noqa: E402
+from hireshire.claude_cli import own_console_kwargs  # noqa: E402
 
 ROOT, DATA = resolve_dirs()
 
@@ -147,7 +148,8 @@ def _installed_torch(py: Path) -> str | None:
     """'gpu', 'cpu', or None when torch does not import in the venv."""
     try:
         result = subprocess.run(
-            [str(py), "-c", _BUILD_SCRIPT], capture_output=True, text=True, timeout=120
+            [str(py), "-c", _BUILD_SCRIPT], capture_output=True, text=True, timeout=120,
+            **own_console_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -162,7 +164,8 @@ def _smoke_test(py: Path) -> tuple[str, str, str]:
     `broken` when torch does not import or the probe does not finish."""
     try:
         result = subprocess.run(
-            [str(py), "-c", _SMOKE_SCRIPT], capture_output=True, text=True, timeout=300
+            [str(py), "-c", _SMOKE_SCRIPT], capture_output=True, text=True, timeout=300,
+            **own_console_kwargs(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return "broken", "", str(exc)
@@ -184,7 +187,7 @@ def _uv_install(py: Path, backend: str, reinstall_torch: bool) -> subprocess.Com
     if reinstall_torch:
         cmd += ["--reinstall-package", "torch"]
     cmd += ["-r", str(REQUIREMENTS)]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True, **own_console_kwargs())
 
 
 def _write_variant(text: str) -> None:
@@ -212,7 +215,7 @@ def _install_with_uv(py: Path, backend: str) -> subprocess.CompletedProcess:
     up = subprocess.run(
         [str(py), "-m", "pip", "install", "--disable-pip-version-check", "-q",
          "--upgrade", "uv"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, **own_console_kwargs(),
     )
     if up.returncode != 0:
         return up
@@ -346,10 +349,12 @@ def stop() -> int:
         # /T reaches the recorded process and everything under it, which is what
         # takes down an apply subprocess and the browser it is driving.
         try:
+            # Its own console: on a stale console this kill could not launch either.
             killed = subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
+                **own_console_kwargs(),
             ).returncode == 0
         except (OSError, subprocess.SubprocessError):
             killed = False
@@ -416,6 +421,7 @@ def _finalise_stopped_runs() -> None:
         result = subprocess.run(
             [str(python), str(ROOT / "scripts" / "finalise_stopped.py")],
             cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120,
+            **own_console_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         result = None
@@ -504,6 +510,7 @@ def main() -> int:
              "-q", "-r", str(REQUIREMENTS)],
             capture_output=True,
             text=True,
+            **own_console_kwargs(),
         )
     else:
         result = _install_with_uv(py, backend)

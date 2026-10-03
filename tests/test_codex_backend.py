@@ -19,7 +19,7 @@ import json
 
 import pytest
 
-from hireshire import codex_cli, config_writer, paths
+from hireshire import claude_cli, codex_cli, config_writer, paths
 from hireshire.matcher import scorer as scorer_mod
 from hireshire.matcher.config import MatcherSettings
 from hireshire.matcher.scorer import (
@@ -79,7 +79,8 @@ def _patch_exec(monkeypatch, captured, results):
     results = list(results)
 
     async def fake_exec(*argv, **kwargs):
-        captured.setdefault("calls", []).append({"argv": argv, "env": kwargs.get("env")})
+        captured.setdefault("calls", []).append(
+            {"argv": argv, "env": kwargs.get("env"), "kwargs": kwargs})
         rc, out = results.pop(0)
 
         class _Proc:
@@ -345,3 +346,40 @@ def test_a_claude_model_name_is_recognised_wherever_codex_is_used():
         assert codex_cli.is_claude_model(name), name
     for name in ("gpt-5.6-terra", "o3", "", "sonnetish"):
         assert not codex_cli.is_claude_model(name), name
+
+
+# --- the console the codex child runs in -----------------------------------
+
+
+def test_the_codex_judge_gets_its_own_console(monkeypatch, codex_dir):
+    """Same rule as the claude judge, and it is the same host refusing the same kind of
+    child -- which is why the kwargs come from `claude_cli` rather than being spelled
+    twice. `tests/test_child_console.py` carries the mechanism."""
+    monkeypatch.setattr(claude_cli.sys, "platform", "win32")
+    _, _, captured = _score(monkeypatch, [(0, _ok_stream())])
+    assert captured["calls"][0]["kwargs"].get("creationflags") == 0x08000000
+
+
+def test_the_feature_probe_runs_in_its_own_console(monkeypatch):
+    """`available_features` is reached from `CodexBackend.__init__`, so it runs on every
+    sweep -- and it is not cosmetic. When the probe fails it returns None, the caller
+    then sends the FULL `--disable` list, and one name this CLI does not know makes every
+    judge call an error. A stale console would turn a probe failure into a second,
+    differently-shaped scoring outage."""
+    monkeypatch.setattr(claude_cli.sys, "platform", "win32")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/codex")
+    seen: dict = {}
+
+    class _Done:
+        returncode = 0
+        stdout = b""
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return _Done()
+
+    monkeypatch.setattr(codex_cli.subprocess, "run", fake_run)
+    codex_cli.available_features()
+    assert seen["argv"][1:] == ["features", "list"]
+    assert seen["kwargs"].get("creationflags") == 0x08000000

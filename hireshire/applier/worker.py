@@ -62,7 +62,7 @@ from typing import Callable, Literal, Optional
 
 from pydantic import BaseModel
 
-from hireshire import codex_cli, paths
+from hireshire import claude_cli, codex_cli, paths
 from hireshire.applier import limits, reasons
 from hireshire.applier.config import ApplierSettings
 from hireshire.applier.sessions import ApplySession, UnreadableResult, make_session
@@ -139,6 +139,18 @@ class ApplyLaunchError(RuntimeError):
     """
 
 
+class CLIStartFailure(ApplyLaunchError):
+    """The host refused to start the CLI at all — the session never ran.
+
+    Still a deferral, and still counted by the breaker: on the sweep that produced
+    this, every launch failed, and not counting them would have driven a browser
+    session per shortlisted job against a host that could start nothing. The distinct
+    type is only so the breaker's message can name the stale console and the cure
+    instead of leaving the user looking at their login. `scorer.CLILaunchError` is the
+    same idea on the scoring side.
+    """
+
+
 #: The `claude -p` subprocess driving a browser, while one is running; None otherwise.
 _apply_proc: "asyncio.subprocess.Process | None" = None
 
@@ -157,10 +169,13 @@ def terminate_apply_subprocess() -> None:
         return
     try:
         if sys.platform == "win32":
+            # Its own console too: on a stale console this kill could not launch
+            # either, so a timed-out session's browser outlived the sweep.
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
+                **claude_cli.own_console_kwargs(),
             )
         else:
             # Children first, then the process itself — the same order and the same
@@ -397,6 +412,7 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
             stderr=asyncio.subprocess.PIPE,
             env=session.env(),
             cwd=str(dirs.cwd),
+            **claude_cli.own_console_kwargs(),
         )
     except OSError as exc:
         raise ApplyLaunchError(f"could not start the apply session: {exc}") from exc
@@ -429,7 +445,10 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
         # envelope's `is_error`/`result`, `codex` in a `turn.failed` event — which is
         # what fixed the night of nine `exited 1` deferrals that logged their token
         # counts and nothing else.
-        raise ApplyLaunchError(session.exit_detail(stdout, stderr, proc.returncode))
+        detail = session.exit_detail(stdout, stderr, proc.returncode)
+        if claude_cli.is_launch_failure(proc.returncode):
+            raise CLIStartFailure(detail)
+        raise ApplyLaunchError(detail)
 
     try:
         return session.parse(stdout)
@@ -575,10 +594,15 @@ async def run_apply_worker(
                     company, title, exc)
                 if state["consecutive"] >= BREAKER_LIMIT:
                     state["tripped"] = True
+                    # When the host would not start the CLI, say so and say what fixes
+                    # it: the generic line sends the user to their login instead.
+                    host = (f" {claude_cli.STALE_CONSOLE_HELP}"
+                            if isinstance(exc, CLIStartFailure) else "")
                     logger.error(
                         "Applier: %d apply sessions failed in a row — not launching any "
                         "more this sweep. Nothing was recorded; those jobs stay pending "
-                        "and are retried next sweep. Last error: %s", BREAKER_LIMIT, exc,
+                        "and are retried next sweep.%s Last error: %s",
+                        BREAKER_LIMIT, host, exc,
                     )
                 return
             state["consecutive"] = 0
@@ -620,6 +644,22 @@ async def run_apply_worker(
         finally:
             scratch = scratch_dir(dirs, job)
             shutil.rmtree(scratch, ignore_errors=True)
+            if scratch.exists():
+                # `ignore_errors` swallowed something, and on Windows that is almost
+                # always a live process still holding a file in there — a browser the
+                # session did not close. Upstream playwright-mcp#1568: ending the
+                # client kills the MCP server and leaves Chrome running, because Chrome
+                # ignores SIGINT and SIGTERM. We cannot reach it: `apply_one` has
+                # already exited, so its descendants are reparented and unreachable by
+                # that pid, which is why `terminate_apply_subprocess` is not called
+                # here — it would return immediately. So this is the MEASUREMENT for
+                # known issue A8, not a fix: it turns an unknown into a dated, greppable
+                # record, and A8 says what to build once there is a count.
+                logger.warning(
+                    "Could not clear the session scratch folder for %s — %s (%s); "
+                    "usually a browser the session did not close is still holding it",
+                    company, title, scratch,
+                )
             try:
                 scratch.parent.rmdir()          # only succeeds once it is empty
             except OSError:

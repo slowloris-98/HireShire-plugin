@@ -1343,3 +1343,96 @@ def test_a_codex_model_left_behind_does_not_reach_the_claude_session(tmp_path, l
     assert stats["submitted"] == 1
     assert "--model" not in argv and "--effort" not in argv
     assert not any("gpt-5.6" in a for a in argv)
+
+
+# --- the console the apply session runs in ----------------------------------
+
+
+def test_the_session_shares_the_judges_spawn_flags_but_not_its_cli_flags(
+        tmp_path, launcher, monkeypatch):
+    """Two rules that look like one, and only one of them is about sharing.
+
+    `--safe-mode` and `--tools ""` must NOT be shared through `claude_cli`: they are
+    argv, which decides what the model can do, and this session needs a browser (see
+    `test_the_session_keeps_the_tools_the_judge_strips`). `creationflags` MUST be
+    shared: it is spawn kwargs, which decide whether Windows will start the process at
+    all, and the answer is the same for every child the engine starts. So the judge and
+    the applier want identical spawn kwargs and different argv, and a reader who finds
+    only the argv rule will wrongly conclude the helper violates it.
+    """
+    monkeypatch.setattr(worker.claude_cli.sys, "platform", "win32")
+    calls, _, _ = launcher
+    _run(tmp_path, [_job("j1")])
+
+    argv = list(calls[0]["argv"])
+    assert "--safe-mode" not in argv and "--tools" not in argv
+    assert calls[0]["kwargs"].get("creationflags") == 0x08000000
+
+
+def test_the_taskkill_that_ends_a_session_runs_in_its_own_console(monkeypatch):
+    """The second-order bug: the kill is itself a console child.
+
+    On a stale console `taskkill` could not launch either, so a timed-out session's
+    browser went on sitting over a half-filled form. This cannot use the `launcher`
+    fixture, which replaces `terminate_apply_subprocess` outright.
+    """
+    monkeypatch.setattr(worker.claude_cli.sys, "platform", "win32")
+    seen: dict = {}
+
+    class _Live:
+        pid = 4242
+        returncode = None
+
+        def kill(self):
+            pass
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+
+        class _Done:
+            returncode = 0
+        return _Done()
+
+    monkeypatch.setattr(worker, "_apply_proc", _Live())
+    monkeypatch.setattr(worker.subprocess, "run", fake_run)
+    worker.terminate_apply_subprocess()
+
+    assert seen["argv"][0] == "taskkill" and "/T" in seen["argv"]
+    assert seen["kwargs"].get("creationflags") == 0x08000000
+
+
+def test_a_windows_launch_failure_names_the_console_and_the_cure(
+        tmp_path, launcher, caplog):
+    """When the breaker trips because the host would not start the CLI, the message has
+    to name that and say restarting the sweep fixes it. The generic line sends the user
+    to their login, which is the one thing that is not wrong."""
+    _, script, _ = launcher
+    script.extend(_Proc(rc=3221225794) for _ in range(3))
+    with caplog.at_level("ERROR", logger=worker.logger.name):
+        _run(tmp_path, [_job(f"j{i}") for i in range(3)])
+
+    tripped = [r.getMessage() for r in caplog.records if "failed in a row" in r.getMessage()]
+    assert len(tripped) == 1
+    assert "console" in tripped[0] and "restart" in tripped[0]
+
+
+def test_a_scratch_dir_that_cannot_be_deleted_is_reported(
+        tmp_path, launcher, caplog, monkeypatch):
+    """The measurement behind known issue A8.
+
+    `shutil.rmtree(..., ignore_errors=True)` already swallows a live process holding a
+    file in the session's scratch folder -- on Windows, almost always a browser the
+    session did not close (playwright-mcp#1568: Chrome ignores SIGINT and SIGTERM and
+    outlives the MCP server). We cannot reach it, because `apply_one` has already exited
+    and its descendants are reparented. So the signal is recorded rather than acted on,
+    and tidying up still never costs the job.
+    """
+    # The folder survives, which is what a live browser holding a file looks like.
+    monkeypatch.setattr(worker.shutil, "rmtree", lambda *a, **k: None)
+    with caplog.at_level("WARNING", logger=worker.logger.name):
+        stats, db = _run(tmp_path, [_job("j1")])
+
+    assert _statuses(db) == {"j1": "submitted"}, "the outcome is still recorded"
+    assert stats["submitted"] == 1
+    assert "scratch folder" in caplog.text and "browser" in caplog.text

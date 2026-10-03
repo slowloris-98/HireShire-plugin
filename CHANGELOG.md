@@ -4,6 +4,39 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.23.0] — 2026-10-02
+
+### Fixed
+
+- **Sweeps no longer stop working when the session that started them goes away.** A
+  long-running sweep could reach a point where every scoring call and every application
+  failed instantly, with nothing in the log but an exit code, and stay that way for
+  hours — one sweep scored fine at midnight and then failed every cycle from 2am to 9am.
+  Restarting it fixed it every time, which turned out to be the clue: on Windows the
+  programs a sweep starts were tied to the terminal it was launched from, so closing
+  that terminal, or ending or restarting the Claude Code session behind it, left the
+  sweep unable to start anything at all while it carried on scraping quite happily.
+  Everything a sweep starts now stands on its own, so it keeps working after the window
+  that launched it has gone. Nothing was ever lost to this — no job was marked applied
+  or thrown away, and every job was rescored on the next run — but hours of sweeping
+  could achieve nothing.
+- **Stopping a stuck application now actually stops the browser.** The command that ends
+  a timed-out session was started the same way, so on an affected machine it could not
+  run either, and the browser was left sitting over a half-filled form.
+- **If it happens again, the log says so plainly.** When a sweep gives up because the
+  machine would not start the CLI, it now names that as the cause and tells you that
+  restarting the sweep fixes it, instead of listing possibilities — being locked or
+  asleep is no longer one of them, since neither turned out to be involved. The same
+  explanation now appears when it is applications rather than scoring that cannot start.
+- **A sweep stopped mid-scoring no longer leaves its scoring processes behind.** Ending
+  a sweep while it was judging jobs could leave up to four CLI processes running with
+  nobody listening to them.
+
+### Changed
+
+- The log now notes when a finished application's temporary folder could not be cleared,
+  which usually means a browser stayed open after the application was submitted.
+
 ## [0.22.0] — 2026-09-29
 
 ### Added

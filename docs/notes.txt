@@ -3,18 +3,12 @@ Can we add this plugin in codex?
 Reduce the cost for applier. maybe start the session in different view (maybe large moniter size) 
     so that a single ss can fetch all fields
 
-Ask user if they want to use codex for applying similar to scoring, and fall back to claude, similar to scoring. - done
-
 smart applier:
     - a human check to approve before applying into jobs
 
 2. introduce resume tuning.
 
 3. db balooning and log balooning for users over time
-4. does db load into memory during the sweep?
-
-
-
 
 
 New companies:
@@ -24,8 +18,8 @@ applied materials
 
 
 Debug:
-zoox
-- revisit location filtering
+monitor dies after 2 hours. we need a system that can run for long sessions like 24 hrs
+instead of using claude and codex cli, intercept the api call for these and use these api calls for scoring (lightweight solution)
 
 
 applied intuition

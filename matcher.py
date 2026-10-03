@@ -26,7 +26,7 @@ from rich.logging import RichHandler
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from hireshire import paths
+from hireshire import claude_cli, paths
 from hireshire.funnel import cluster, experience
 from hireshire.funnel.config import ExperienceConfig
 from hireshire.funnel.detail_fetcher import DETAIL_SOURCES
@@ -149,10 +149,17 @@ class _ScoringBreaker:
             self._consecutive += 1
             if self._consecutive >= self._limit and not self.tripped:
                 self.tripped = True
-                logger.error(
-                    "Scoring backend failed %d times in a row — aborting scoring for "
-                    "this run. Last error: %s", self._limit, self.last_error,
-                )
+                if self.launch_failed:
+                    logger.error(
+                        "Scoring aborted: the host would not start the scoring CLI %d "
+                        "times in a row. %s Last error: %s",
+                        self._limit, claude_cli.STALE_CONSOLE_HELP, self.last_error,
+                    )
+                else:
+                    logger.error(
+                        "Scoring backend failed %d times in a row — aborting scoring for "
+                        "this run. Last error: %s", self._limit, self.last_error,
+                    )
         elif not result.skipped:
             self._consecutive = 0
 
@@ -161,8 +168,7 @@ class _ScoringBreaker:
             return (
                 f"Scoring aborted after {self._limit} consecutive failures to start the "
                 f"scoring CLI. Last error: {self.last_error or 'unknown'}. This is the "
-                "machine, not the scoring backend: usually the terminal or session "
-                "running the sweep was closed, or the PC was locked or asleep. "
+                f"machine, not the scoring backend: {claude_cli.STALE_CONSOLE_HELP} "
                 "No jobs were retired — they will be rescored on the next run."
             )
         return (

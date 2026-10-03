@@ -28,6 +28,9 @@ class FakeRun:
         self.smoke = smoke or "ok\t2.14.0+cu130\tNVIDIA GeForce RTX 3060 Laptop GPU"
         self.cpu_smoke = cpu_smoke or "ok\t2.14.0+cpu\t"
         self.calls: list[list[str]] = []
+        #: The spawn kwargs of each call, so one test can check every install command
+        #: asks for its own console.
+        self.kwargs: list[dict] = []
         self._backend = None
 
     def uv_calls(self) -> list[list[str]]:
@@ -36,6 +39,7 @@ class FakeRun:
     def __call__(self, cmd, **kwargs):
         cmd = [str(c) for c in cmd]
         self.calls.append(cmd)
+        self.kwargs.append(kwargs)
         if cmd[1:3] == ["-m", "pip"]:
             return subprocess.CompletedProcess(cmd, self.uv_pip_rc, "", "pip failed")
         if cmd[1:5] == ["-m", "uv", "pip", "install"]:
@@ -271,3 +275,16 @@ def test_check_says_update_not_gpu_for_a_stale_venv(env, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "dependencies need updating" in out
     assert "GPU" not in out
+
+
+def test_every_install_command_runs_in_its_own_console(env, monkeypatch):
+    """Bootstrap's spawns are the earliest the plugin makes, which is the worst place
+    for a stale console to bite: they run before the sweeper's duplicate guard and
+    before every `run_engine` call, so they are exactly what a user hits when they
+    restart a sweep to cure one. This file already forces `sys.platform = "win32"`, so
+    the Windows branch is exercised on any host."""
+    fake = _install(monkeypatch, FakeRun())
+    assert env.main() == 0
+    assert fake.calls, "the scenario should have spawned something"
+    for cmd, kwargs in zip(fake.calls, fake.kwargs):
+        assert kwargs.get("creationflags") == 0x08000000, cmd
