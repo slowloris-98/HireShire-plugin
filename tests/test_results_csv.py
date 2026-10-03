@@ -111,6 +111,7 @@ class _OutputsDB(_FakeDB):
         return self._all_rows
 
     def applied_ids(self):
+        # `(board_token, job_id)` pairs, as the real one returns.
         return self._applied
 
     def finalise_run(self, run_id, phase, started_at, ended_at, summary):
@@ -191,13 +192,15 @@ def test_a_legacy_run_folder_points_at_no_day_page(tmp_path, monkeypatch):
 
 
 def test_the_csv_says_which_jobs_have_been_applied_to(tmp_path, monkeypatch):
-    """`applied` is read once for the whole file and passed in, because the table is
-    keyed on the job alone — an application is a fact about a job, not a sweep."""
+    """The application set is read once for the whole file and passed in, because an
+    application is a fact about a job rather than about a sweep. It is `(board_token,
+    job_id)` pairs: a bare id is not unique across boards, so an id-keyed set would
+    mark one employer's posting applied on the strength of another's."""
     stamp = "2026-08-12_143005"
     _, results_dir, _ = _write_outputs(
         tmp_path, stamp, [], monkeypatch,
         all_rows=[_match_row("j1", 91), _match_row("j2", 80)],
-        applied={"j1"},
+        applied={("acme", "j1")},
     )
 
     with (results_dir / f"{stamp}_results.csv").open(encoding="utf-8-sig") as f:

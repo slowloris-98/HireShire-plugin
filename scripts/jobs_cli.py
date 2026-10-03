@@ -57,6 +57,7 @@ SUBCOMMANDS = (
     "list",
     "applied",
     "declined",
+    "compact",
 )
 
 #: The whole of time. `load_pending_applications` is the backlog loader and takes the
@@ -116,8 +117,8 @@ def cmd_list(args: argparse.Namespace) -> int:
     """Every job the user could still deal with by hand, at lifetime scope.
 
     Two existing loaders, no new SQL. Neither is scoped to a run on purpose: run scope
-    would need a `matches` row in that sweep, and a job the backlog carried across
-    sweeps has none — which is precisely the job that gets stuck.
+    reads `scored_run_id`, and a job the backlog carried across sweeps was judged by an
+    earlier one — which is precisely the job that gets stuck.
     """
     db = get_db()
     attempts = db.load_applied_matches(None)
@@ -150,9 +151,12 @@ def _write(args: argparse.Namespace, action: str) -> int:
         results.append({"job_id": job_id, "action": action, "result": outcome})
 
     # Only pay for a rebuild when something actually moved. A run of no-ops should not
-    # rewrite the pages.
+    # rewrite the pages — and `ambiguous` is a no-op by design: two boards mint the
+    # same job id, so `mark_applied_by_hand` refuses rather than marking the wrong
+    # employer's posting applied. The skill reports it to the user as-is.
     pages = {}
-    if any(r["result"] not in ("unknown", "nothing_to_change") for r in results):
+    if any(r["result"] not in ("unknown", "nothing_to_change", "ambiguous")
+           for r in results):
         pages = _rebuild_reports()
     _print_json({"results": results, "pages": pages})
     return 0
@@ -164,6 +168,47 @@ def cmd_applied(args: argparse.Namespace) -> int:
 
 def cmd_declined(args: argparse.Namespace) -> int:
     return _write(args, "declined")
+
+
+def cmd_compact(args: argparse.Namespace) -> int:
+    """Reclaim the disk space the one-time `postings` upgrade freed.
+
+    `DROP TABLE` only moves pages to SQLite's freelist, so the file keeps its old
+    size until a `VACUUM` rewrites it — on the install this was measured against,
+    about 3.8 GB of a 5.3 GB file. It is a deliberate step rather than part of the
+    upgrade because `VACUUM` needs another copy's worth of temp space and minutes of
+    work, and `Database.__init__` is on the path of every process, including the
+    report refresh and `--stop`.
+
+    It is also the entry point retention never had: `Database.prune_runs` has been
+    written and tested since early on with no caller at all, which is the version of
+    the `bad_slugs` lesson where there is no road back rather than a hard one. `--keep`
+    and `--before` reach it, and both leave applied and still-shortlisted postings
+    alone — retention means forgetting the postings nothing came of.
+
+    Refuses while a sweep is running, for the same reason the upgrade does: `VACUUM`
+    takes the write lock for minutes against a 5,000 ms `busy_timeout`.
+    """
+    from hireshire import sweep_pid
+    from hireshire.process_liveness import is_alive
+
+    pid = sweep_pid.read()
+    if pid is not None and is_alive(pid):
+        print(f"A sweep is running (pid {pid}). Stop it with "
+              f"`sh scripts/hireshire.sh --stop` first.", file=sys.stderr)
+        return 1
+
+    db = get_db()
+    pruned = []
+    if args.keep is not None or args.before is not None:
+        pruned = db.prune_runs(keep=args.keep, before=args.before)
+    reclaimed = db.vacuum()
+    _print_json({
+        "pruned_runs": pruned,
+        "bytes_reclaimed": reclaimed,
+        "pages": _rebuild_reports() if pruned else {},
+    })
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -181,6 +226,13 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=helptext)
         p.add_argument("--job-id", action="append", required=True,
                        help="Repeat for several jobs; ids come from `list`")
+
+    c = sub.add_parser("compact", help="Reclaim disk space, and optionally forget "
+                                       "old sweeps")
+    c.add_argument("--keep", type=int, default=None,
+                   help="Forget all but the N most recent sweeps")
+    c.add_argument("--before", default=None,
+                   help="Forget sweeps older than this date (YYYY-MM-DD)")
     return parser
 
 
@@ -188,6 +240,7 @@ HANDLERS = {
     "list": cmd_list,
     "applied": cmd_applied,
     "declined": cmd_declined,
+    "compact": cmd_compact,
 }
 
 

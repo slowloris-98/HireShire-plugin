@@ -554,7 +554,10 @@ async def run_apply_worker(
         if blocked or state["tripped"]:
             stats["deferred"] += 1
             return
-        if job_id in await asyncio.to_thread(db.applied_ids):
+        # `(board_token, job_id)`, which is the posting's key: a bare id is not
+        # unique across boards, so an id-keyed check could read another
+        # employer's application as this one's and skip a job never applied to.
+        if (company or "", job_id) in await asyncio.to_thread(db.applied_ids):
             return
         if limits.enabled(settings):
             # The per-company cap, re-read before every launch for the same reason

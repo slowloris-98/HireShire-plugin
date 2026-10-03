@@ -296,7 +296,8 @@ def load_corpus() -> list[Job]:
     # updated_at) key that pick_representative breaks ties on, so without a stable
     # order the DB row order would silently decide the cluster representative.
     rows = con.execute(
-        "SELECT job_id, raw_json, content_text FROM jobs WHERE run_id = ? ORDER BY job_id",
+        "SELECT job_id, job_json AS raw_json, content_text FROM postings "
+        "WHERE last_run_id = ? ORDER BY job_id",
         (RUN_ID,),
     ).fetchall()
     con.close()

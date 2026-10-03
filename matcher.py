@@ -187,29 +187,34 @@ class _NoopProgress:
 
 
 async def _record_gate_reasons(db, run_id: str, filtered) -> None:
-    """Persist the title gate's verdict onto the `jobs` rows it dropped.
+    """Persist the title gate's verdict onto the postings it dropped.
 
-    These results deliberately get no `matches` row — there can be tens of thousands
-    of them a sweep — so this column is the only record of *why* each one was dropped,
-    and the only thing that lets the overview's last section say so. One batched
-    UPDATE per company batch, off the event loop like every other write here.
+    These results deliberately never reach the scoring columns — there can be tens of
+    thousands of them a sweep — so `gate_reason` is the only record of *why* each one
+    was dropped, and the only thing that lets the overview's last section say so. One
+    batched UPDATE per company batch, off the event loop like every other write here.
+
+    Triples, because `postings` is keyed `(board_token, job_id)`: the bare id is not
+    unique across boards, and a reason written against it could label the wrong
+    employer's posting.
     """
     if not filtered:
         return
     await asyncio.to_thread(
         db.record_gate_reasons, run_id,
-        [(r.job_id, r.skip_reason or "") for r in filtered],
+        [(r.board_token, r.job_id, r.skip_reason or "") for r in filtered],
     )
 
 
 async def _persist_hydrated_details(db, run_id: str, to_score) -> None:
-    """Upsert funnel-hydrated Workday/BambooHR descriptions back to the jobs table.
+    """Upsert funnel-hydrated Workday/BambooHR descriptions back onto the postings.
 
     List-only rows are scraped with content_text=NULL and hydrated by the funnel
     in-memory only, so without this DB-backed readers (standalone tuner/apply,
     re-runs, pipeline/jobs exports) never see the description. `insert_jobs` is an
-    INSERT OR REPLACE on (run_id, job_id) — it upserts the scrape-time row in
-    place, updating content_text and detail_fetch_failed (carried in raw_json).
+    upsert on `(board_token, job_id)` naming its own columns, so this second call
+    updates content_text and detail_fetch_failed (carried in job_json) in place and
+    touches neither the gate's verdict nor the sweep that first saw the posting.
     Only detail-board survivors are touched; other boards already carry content."""
     changed = [
         j for j in to_score
@@ -743,7 +748,7 @@ async def main(
                         break
                     board_token, batch_jobs = item
                     logger.info("Gating batch: %s (%d jobs)", board_token, len(batch_jobs))
-                    unseen = [j for j in batch_jobs if j.job_id not in seen]
+                    unseen = [j for j in batch_jobs if j not in seen]
                     if len(unseen) < len(batch_jobs):
                         logger.info(
                             "Dedup: skipping %d already-seen jobs from %s",
@@ -815,7 +820,7 @@ async def main(
             finally:
                 for r in results:
                     if r.skip_reason not in _RETRYABLE_SKIP_REASONS:
-                        seen.add(r.job_id)
+                        seen.add(r)
                 seen.save()
                 shortlisted = [r for r in results if is_shortlisted(r, settings.threshold)]
                 rejected = [r for r in results if not is_shortlisted(r, settings.threshold)]
@@ -864,7 +869,7 @@ async def main(
             )
 
         not_in_run = [j for j in jobs if j.job_id not in scored_ids]
-        unscored = [j for j in not_in_run if j.job_id not in seen]
+        unscored = [j for j in not_in_run if j not in seen]
         dedup_skipped = len(not_in_run) - len(unscored)
         if dedup_skipped > 0 and not quiet:
             console.print(f"[yellow]Dedup: {dedup_skipped} jobs skipped (already scored in a previous run)[/yellow]\n")
@@ -941,7 +946,7 @@ async def main(
         for r in results:
             # Budget drops stay eligible for a later run — see _RETRYABLE_SKIP_REASONS.
             if r.skip_reason not in _RETRYABLE_SKIP_REASONS:
-                seen.add(r.job_id)
+                seen.add(r)
         seen.save()
 
         if breaker.tripped:

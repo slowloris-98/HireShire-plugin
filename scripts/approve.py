@@ -92,7 +92,11 @@ _SUBCOMMANDS = {
         "resume-text", "get", "field-docs", "set", "write-profile", "warm-models",
         "codex-check",
     }),
-    "scripts/jobs_cli.py": frozenset({"list", "applied", "declined"}),
+    # `compact` is here for the same reason the other three are: it is the only
+    # road to retention, and a retention command is useless in a plugin whose
+    # premise is that users never open a terminal unless a skill can run it
+    # without a dialog. It refuses while a sweep holds the database itself.
+    "scripts/jobs_cli.py": frozenset({"list", "applied", "declined", "compact"}),
 }
 
 _SHELLS = frozenset({"sh", "bash", "sh.exe", "bash.exe"})

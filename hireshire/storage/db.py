@@ -1,9 +1,16 @@
 """Central SQLite storage for every HireShire phase.
 
-One `data/hireshire.db` (WAL mode) holds all tabular data: scraped jobs, matcher
-results, the cross-run seen-jobs set, pipeline results, tuned-job metadata, and
-applier records. Genuine binary artifacts (tuned PDFs/tex, applier screenshots)
-stay on disk and are referenced by path from the DB.
+One `data/hireshire.db` (WAL mode) holds all tabular data. **One posting is one row
+in `postings`**, keyed `(board_token, job_id)`, carrying the scrape, the funnel
+scores, the judge's verdict and the application outcome together: the scraper
+upserts it, the matcher writes scores into it, the applier reads scored rows from it
+and writes the outcome back. Genuine binary artifacts (tuned PDFs/tex, applier
+screenshots) stay on disk and are referenced by path from the DB.
+
+What remains per-run is per-run by nature: `runs` (phase spans and stats),
+`run_companies` (which employers a sweep reached), `run_progress` (the dashboards'
+three bars) and `pipeline_results` (a sweep's own export rows). `meta` is per
+install.
 
 Concurrency: a single connection per DB path is shared process-wide (see
 `get_db`) and guarded by a `threading.Lock`, so all writes serialize with zero
@@ -18,8 +25,10 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -29,8 +38,38 @@ from hireshire.models.job import Job
 
 logger = logging.getLogger(__name__)
 
+
+class SchemaMigrationBlocked(RuntimeError):
+    """The one-time upgrade to `postings` cannot run right now.
+
+    Carries one actionable sentence, because every caller prints it instead of a
+    traceback: the entry points (`scripts/jobs_cli.py`, the report builders, setup)
+    catch this specifically.
+
+    Two causes, and both are honest refusals rather than failures:
+
+    * **A sweep is running.** It was started before this update, so it is executing
+      the old code against this file; migrating underneath it would fail every
+      statement it issues naming `jobs`, `matches` or `applied` — loudly, repeatedly,
+      mid-sweep. Deferring silently is not an option either, because the new readers
+      have no old SQL left to fall back on, so the refusal has to reach the user.
+      (The migration also holds the write lock for minutes against a 5,000 ms
+      `busy_timeout`, which would break a live writer on its own.)
+    * **Not enough free disk.** The migration appends ~1 GB of new pages before it
+      drops the old tables. Without the check the failure is `SQLITE_FULL` several
+      minutes in — safe, since it rolls back, but with a message nobody can act on.
+    """
+
 DEFAULT_DB_PATH = paths.DB_PATH
-SCHEMA_VERSION = 1
+
+#: Bumped to 2 when `jobs`, `matches`, `applied` and `seen_jobs` were merged into
+#: `postings`. **This is the first release in which the stored value does anything.**
+#: It is recorded and *enforced* — a file stamped higher than this is refused rather
+#: than read with the wrong shape — while the migration itself is gated on the shape
+#: it finds (`PRAGMA table_info(jobs)`), not on the version. That split is deliberate:
+#: a brand-new file has no stored version either, and "absent means v1 or means new?"
+#: is a question nothing has to answer if the shape is the trigger.
+SCHEMA_VERSION = 2
 
 # Phase identifiers used in the `runs` table.
 PHASE_SCRAPE = "scrape"
@@ -74,80 +113,6 @@ CREATE TABLE IF NOT EXISTS run_companies (
     PRIMARY KEY (run_id, board_token)
 );
 
-CREATE TABLE IF NOT EXISTS jobs (
-    run_id       TEXT NOT NULL,
-    job_id       TEXT NOT NULL,
-    board_token  TEXT,
-    source       TEXT,
-    title        TEXT,
-    location     TEXT,
-    url          TEXT,
-    updated_at   TEXT,
-    scraped_at   TEXT,
-    content_text TEXT,
-    raw_json     TEXT NOT NULL,
-    -- Why the free title gate dropped this job. It is the only record of that
-    -- verdict for the tens of thousands of jobs a sweep keeps out of `matches`
-    -- entirely. Written by the matcher, never by `insert_jobs` -- see
-    -- `record_gate_reasons` for why that separation is load-bearing. NULL means
-    -- "not dropped by the gate, or dropped before this column existed".
-    gate_reason  TEXT,
-    PRIMARY KEY (run_id, job_id)
-);
-CREATE INDEX IF NOT EXISTS idx_jobs_run ON jobs(run_id);
--- `job_id`-leading, because the overview's last section asks a question about a
--- posting ACROSS runs rather than about one run: `load_unmatched_jobs` has to know
--- whether an earlier sweep already saw this job, and `overview_counts` asks the same.
---
--- **It is required, not an optimisation.** Without it the first-sighting anti-join
--- falls back to the primary key, which can only use its `run_id < ?` prefix and so
--- scans every earlier run's rows: measured on a real install (580,727 `jobs` rows over
--- 135 sweeps) one run-scope read took 31.8s, against 7ms with this index -- on a page
--- that rebuilds every few seconds for the length of a sweep. All three columns so the
--- anti-join and the `gate_reason` lookup are both covering. Like `idx_matches_job`
--- below, an index in this script reaches an existing database with no migration; it
--- builds in under a second on that install.
-CREATE INDEX IF NOT EXISTS idx_jobs_job ON jobs(job_id, run_id, gate_reason);
-
-CREATE TABLE IF NOT EXISTS matches (
-    run_id          TEXT NOT NULL,
-    job_id          TEXT NOT NULL,
-    board_token     TEXT,
-    title           TEXT,
-    relevance_score INTEGER,
-    -- Funnel scores on different scales; see MatchResult for why they are never
-    -- combined. encoder_score is a 0-1 cosine over the title; rerank_score is a
-    -- cross-encoder logit. rerank_score_wide is written only by runs made under the
-    -- old two-model cascade, where it came from a DIFFERENT model and was never
-    -- comparable to rerank_score. Kept so those rows still render.
-    encoder_score     REAL,
-    rerank_score_wide REAL,
-    rerank_score      REAL,
-    -- Years of experience the POSTING asks for, read from its description by
-    -- funnel/experience.py. Not the LLM's own reading of the same question, which
-    -- stays in raw_json as years_experience_required.
-    yoe_required      REAL,
-    shortlisted     INTEGER DEFAULT 0,
-    skipped         INTEGER DEFAULT 0,
-    skip_reason     TEXT,
-    source_run_id   TEXT,
-    scored_at       TEXT,
-    raw_json        TEXT NOT NULL,
-    PRIMARY KEY (run_id, job_id)
-);
-CREATE INDEX IF NOT EXISTS idx_matches_run ON matches(run_id);
-CREATE INDEX IF NOT EXISTS idx_matches_shortlisted ON matches(run_id, shortlisted);
--- The overview page groups by job_id across every run, and joins `applied` to it.
--- Unlike a new column, an index in this script does reach an existing database:
--- `executescript` runs on every connect and CREATE INDEX IF NOT EXISTS is not a
--- no-op the way CREATE TABLE IF NOT EXISTS is on a table that already exists.
-CREATE INDEX IF NOT EXISTS idx_matches_job ON matches(job_id);
-
-CREATE TABLE IF NOT EXISTS seen_jobs (
-    job_id     TEXT PRIMARY KEY,
-    first_seen TEXT
-);
-
 CREATE TABLE IF NOT EXISTS pipeline_results (
     run_id          TEXT NOT NULL,
     job_id          TEXT NOT NULL,
@@ -182,27 +147,167 @@ CREATE TABLE IF NOT EXISTS run_progress (
     apply_handled   INTEGER DEFAULT 0,  -- of those, how many the worker is done with
     updated_at      TEXT
 );
+"""
 
-CREATE TABLE IF NOT EXISTS applied (
-    job_id       TEXT PRIMARY KEY,
-    board_token  TEXT,
-    title        TEXT,
-    absolute_url TEXT,
-    applied_at   TEXT,
-    status       TEXT,
-    dry_run      INTEGER,
-    screenshot   TEXT,
-    error        TEXT,
-    -- Whether this application came off an earlier sweep's shortlist (the backlog)
-    -- rather than the sweep that found the job. Known only when it is written:
-    -- `applied` has no run_id, so nothing downstream can work it out afterwards.
-    from_backlog INTEGER NOT NULL DEFAULT 0
+#: The one table. A posting, its funnel scores, the judge's verdict and the
+#: application outcome, all on one row keyed `(board_token, job_id)`.
+#:
+#: It replaced four tables — `jobs` (keyed `(run_id, job_id)`, so the scraper wrote a
+#: full copy of every posting on every sweep: 580,727 rows for 75,732 postings on a
+#: real install, 3.81 GB of it re-sightings), `matches`, `applied` and `seen_jobs`.
+#:
+#: **`(board_token, job_id)` is also what fixes the cross-board `job_id` collision**,
+#: and it fixes it *because* of the merge rather than because `jobs` gained a column.
+#: `job_id` is only unique per board — Greenhouse and BambooHR both mint bare
+#: integers and Workday falls back to the job *title* when a posting has no req id —
+#: and the damage was never in `jobs`, whose per-run key never separated two boards
+#: either. It was that `seen_jobs(job_id)` retired a posting permanently and
+#: `applied(job_id)` credited an application, both on the bare id. Those keys no
+#: longer exist. No id was reminted, so no application record could be mis-mapped.
+#:
+#: Held as one `.format(table=…)` template because the migration builds a staging
+#: table that must be byte-identical to this one. Keep it free of braces.
+_POSTINGS_DDL = """
+CREATE TABLE IF NOT EXISTS {table} (
+    -- Identity. Both NOT NULL *explicitly*: in SQLite a composite PRIMARY KEY on a
+    -- rowid table does not imply NOT NULL, and two NULLs compare distinct -- so
+    -- without these the key would admit the duplicate rows it exists to prevent.
+    board_token   TEXT NOT NULL,
+    job_id        TEXT NOT NULL,
+
+    -- The posting, as scraped. Newest sighting wins.
+    source        TEXT,
+    title         TEXT,
+    location      TEXT,
+    url           TEXT,
+    updated_at    TEXT,            -- when the employer posted it
+    scraped_at    TEXT,            -- the newest sighting
+    -- The only per-run facts the collapse kept. `first_run_id` replaces an anti-join
+    -- (`NOT EXISTS (… e.run_id < j.run_id)`) that had to derive it from 7.7 rows per
+    -- posting, and the index it required -- without which one run-scope read measured
+    -- 31.8s against 7ms. Lexicographic over a fixed-width UTC stamp is chronological
+    -- by construction, which is what lets `insert_jobs` keep them with MIN()/MAX().
+    first_run_id  TEXT NOT NULL,
+    last_run_id   TEXT NOT NULL,
+
+    -- Why the free title gate dropped this posting, and whether a verdict retired it.
+    --
+    -- `gate_reason` is the only record of that verdict for the tens of thousands of
+    -- postings a sweep deliberately keeps out of the scoring columns entirely. One
+    -- verdict per posting, not per sweep: the last sweep to gate it wins, which is
+    -- what a cross-run `COALESCE(…, MAX(gate_reason))` lookup used to compute. Written
+    -- by `record_gate_reasons`; `insert_jobs` must never name it.
+    --
+    -- `retired_at` replaces the `seen_jobs` table. Non-NULL means a verdict retired
+    -- this posting and the matcher must not stream it again; NULL means never retired,
+    -- or un-retired after a scoring error. A column rather than a derivation from
+    -- `skip_reason`, deliberately: `_RETRYABLE_SKIP_REASONS` stays one rule in
+    -- `matcher.py` instead of being restated in SQL where it could drift.
+    gate_reason   TEXT,
+    retired_at    TEXT,
+
+    -- The funnel and the judge. `scored_run_id` is the sweep whose verdict this is,
+    -- and is what run- and day-scope pages filter on; `source_run_id` keeps its old
+    -- meaning (the run the scored job was scraped in).
+    --
+    -- **One row, so the row is current state rather than a per-sweep ledger.** A job
+    -- the call cap deferred in sweep #1 and sweep #5 judged has one row, stamped #5:
+    -- it moves off #1's dashboard onto #5's. That is the row every lifetime read
+    -- already chose (newest wins, because the matcher retires a judged job, so a
+    -- verdict is always the last word) -- the choosing is simply gone now.
+    scored_run_id TEXT,
+    source_run_id TEXT,
+    scored_at     TEXT,
+    -- Scores on different scales; see MatchResult for why they are never combined.
+    -- encoder_score is a 0-1 cosine over the title, rerank_score a cross-encoder
+    -- logit. rerank_score_wide is read-only: only runs made under the old two-model
+    -- cascade wrote it, from a DIFFERENT model, so it was never comparable to
+    -- rerank_score. Kept so those rows still render.
+    encoder_score     REAL,
+    rerank_score      REAL,
+    rerank_score_wide REAL,
+    -- Years of experience the POSTING asks for, read from its description by
+    -- funnel/experience.py. Not the LLM's own reading of the same question, which
+    -- stays in match_json as years_experience_required.
+    yoe_required  REAL,
+    relevance_score INTEGER,
+    shortlisted   INTEGER DEFAULT 0,
+    skipped       INTEGER DEFAULT 0,
+    skip_reason   TEXT,
+
+    -- The application. A NULL `apply_status` means no application record at all,
+    -- which is exactly what an absent `applied` row used to mean -- including for a
+    -- job the user declined, which must have no record rather than a status, since
+    -- every status that is not `submitted` renders under Needs Attention by design.
+    --
+    -- `from_backlog` says the application came off an earlier sweep's shortlist
+    -- rather than the sweep that found the job. Stored because it cannot be derived:
+    -- there is no run_id here, and `applied_at` against `scored_at` is a guess.
+    apply_status  TEXT,
+    applied_at    TEXT,
+    apply_error   TEXT,
+    screenshot    TEXT,
+    from_backlog  INTEGER NOT NULL DEFAULT 0,
+
+    -- Wide columns LAST, deliberately. SQLite reads a row's columns in order and
+    -- spills a long value to overflow pages, so a query that stops before these never
+    -- traverses them -- and every dashboard query reads only the columns above.
+    --
+    -- **Two JSON names, never one.** `job_json` is the scraped Job dump (detail_path,
+    -- detail_fetch_failed, location_is_placeholder, questions); `match_json` is
+    -- MatchResult (cluster_representative, the rationales, applier_location). They
+    -- overlap on job_id, board_token, title and absolute_url, and `location` has a
+    -- different SHAPE in each -- a bare string in one, {{"name": …}} in the other. A
+    -- single `raw_json` is what forced `_sibling_sql` to take a table alias, and
+    -- collapsing them would make every blob read silently ambiguous.
+    job_json      TEXT NOT NULL,
+    match_json    TEXT,
+    content_text  TEXT,
+
+    PRIMARY KEY (board_token, job_id)
 );
+-- Board-leading, for write locality: the scraper upserts one employer's batch at a
+-- time across ~15,871 employers, so a company's postings sit on adjacent pages.
+-- The lookups that have only the bare id -- the overview's buttons, `applied_ids`,
+-- `mark_applied_by_hand` -- take idx_postings_job instead.
+CREATE INDEX IF NOT EXISTS idx_postings_job        ON {table}(job_id);
+CREATE INDEX IF NOT EXISTS idx_postings_first_run  ON {table}(first_run_id);
+CREATE INDEX IF NOT EXISTS idx_postings_scored_run ON {table}(scored_run_id);
+CREATE INDEX IF NOT EXISTS idx_postings_shortlist  ON {table}(shortlisted, scored_at);
 """
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _statements(script: str) -> list[str]:
+    """Split a DDL script into statements, respecting comments.
+
+    `str.split(";")` is wrong here and was wrong once: the comments in
+    `_POSTINGS_DDL` contain semicolons of their own, so it handed SQLite six
+    fragments of a `CREATE TABLE` and failed with "incomplete input".
+    `sqlite3.complete_statement` is the supported test — it knows a `;` inside a
+    comment or a string literal does not end anything.
+
+    This exists because the migration cannot use `executescript`: that issues an
+    implicit COMMIT when a transaction is pending, which would silently end the one
+    the whole merge depends on.
+    """
+    out, buf = [], ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            out.append(buf)
+            buf = ""
+    if buf.strip():
+        out.append(buf)
+    return [st for st in out if st.strip() and not _is_only_comment(st)]
+
+
+def _is_only_comment(statement: str) -> bool:
+    return all(not line.strip() or line.strip().startswith("--")
+               for line in statement.splitlines())
 
 
 class Database:
@@ -251,6 +356,12 @@ class Database:
     # EXISTS` is a no-op on a database that already has the table, so a new column in
     # _SCHEMA above never reaches an existing file — the INSERT then fails with an
     # opaque "no such column". Listed here, they are added on connect instead.
+    #
+    # Four of these name tables the `postings` merge deleted, and they stay because
+    # the **migration still has to read those tables** on a v1 file: it cannot select
+    # `matches.rerank_score` or `applied.from_backlog` off a file old enough to lack
+    # them. `_add_missing_columns` skips a table that is not there, so on a migrated
+    # file they are simply no-ops.
     _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         ("matches", "encoder_score", "REAL"),
         ("matches", "rerank_score_wide", "REAL"),
@@ -273,14 +384,70 @@ class Database:
     )
 
     def _init_schema(self) -> None:
+        """Bring the file to the current schema, in an order that matters.
+
+        1. **Refuse a file from the future** before touching it. Nothing else in this
+           project reads `meta.schema_version`; this is the first thing that does, and
+           reading a newer shape with these queries would produce wrong answers rather
+           than errors.
+        2. Create what is missing — the surviving per-run tables, then `postings`.
+           On a v1 file the `postings` script is the only part that does anything.
+        3. `_add_missing_columns`, which must run **before** the migration: it is what
+           guarantees the v1 columns the migration selects actually exist.
+        4. Migrate, gated on the shape rather than the version (see `SCHEMA_VERSION`).
+        5. Stamp the version. `INSERT OR REPLACE`, not `OR IGNORE` — a v1 file already
+           has the row, and leaving it at 1 would re-arm step 4 on every connect.
+
+        **`postings` is created here only when there is nothing to migrate.** On a v1
+        file the migration creates it, under a staging name it then renames, and the
+        index names in `_POSTINGS_DDL` are fixed — so an empty `postings` made here
+        first would own `idx_postings_job` and the staging table could not have it.
+        Leaving it to the migration also means a refusal (a live sweep, no disk) leaves
+        the file exactly as it was, with no half-made table in it.
+        """
+        self._check_schema_version()
+        legacy = self._table_exists("jobs")
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            if not legacy:
+                self._conn.executescript(_POSTINGS_DDL.format(table="postings"))
             self._add_missing_columns()
+            self._conn.commit()
+        if legacy:
+            self._migrate_to_postings()
+        with self._lock:
             self._conn.execute(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
             self._conn.commit()
+
+    def _check_schema_version(self) -> None:
+        """Refuse a file written by a newer HireShire than this one.
+
+        A downgrade is the one case where carrying on is worse than stopping: the
+        queries below would run without error against a shape they do not understand.
+        A missing `meta` table, a missing row or an unparseable value all mean "no
+        claim", which is what every file before this release looks like.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'"
+            ).fetchone()
+        except sqlite3.Error:
+            return  # no `meta` table yet — a new file, or one older than it
+        if row is None:
+            return
+        try:
+            stored = int(str(row["value"]).strip())
+        except (TypeError, ValueError):
+            return
+        if stored > SCHEMA_VERSION:
+            raise SchemaMigrationBlocked(
+                f"{self.path.name} was written by a newer version of HireShire "
+                f"(database schema {stored}, this build understands {SCHEMA_VERSION}). "
+                "Update the plugin, or point it at a different data directory."
+            )
 
     def _add_missing_columns(self) -> None:
         """Bring an older database file up to the current column set.
@@ -297,6 +464,338 @@ class Database:
             if column not in existing:
                 logger.info("Adding column %s.%s to %s", table, column, self.path.name)
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+    def _table_exists(self, name: str) -> bool:
+        try:
+            return bool(
+                self._conn.execute(f"PRAGMA table_info({name})").fetchone()
+            )
+        except sqlite3.Error:
+            return False
+
+    # -- the one-time merge into `postings` -----------------------------------
+    #
+    # The four tables this folds together (`jobs`, `matches`, `applied`, `seen_jobs`)
+    # are dropped at the end of it, so everything below runs once per database, ever.
+    # It is kept here rather than in a `migrations/` tree because it is the only one,
+    # and because `_init_schema` has to be able to run it before any reader sees the
+    # file: no reader can straddle both shapes, so there is no lazy option.
+
+    #: What the migration wants free on the volume before it starts: one more copy of
+    #: the file. The new rows are only ~20% of it, but `BEGIN IMMEDIATE` means the WAL
+    #: carries every page the insert touches, and `SQLITE_FULL` several minutes in —
+    #: safe, since it rolls back, but with a message nobody can act on — is the failure
+    #: this avoids. Deliberately generous: being refused with a number is recoverable.
+    _MIGRATION_HEADROOM = 1.0
+
+    def _migrate_to_postings(self) -> None:
+        """Collapse `jobs`/`matches`/`applied`/`seen_jobs` into one row per posting.
+
+        **One transaction, including the version stamp's companion `DROP`s.** SQLite's
+        DDL is transactional, so an interrupted sweep — or `--stop`, which is
+        `taskkill /F` and runs no `finally` — leaves a clean v1 file with every
+        original row, and the next open simply retries. `postings_migrating` therefore
+        cannot be left behind and there is no cleanup path to get wrong.
+
+        **The transaction is driven by hand, not with `with self._conn:`.** This is the
+        easiest thing here to get wrong: Python's `sqlite3` at the default
+        `isolation_level=""` opens a transaction for DML only, so the context manager
+        would leave every `CREATE`/`DROP`/`ALTER` in autocommit — non-atomic while
+        *looking* atomic. `BEGIN IMMEDIATE` also takes the write lock up front, so a
+        competing writer fails fast rather than after the expensive insert.
+
+        What it must preserve, in order of how loudly it would be noticed:
+
+        * **`gate_reason`** — `MAX` over the non-empty values for a posting, which is
+          literally what `load_unmatched_jobs` used to compute across runs. So no
+          page's `Reason` column changes across the upgrade, and that column is
+          thousands of rows on a real sweep.
+        * **the newest sighting's payload** — title, location, url, `updated_at`,
+          `job_json`. Newest is the one still true, the same rule every lifetime read
+          already applied to `matches`.
+        * **a description a later failed hydration would have lost** — `content_text`
+          falls back to the newest non-NULL older sighting, mirroring `insert_jobs`'
+          `COALESCE`. Writer and migration have to agree, or one of them loses text.
+        * **the newest verdict**, which is the one-time execution of the
+          `MAX(scored_at)` rule that `_canonical_matches_sql` used to run on every read.
+        * **the application and the retirement**, which have no `run_id` to resolve.
+        """
+        started = time.monotonic()
+        self._refuse_migration_if_unsafe()
+        legacy_rows = self._conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()["n"]
+        logger.info(
+            "Upgrading %s: merging %d job sightings into one row per posting. "
+            "This runs once and may take a few minutes.",
+            self.path.name, legacy_rows,
+        )
+        with self._lock:
+            # Hand-rolled, for the reason in the docstring. `isolation_level = None`
+            # puts the connection in autocommit so BEGIN/COMMIT mean exactly what they
+            # say; it is restored either way.
+            previous_isolation = self._conn.isolation_level
+            self._conn.isolation_level = None
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                collisions, orphans = self._run_migration_statements()
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES ('vacuum_pending', '1')"
+                )
+                self._conn.execute("COMMIT")
+            except BaseException:
+                # Includes KeyboardInterrupt on purpose: a half-applied merge is the
+                # one outcome there is no recovering from.
+                self._conn.execute("ROLLBACK")
+                raise
+            finally:
+                self._conn.isolation_level = previous_isolation
+
+        kept = self._conn.execute("SELECT COUNT(*) AS n FROM postings").fetchone()["n"]
+        logger.info(
+            "Upgraded %s in %.1fs: %d sightings -> %d postings. "
+            "%d job ids are claimed by more than one board; %d legacy rows could not "
+            "be matched to a posting. Disk space is reclaimed separately.",
+            self.path.name, time.monotonic() - started, legacy_rows, kept,
+            collisions, orphans,
+        )
+
+    def _refuse_migration_if_unsafe(self) -> None:
+        """Both reasons not to start: a live sweep, and not enough disk.
+
+        The sweep check is the same `sweep_pid` + `is_alive` pair `bootstrap.py` uses
+        to refuse swapping torch under a running sweep, and it is trustworthy for the
+        same reason: that pid is one the sweeper wrote about *itself*, so no identity
+        is being guessed at — the mistake that cost two earlier designs a user's work.
+
+        **No ancestor walk is needed**, because of the order in
+        `run_orchestration._loop`: its duplicate guard establishes that no sweeper is
+        alive, it connects to the database next, and only *then* records its own pid.
+        So a new sweeper always migrates with the pid file empty or stale, and every
+        later connect — its own, and any `run_engine` child's — finds a migrated file
+        and never reaches this check. The `os.getpid()` clause is belt for a second
+        connection inside a sweeper that did record itself first.
+        """
+        import os
+
+        from hireshire import sweep_pid
+        from hireshire.process_liveness import is_alive
+
+        pid = sweep_pid.read()
+        if pid is not None and pid != os.getpid() and is_alive(pid):
+            raise SchemaMigrationBlocked(
+                f"HireShire needs a one-time database upgrade, and a sweep is running "
+                f"(pid {pid}) that was started before this update. Stop it first with "
+                f"`sh scripts/hireshire.sh --stop`, then run this again."
+            )
+
+        try:
+            size = self.path.stat().st_size
+            free = shutil.disk_usage(self.path.parent).free
+        except OSError:
+            return  # cannot tell; the transaction's own rollback is the fallback
+        if free < size * self._MIGRATION_HEADROOM:
+            raise SchemaMigrationBlocked(
+                "HireShire needs a one-time database upgrade and there is not enough "
+                f"free disk space: it needs about {size / 2**30:.1f} GB free on "
+                f"{self.path.parent}, and {free / 2**30:.1f} GB is available. The "
+                "upgrade reclaims more than that once it finishes."
+            )
+
+    def _run_migration_statements(self) -> tuple[int, int]:
+        """The merge proper. Returns `(cross-board ids, unmatchable legacy rows)`.
+
+        Called inside the open transaction, under the lock.
+        """
+        conn = self._conn
+        # An empty `postings` can only exist if a previous attempt was interrupted
+        # after the rename but before the stamp, which the single transaction makes
+        # impossible — but dropping an *empty* one costs nothing and keeps the index
+        # names free, and a non-empty one means the shape detection was wrong, which
+        # must not be papered over.
+        if self._table_exists("postings"):
+            if conn.execute("SELECT COUNT(*) AS n FROM postings").fetchone()["n"]:
+                raise SchemaMigrationBlocked(
+                    f"{self.path.name} holds both the old `jobs` table and a non-empty "
+                    "`postings` table. Restore a backup, or move this file aside."
+                )
+            conn.execute("DROP TABLE postings")
+
+        # How many ids two boards both claim. Reported, not fixed: the composite key
+        # is the fix, and this is the number that says whether it ever mattered here.
+        collisions = conn.execute(
+            "SELECT COUNT(*) AS n FROM ("
+            "  SELECT job_id FROM jobs GROUP BY job_id"
+            "   HAVING COUNT(DISTINCT COALESCE(board_token,'')) > 1)"
+        ).fetchone()["n"]
+
+        # Fill in a blank `board_token` on the two tables that are about to be joined
+        # by it, from the posting's own newest sighting. `upsert_match` and
+        # `record_applied` have always written one, so this is for rows old enough to
+        # predate that; a row still blank afterwards is counted as an orphan below.
+        # Where two boards claim the id this picks the newer, which is the same guess
+        # the old job-id-only keys made implicitly.
+        for table in ("matches", "applied"):
+            if not self._table_exists(table):
+                continue
+            conn.execute(
+                f"UPDATE {table} SET board_token = ("
+                "    SELECT j.board_token FROM jobs j WHERE j.job_id = "
+                f"      {table}.job_id AND j.board_token IS NOT NULL "
+                "      AND j.board_token <> '' ORDER BY j.run_id DESC LIMIT 1) "
+                "WHERE board_token IS NULL OR board_token = ''"
+            )
+
+        # **Not `executescript`**, which issues an implicit COMMIT when a transaction
+        # is pending and would therefore end the one this depends on, silently. See
+        # `_statements` for why the split is not `str.split(";")`.
+        for statement in _statements(_POSTINGS_DDL.format(table="postings_migrating")):
+            conn.execute(statement)
+
+        # A legacy table the file never had contributes nothing rather than failing
+        # the whole merge: `_SCHEMA` always created all four, but a hand-built or
+        # partially restored file is exactly when a migration must not be brittle.
+        matches_join = (
+            "LEFT JOIN (SELECT COALESCE(board_token,'') AS bt, job_id, run_id,"
+            "                  source_run_id, MAX(scored_at) AS scored_at,"
+            "                  relevance_score, encoder_score, rerank_score,"
+            "                  rerank_score_wide, yoe_required, shortlisted, skipped,"
+            "                  skip_reason, raw_json"
+            "             FROM matches GROUP BY bt, job_id) m"
+            "  ON m.bt = COALESCE(j.board_token,'') AND m.job_id = j.job_id "
+            if self._table_exists("matches") else
+            "LEFT JOIN (SELECT NULL AS run_id, NULL AS source_run_id,"
+            "                  NULL AS scored_at, NULL AS relevance_score,"
+            "                  NULL AS encoder_score, NULL AS rerank_score,"
+            "                  NULL AS rerank_score_wide, NULL AS yoe_required,"
+            "                  NULL AS shortlisted, NULL AS skipped,"
+            "                  NULL AS skip_reason, NULL AS raw_json) m ON 0 "
+        )
+        applied_join = (
+            "LEFT JOIN applied a"
+            "  ON COALESCE(a.board_token,'') = COALESCE(j.board_token,'')"
+            " AND a.job_id = j.job_id"
+            if self._table_exists("applied") else
+            # No `applied` table: every apply column stays NULL, which is what "no
+            # application record" means everywhere else.
+            "LEFT JOIN (SELECT NULL AS status, NULL AS applied_at, NULL AS error,"
+            "                  NULL AS screenshot, 0 AS from_backlog,"
+            "                  NULL AS job_id) a ON 0"
+        )
+
+        # One pass, one row per posting. The aggregate over `jobs` is its own subquery
+        # because `MIN` and `MAX` in a single group void SQLite's bare-column
+        # guarantee: the payload therefore comes from the join to the newest sighting
+        # (`r.last_run_id = j.run_id`), which the `(run_id, job_id)` primary key makes
+        # unique, so the join cannot tie. The `matches` aggregate *does* keep that
+        # guarantee -- `MAX(scored_at)` is the only aggregate in it -- which is what
+        # lets the verdict's twelve columns come back in one pass.
+        conn.execute(
+            "INSERT INTO postings_migrating ("
+            "  board_token, job_id, source, title, location, url, updated_at,"
+            "  scraped_at, first_run_id, last_run_id, gate_reason,"
+            "  scored_run_id, source_run_id, scored_at, encoder_score, rerank_score,"
+            "  rerank_score_wide, yoe_required, relevance_score, shortlisted, skipped,"
+            "  skip_reason, apply_status, applied_at, apply_error, screenshot,"
+            "  from_backlog, job_json, match_json, content_text) "
+            "SELECT COALESCE(j.board_token,''), j.job_id, j.source, j.title,"
+            "       j.location, j.url, j.updated_at, j.scraped_at,"
+            "       r.first_run_id, r.last_run_id, r.gate_reason,"
+            "       m.run_id, m.source_run_id, m.scored_at, m.encoder_score,"
+            "       m.rerank_score, m.rerank_score_wide, m.yoe_required,"
+            "       m.relevance_score, COALESCE(m.shortlisted, 0),"
+            "       COALESCE(m.skipped, 0), m.skip_reason,"
+            "       a.status, a.applied_at, a.error, a.screenshot,"
+            "       COALESCE(a.from_backlog, 0),"
+            "       j.raw_json, m.raw_json,"
+            "       COALESCE(j.content_text, ("
+            "           SELECT c.content_text FROM jobs c"
+            "            WHERE c.job_id = j.job_id"
+            "              AND COALESCE(c.board_token,'') = COALESCE(j.board_token,'')"
+            "              AND c.content_text IS NOT NULL"
+            "            ORDER BY c.run_id DESC LIMIT 1)) "
+            "FROM jobs j "
+            "JOIN (SELECT COALESCE(board_token,'') AS bt, job_id,"
+            "             MIN(run_id) AS first_run_id, MAX(run_id) AS last_run_id,"
+            "             MAX(CASE WHEN gate_reason <> '' THEN gate_reason END)"
+            "               AS gate_reason"
+            "        FROM jobs GROUP BY bt, job_id) r"
+            "  ON r.bt = COALESCE(j.board_token,'') AND r.job_id = j.job_id"
+            " AND r.last_run_id = j.run_id "
+            + matches_join
+            + applied_join
+        )
+
+        # `seen_jobs` has no board token at all, so an id two boards claim cannot be
+        # resolved. Retire NEITHER: retiring both could permanently discard a posting
+        # nothing ever judged, while retiring neither re-judges one posting once, which
+        # costs a few LLM calls. The correlated count rides `idx_postings_job`, which
+        # the DDL above already created on the staging table.
+        if self._table_exists("seen_jobs"):
+            conn.execute(
+            "UPDATE postings_migrating SET retired_at = ("
+            "    SELECT s.first_seen FROM seen_jobs s WHERE s.job_id ="
+            "      postings_migrating.job_id) "
+            "WHERE EXISTS (SELECT 1 FROM seen_jobs s"
+            "              WHERE s.job_id = postings_migrating.job_id)"
+            "  AND (SELECT COUNT(*) FROM postings_migrating q"
+            "       WHERE q.job_id = postings_migrating.job_id) = 1"
+            )
+
+        # Legacy rows with nothing to attach to: a verdict or an application whose
+        # posting has no surviving `jobs` row (its sweeps were pruned). Counted rather
+        # than rescued -- there is no posting left to render them against -- and
+        # reported, because silently dropping an application record would be the worst
+        # thing this migration could do.
+        orphans = 0
+        for table, alias in (("matches", "m"), ("applied", "a")):
+            if not self._table_exists(table):
+                continue
+            orphans += conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table} {alias} WHERE NOT EXISTS ("
+                "   SELECT 1 FROM postings_migrating p"
+                f"   WHERE p.job_id = {alias}.job_id"
+                f"     AND p.board_token = COALESCE({alias}.board_token,''))"
+            ).fetchone()["n"]
+
+        for table in ("jobs", "matches", "applied", "seen_jobs"):
+            if self._table_exists(table):
+                conn.execute(f"DROP TABLE {table}")
+        # The indexes were created on the staging table under their canonical names
+        # and follow it through the rename, so nothing re-creates them here.
+        conn.execute("ALTER TABLE postings_migrating RENAME TO postings")
+        return collisions, orphans
+
+    def vacuum(self) -> int:
+        """Reclaim the space the merge freed. Returns bytes recovered.
+
+        **Deliberately not called on connect.** `DROP TABLE` only moves pages to the
+        freelist, so the file stays its old size until this runs — but `VACUUM` needs
+        another copy's worth of temp space and minutes of work, and
+        `Database.__init__` is on the path of every process, including the report
+        refresh and `--stop`. So the merge sets `meta.vacuum_pending` and this is a
+        deliberate step the user takes (`scripts/jobs_cli.py compact`).
+
+        `VACUUM` cannot run inside a transaction, which is why this sets
+        `isolation_level = None` rather than using the usual context manager.
+        """
+        before = self.path.stat().st_size
+        with self._lock:
+            previous_isolation = self._conn.isolation_level
+            self._conn.isolation_level = None
+            try:
+                self._conn.execute("VACUUM")
+            finally:
+                self._conn.isolation_level = previous_isolation
+            self._conn.execute("DELETE FROM meta WHERE key = 'vacuum_pending'")
+            self._conn.commit()
+        return max(0, before - self.path.stat().st_size)
+
+    def vacuum_pending(self) -> bool:
+        """Whether the merge has freed space nothing has reclaimed yet."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = 'vacuum_pending'"
+            ).fetchone()
+        return row is not None and str(row["value"]) == "1"
 
     def close(self) -> None:
         with self._lock:
@@ -350,23 +849,37 @@ class Database:
         `companies` counts what has been *recorded*, which grows through the run —
         that is the point, and it is why this is not read out of the scrape phase's
         `stats_json`, which does not exist until the phase finishes.
+
+        **`jobs` is the sum of `run_companies.job_count`, not a count of rows.** It
+        used to be `COUNT(*) FROM jobs WHERE run_id=?`, which `postings` can no longer
+        answer: a posting has one row however many sweeps found it, so there is no
+        per-run sighting count in that table by design. `record_company` already
+        writes `len(jobs)` per employer per run, so the figure comes from the one place
+        that still knows it — and it costs a primary-key range scan instead of the
+        39.6s full count that query had become on a real install.
+
+        Two differences worth knowing. It counts **sightings per employer**, so one
+        `job_id` appearing in two employers' batches counts twice where the old
+        `(run_id, job_id)` key collapsed it to one; nothing downstream divides by this,
+        and `run_snapshot`'s `gated_out` is already clamped at zero. And
+        `record_company` runs *before* `insert_jobs` in `RunStore.save_company`, so
+        mid-sweep the figure now runs one employer ahead of the rows rather than one
+        behind.
         """
         with self._lock:
             companies = self._conn.execute(
                 "SELECT COUNT(*) AS n, "
                 "       SUM(CASE WHEN job_count > 0 THEN 1 ELSE 0 END) AS with_jobs, "
-                "       SUM(CASE WHEN error IS NOT NULL AND error != '' THEN 1 ELSE 0 END) AS errors "
+                "       SUM(CASE WHEN error IS NOT NULL AND error != '' THEN 1 ELSE 0 END) AS errors, "
+                "       COALESCE(SUM(job_count), 0) AS jobs "
                 "FROM run_companies WHERE run_id=?",
                 (run_id,),
-            ).fetchone()
-            jobs = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM jobs WHERE run_id=?", (run_id,)
             ).fetchone()
         return {
             "companies": companies["n"] or 0,
             "companies_with_jobs": companies["with_jobs"] or 0,
             "errors": companies["errors"] or 0,
-            "jobs": jobs["n"] or 0,
+            "jobs": companies["jobs"] or 0,
         }
 
     def match_counts(self, run_id: str) -> dict[str, int]:
@@ -375,13 +888,18 @@ class Database:
         `by_reason` is keyed by `skip_reason` with the empty string standing in for
         NULL, so callers can tell "scored" from "dropped for reason X" without a
         second query. Note that title-gate rejections are deliberately absent —
-        they are never written per-row (there can be tens of thousands), so the
-        top of the funnel comes from `scrape_counts` instead.
+        they carry `gate_reason` instead and are never counted here, so the top of
+        the funnel comes from `scrape_counts`.
+
+        `scored_run_id = ?` is what "this run's matches" means now: a posting holds
+        one verdict, stamped with the sweep that reached it. A posting this sweep
+        scraped but an earlier sweep judged is therefore absent, which is right — this
+        sweep did no scoring work on it.
         """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT COALESCE(skip_reason, '') AS reason, COUNT(*) AS n "
-                "FROM matches WHERE run_id=? GROUP BY reason",
+                "FROM postings WHERE scored_run_id=? GROUP BY reason",
                 (run_id,),
             ).fetchall()
             totals = self._conn.execute(
@@ -392,7 +910,7 @@ class Database:
                 "                THEN 1 ELSE 0 END) AS scored, "
                 "       MAX(CASE WHEN skip_reason IS NULL OR skip_reason='' "
                 "                THEN relevance_score END) AS top_score "
-                "FROM matches WHERE run_id=?",
+                "FROM postings WHERE scored_run_id=?",
                 (run_id,),
             ).fetchone()
         return {
@@ -403,10 +921,10 @@ class Database:
             "by_reason": {r["reason"]: r["n"] for r in rows},
         }
 
-    def _sibling_sql(self, alias: str = "") -> str:
+    def _sibling_sql(self) -> str:
         """SQL for "this row inherited its verdict from a cluster representative".
 
-        There is no column for it: `cluster_representative` lives inside `raw_json`.
+        There is no column for it: `cluster_representative` lives inside `match_json`.
         And `skip_reason` cannot stand in for it — a sibling inherits the
         *representative's* reason, so a cluster whose representative failed carries
         `backend_unavailable` on all of its members and only the lucky ones say
@@ -419,15 +937,17 @@ class Database:
         cannot satisfy — sound against the compact `model_dump_json` output that
         writes every one of these rows.
 
-        `alias` is not optional decoration either: `jobs` has a `raw_json` column
-        too, so this predicate is ambiguous in any query that joins the two.
+        **It takes no alias any more, and that is the point of `match_json` having
+        its own name.** It used to, because `jobs` and `matches` each had a `raw_json`
+        column and this predicate was ambiguous in any query joining the two. One
+        table with two differently-named blobs removes the ambiguity rather than
+        parameterising around it — and `job_json` must never be renamed back.
         """
-        col = f"{alias}.raw_json" if alias else "raw_json"
         if self._has_json1:
-            return f"json_extract({col}, '$.cluster_representative') IS NOT NULL"
-        return f"{col} LIKE '%\"cluster_representative\":\"%'"
+            return "json_extract(match_json, '$.cluster_representative') IS NOT NULL"
+        return "match_json LIKE '%\"cluster_representative\":\"%'"
 
-    def _relevant_sql(self, alias: str = "") -> str:
+    def _relevant_sql(self) -> str:
         """Rows that survived every free gate — the overview page's "relevant" figure.
 
         Both LLM-free verdicts are excluded: `rerank_below_cutoff` (the cross-encoder
@@ -451,10 +971,10 @@ class Database:
         return (
             "COALESCE(skip_reason,'') "
             "NOT IN ('rerank_below_cutoff','yoe_below_requirement') "
-            f"AND NOT ({self._sibling_sql(alias)})"
+            f"AND NOT ({self._sibling_sql()})"
         )
 
-    def _judged_sql(self, alias: str = "") -> str:
+    def _judged_sql(self) -> str:
         """A SQL mirror of `hireshire.reporting.data._never_scored`, negated.
 
         "A standing LLM verdict backs this row's relevance_score" — either the row
@@ -464,67 +984,62 @@ class Database:
         """
         return (
             "relevance_score IS NOT NULL AND "
-            f"(skipped = 0 OR skipped IS NULL OR {self._sibling_sql(alias)})"
+            f"(skipped = 0 OR skipped IS NULL OR {self._sibling_sql()})"
         )
 
-    # "No sweep before this one saw this posting", over `jobs j`. The scraper writes a
-    # fresh `jobs` row for every posting on every sweep, so a run-scoped read of that
-    # table counts a posting once per sweep that found it rather than once. Spelled here
-    # because two readers ask it and must agree: the overview's last section
-    # (`load_unmatched_jobs`) and the `Jobs in scope` tile / matcher bar
-    # (`_new_work_sql`). `idx_jobs_job` answers it from the index alone.
-    #
-    # The comparison is lexicographic over a fixed-width UTC stamp, which is
-    # chronological by construction -- the same property `prune_runs` relies on.
-    _FIRST_SIGHTING = ("NOT EXISTS (SELECT 1 FROM jobs e "
-                       "WHERE e.job_id = j.job_id AND e.run_id < j.run_id)")
-
-    def _new_work_sql(self, run_id: str | None, ids: Sequence[str]) -> str:
-        """`COUNT(DISTINCT j.job_id)` over the postings a scope did work on.
+    def _new_work_sql(self, run_id: str | None, ids: Sequence[str],
+                      run_id_set_sql: str | None = None) -> str:
+        """`COUNT(*)` over the postings a scope did work on.
 
         The `Jobs in scope` tile and the matcher bar's denominator are the same number
         by contract (see `run_progress`), so the rule is written once. "Did work on"
-        means **first saw**, or **reached a verdict on** -- the second half is why this
-        is not simply `_FIRST_SIGHTING`. A job the call cap deferred in sweep #1 and
-        sweep #5 finally judged is real work #5 did, and it is listed under #5's
-        Relevant and Jobs Filtered sections; counting only first sightings would put the
-        top of the funnel *below* the lists beneath it, which is the one thing a funnel
-        tile must never do.
+        means **first saw**, or **reached a verdict on**, and both are now columns:
+        `first_run_id` and `scored_run_id`.
+
+        **The two halves must stay a top-level `OR`, never a conjunct.** The old form
+        read `FROM jobs j WHERE j.run_id = ? AND (first_sighting OR judged-in-scope)`,
+        where the scope restricted the whole predicate because the verdict half needed
+        a `jobs` row in that same run to hang off. With one row per posting that shape
+        collapses to `first_run_id = ?` and the second half disappears silently. It is
+        there because a job the call cap deferred in sweep #1 and sweep #5 finally
+        judged is real work #5 did, and #5's Relevant and Jobs Filtered sections list
+        it; counting only first sightings would put the top of the funnel *below* the
+        lists beneath it, which is the one thing a funnel tile must never do.
 
         It is also what the matcher bar's numerator counts: `matcher.py` bumps
-        `jobs_processed` with the jobs not already in `seen_jobs`, which is this set
-        clause for clause -- a title-gate verdict retires a job into `seen_jobs`, a cap
-        drop deliberately does not. The two must change together.
+        `jobs_processed` with the jobs not already retired, which is this set clause for
+        clause -- a title-gate verdict retires a posting, a cap drop deliberately does
+        not. The two must change together.
 
-        At lifetime scope there is no filter, and the first-sighting half is true of
-        every posting's earliest row, so this degenerates to
-        `COUNT(DISTINCT job_id) FROM jobs` -- the number the lifetime page prints today,
-        unchanged by construction.
+        `COUNT(*)` rather than `COUNT(DISTINCT job_id)`: the row is unique per posting,
+        so the day-scope case the `DISTINCT` existed for -- one posting qualifying
+        through its first-sighting row in one of the day's sweeps and its match row in
+        another -- cannot arise. Both halves are index-backed
+        (`idx_postings_first_run`, `idx_postings_scored_run`).
 
-        `COUNT(DISTINCT)` rather than a bare count because at day scope one posting can
-        qualify through its first-sighting row in one of the day's sweeps and its
-        `matches` row in another. The caller owns the parameters, and the scope ids
-        appear **twice** -- once for `j.run_id`, once for `m.run_id`.
+        At lifetime scope with no filter every posting qualifies through its first
+        sighting, so it short-circuits to a bare count of the table -- the number the
+        lifetime page printed before, unchanged by construction. `run_id_set_sql` is
+        the third scope, a parameterless subquery (`lifetime_progress`'s tracked
+        sweeps); it replaced a `.replace("WHERE 1=1", …)` on the rendered string.
+
+        The caller owns the parameters, and the scope ids appear **twice** -- once per
+        half -- which is why every call site passes `params + params`.
         """
-        scope = (
-            " AND j.run_id = ?" if run_id
-            else f" AND {self._in_clause(ids, 'j.run_id')}" if ids
-            else ""
-        )
-        judged_scope = (
-            " AND m.run_id = ?" if run_id
-            else f" AND {self._in_clause(ids)}" if ids
-            else ""
-        )
-        return (
-            "SELECT COUNT(DISTINCT j.job_id) AS n FROM jobs j WHERE 1=1" + scope +
-            f" AND ({self._FIRST_SIGHTING} OR EXISTS ("
-            "    SELECT 1 FROM matches m WHERE m.job_id = j.job_id"
-            + judged_scope + "))"
-        )
+        if run_id:
+            first, judged = "first_run_id = ?", "scored_run_id = ?"
+        elif ids:
+            first = self._in_clause(ids, "first_run_id")
+            judged = self._in_clause(ids, "scored_run_id")
+        elif run_id_set_sql:
+            first = f"first_run_id IN ({run_id_set_sql})"
+            judged = f"scored_run_id IN ({run_id_set_sql})"
+        else:
+            return "SELECT COUNT(*) AS n FROM postings"
+        return f"SELECT COUNT(*) AS n FROM postings WHERE {first} OR {judged}"
 
     @staticmethod
-    def _in_clause(run_ids: Sequence[str], column: str = "m.run_id") -> str:
+    def _in_clause(run_ids: Sequence[str], column: str = "scored_run_id") -> str:
         """``column IN (?,?,…)`` for a day's worth of run ids. Spelled once.
 
         The caller has already established that `run_ids` is neither None nor empty;
@@ -533,135 +1048,99 @@ class Database:
         """
         return f"{column} IN ({','.join('?' * len(run_ids))})"
 
-    def _canonical_matches_sql(self, cols: str, joins: str = "", where: str = "") -> str:
-        """One row per `job_id` across every run: the job's **newest** match row.
-
-        `matches` is keyed `(run_id, job_id)`, so a job dropped on a deferral — the
-        call cap, a scoring failure — and judged in a later sweep keeps *both* rows.
-        Every lifetime read has to choose one, and the newest is the one still true:
-        the matcher retires a judged job, so a verdict is always the last word, and
-        only a later sweep can supersede a deferral. Counting "any row that ever said
-        so" instead listed 381 jobs twice on the lifetime page and left 8 more in the
-        `Relevant jobs` tile on a reading the cross-encoder had since overturned.
-
-        **Newest, not "judged first".** The obvious refinement — prefer a row with a
-        standing verdict — is wrong, because `_judged_sql` is also true of a cluster
-        sibling whose representative *failed*: that row carries a placeholder 0 and no
-        verdict behind it, and preferring it suppresses a genuine `rerank_below_cutoff`
-        written weeks later. Measured on a real database, no job's newest row loses a
-        real verdict, and both rules produce identical tiles.
-
-        `MAX(m.scored_at)` over bare columns is the same trick `_unapplied` uses on the
-        backlog window, for the same reason: SQLite fills the other columns from the
-        row that produced the maximum, so the whole row comes back in one pass — no
-        window function, no correlated subquery. It is aliased `canonical` rather than
-        `scored_at` so it cannot collide with the bare column of that name, which holds
-        the identical value.
-
-        Predicates belong on the **outer** select, where `_judged_sql()`,
-        `_relevant_sql()` and `_sibling_sql()` run unaliased against the row this has
-        already chosen. Inside the aggregate they would be answered by rows the group
-        is in the middle of discarding.
-
-        `where` is the **mirror image** of that rule and the two only look
-        contradictory. It narrows *which runs are candidates* — the day scope's
-        `m.run_id IN (…)` — and it has to go inside, because the point of a day page
-        is each job's newest row **among that day's sweeps**. Outside, the aggregate
-        would first pick the job's all-time newest row and the outer `WHERE` would
-        then discard the job **entirely** whenever that row belonged to another day:
-        a job today's sweep judged would vanish from today's page the moment a later
-        sweep touched it. So: scope inside, state outside.
-        """
-        return (
-            f"SELECT {cols}, MAX(m.scored_at) AS canonical "
-            f"FROM matches m {joins} {where} GROUP BY m.job_id"
-        )
+    # `_canonical_matches_sql` used to live here, and the merge deleted it. It wrapped
+    # every lifetime read in `MAX(m.scored_at) … GROUP BY m.job_id`, because `matches`
+    # was keyed `(run_id, job_id)` and a job dropped on a deferral — the call cap, a
+    # scoring failure — kept that row when a later sweep judged it. Every reader then
+    # had to choose, and choosing wrong was expensive: counting "any row that ever said
+    # so" listed 381 jobs twice on the lifetime page and left 8 more in the `Relevant
+    # jobs` tile on a reading the cross-encoder had since overturned.
+    #
+    # One row per posting *is* that choice, made once at write time, and it is the same
+    # choice: newest wins, because the matcher retires a judged job, so a verdict is
+    # always the last word and only a later sweep can supersede a deferral. The
+    # refinement that looked safer — prefer a row with a standing verdict — stays
+    # rejected, and is now unrepresentable: `_judged_sql` is also true of a cluster
+    # sibling whose representative *failed*, which carries a placeholder 0 and no
+    # verdict behind it.
+    #
+    # Two rules it carried are gone with it rather than relocated, and neither should
+    # be reinvented when something looks asymmetric: predicates on the outer select,
+    # scope filters inside the aggregate.
 
     def overview_counts(self, run_id: str | None = None,
                         run_ids: Sequence[str] | None = None) -> dict[str, int]:
         """The overview page's four figures, at one of the three scopes.
 
-        Counted one job at a time rather than one row at a time, so a job that
-        resurfaced in several sweeps is one job on the lifetime page — unlike a per-run
-        total's totals, which sum per-run counts and say so.
+        One posting is one row, so these are counts of postings at every scope — a job
+        that resurfaced in several sweeps is one job on the lifetime page, as it was
+        before, but now by construction rather than through an aggregate.
 
         `seen` — the `Jobs in scope` tile — counts the postings this scope did **work**
-        on, through `_new_work_sql`, not the `jobs` rows it holds. The scraper re-inserts
-        every posting on every sweep, so a plain count over that table counted a posting
-        once per sweep that found it: at day scope literally over, and at run scope as
-        work this sweep had in fact done once and then skipped. Lifetime is unchanged by
-        it, for the reason `_new_work_sql` gives. It is deliberately **wider** than the
-        last section's list, which shows first sightings only — see
-        `load_unmatched_jobs`, and do not reconcile the two.
+        on, through `_new_work_sql`: first saw, or reached a verdict on. It is
+        deliberately **wider** than the last section's list, which shows first sightings
+        only — see `load_unmatched_jobs`, and do not reconcile the two.
 
-        The two `matches` figures differ by scope in *which* row they ask. A run-scoped
-        query needs no choosing: `(run_id, job_id)` is the primary key, so the run holds
-        exactly one row per job. Across the install a job can hold rows from several
-        sweeps, and `COUNT(DISTINCT job_id)` over them answers "did any row ever say
-        so", which keeps a superseded reading alive for good. The lifetime counts
-        therefore run over `_canonical_matches_sql` — the same row the page's sections
-        render, so the tile and the list below it cannot disagree about a job's state.
+        **The three scopes now ask the same question of the same row**, which is the
+        whole point of the merge: the per-scope divergence this method used to carry —
+        a run-scoped `COUNT(DISTINCT job_id)` over `matches` versus a lifetime count
+        over `_canonical_matches_sql` — existed only because `matches` held one row per
+        sweep per job, so "did any row ever say so" and "does the current row say so"
+        were different answers. Now the tile and the list below it read one row, and
+        cannot disagree about a job's state.
 
-        This changes only which row is consulted, never what `shortlisted = 1` means: an
-        `excluded` or `expired` job keeps its shortlist row and its place in the tile.
+        The verdict figures filter on `scored_run_id`, the sweep whose verdict this is.
+        The sections on a run page therefore list what *that* sweep judged — so a job
+        it deferred and a later sweep judged has moved on to the later sweep's page.
 
-        Day scope (`run_ids`) is the lifetime path with the scope filter pushed inside
-        `_canonical_matches_sql`, for the reason that method documents. `run_ids` and
-        `run_id` are mutually exclusive. `run_ids=[]` means "a day with no sweeps" and
-        must read zero — not the whole install, which is what a truthiness test on the
-        list would silently give.
+        None of this changes what `shortlisted = 1` means: an `excluded` or `expired`
+        job keeps it, and its place in the tile.
+
+        `run_ids` and `run_id` are mutually exclusive. `run_ids=[]` means "a day with no
+        sweeps" and must read zero — not the whole install, which is what a truthiness
+        test on the list would silently give.
         """
         if run_ids is not None and not run_ids:
             return {"seen": 0, "relevant": 0, "shortlisted": 0, "applied": 0}
 
         ids: tuple = tuple(run_ids or ())
-        run_filter = (
-            " AND run_id = ?" if run_id
-            else f" AND {self._in_clause(ids, 'run_id')}" if ids
+        scored_filter = (
+            " AND scored_run_id = ?" if run_id
+            else f" AND {self._in_clause(ids, 'scored_run_id')}" if ids
             else ""
         )
         params: tuple = (run_id,) if run_id else ids
-        # The tile counts postings this scope did WORK on, not `jobs` rows it holds:
-        # the scraper re-inserts every posting on every sweep. See `_new_work_sql`; the
-        # scope ids are passed twice because the predicate names them twice.
+        # The tile counts postings this scope did WORK on, which is wider than the
+        # verdict filter below. See `_new_work_sql`; the scope ids are passed twice
+        # because the predicate names them twice, once per half.
         seen_sql = self._new_work_sql(run_id, ids)
         seen_params: tuple = params + params
-        if run_id:
-            relevant_sql = ("SELECT COUNT(DISTINCT job_id) AS n FROM matches "
-                            f"WHERE {self._relevant_sql()}" + run_filter)
-            shortlisted_sql = ("SELECT COUNT(DISTINCT job_id) AS n FROM matches "
-                               "WHERE shortlisted = 1" + run_filter)
-        else:
-            canonical = self._canonical_matches_sql(
-                "m.job_id, m.raw_json, m.skip_reason, m.shortlisted",
-                where=f"WHERE {self._in_clause(ids)}" if ids else "",
-            )
-            relevant_sql = (f"SELECT COUNT(*) AS n FROM ({canonical}) "
-                            f"WHERE {self._relevant_sql()}")
-            shortlisted_sql = (f"SELECT COUNT(*) AS n FROM ({canonical}) "
-                               "WHERE shortlisted = 1")
+        # `scored_at IS NOT NULL` is what keeps an unjudged posting — a title-gate
+        # rejection, or one nothing has reached yet — out of both verdict figures. The
+        # old queries got that from the existence of a `matches` row; here the row
+        # always exists, so the test has to be explicit or every scraped posting would
+        # count as relevant.
+        relevant_sql = ("SELECT COUNT(*) AS n FROM postings "
+                        f"WHERE scored_at IS NOT NULL AND {self._relevant_sql()}"
+                        + scored_filter)
+        shortlisted_sql = ("SELECT COUNT(*) AS n FROM postings "
+                           "WHERE shortlisted = 1" + scored_filter)
         with self._lock:
             seen = self._conn.execute(seen_sql, seen_params).fetchone()
             relevant = self._conn.execute(relevant_sql, params).fetchone()
             shortlisted = self._conn.execute(shortlisted_sql, params).fetchone()
-            # `applied` has no run_id — an application is a fact about a job, not
-            # about the sweep that surfaced it — so run scope means "applications to
-            # jobs this sweep saw" rather than "applications made during it".
+            # An application is a fact about a job, not about the sweep that surfaced
+            # it — there is no run_id on it — so run scope means "applications to jobs
+            # this sweep judged" rather than "applications made during it". That is the
+            # same reading as before, now expressed against the posting's own columns.
             #
             # Submissions only. An `error` row is an attempt that stopped short — a
             # sign-in gate, a question nothing could answer — and counting it here made
             # the tile promise applications that never reached the employer. Those
             # rows are the page's Needs Attention section instead.
-            applied_scope = (
-                " AND EXISTS (SELECT 1 FROM matches m WHERE m.job_id = a.job_id"
-                " AND m.run_id = ?)" if run_id
-                else " AND EXISTS (SELECT 1 FROM matches m WHERE m.job_id = a.job_id"
-                     f" AND {self._in_clause(ids)})" if ids
-                else ""
-            )
             applied = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM applied a WHERE a.status = 'submitted'"
-                + applied_scope,
+                "SELECT COUNT(*) AS n FROM postings "
+                "WHERE apply_status = 'submitted'" + scored_filter,
                 params,
             ).fetchone()
         return {
@@ -673,15 +1152,24 @@ class Database:
 
     # The columns every overview loader selects, so the records they return are the
     # same shape `load_all_matches` returns and the renderer cannot tell them apart.
+    # `location` and `updated_at` used to come off a joined `jobs` row and were blank
+    # whenever the match row's run had no sighting of the posting; on one row they
+    # always resolve.
     _MATCH_COLUMNS = (
-        "m.raw_json, m.relevance_score, m.encoder_score, m.rerank_score_wide, "
-        "m.rerank_score, m.yoe_required, m.skipped, m.skip_reason, m.shortlisted, "
-        "m.scored_at, j.location, j.updated_at"
+        "match_json, relevance_score, encoder_score, rerank_score_wide, "
+        "rerank_score, yoe_required, skipped, skip_reason, shortlisted, "
+        "scored_at, location, updated_at"
     )
+
+    #: "A verdict has been reached on this posting." The merge made this test necessary
+    #: where the existence of a `matches` row used to imply it: a posting now always has
+    #: a row, so every reader of the scoring columns has to say so explicitly or it
+    #: would count the whole scrape as judged.
+    _SCORED = "scored_at IS NOT NULL"
 
     @staticmethod
     def _match_record(row: sqlite3.Row) -> dict:
-        record = json.loads(row["raw_json"])
+        record = json.loads(row["match_json"])
         record["location"] = row["location"] or record.get("location") or ""
         record["posted_at"] = row["updated_at"] or ""
         record["shortlisted"] = bool(row["shortlisted"])
@@ -689,14 +1177,14 @@ class Database:
 
     def load_lifetime_matches(self, limit: int,
                               run_ids: Sequence[str] | None = None) -> list[dict]:
-        """One row per job_id across a set of runs — its canonical row, best first.
+        """Every judged posting in a set of runs, best first.
 
-        Row selection is `_canonical_matches_sql`: the job's newest match row, because
-        an older one may have been superseded by a later sweep. This used to be two
-        calls, one for rows carrying a standing verdict and one for the rest, each
-        deduping only *within* itself — so a job holding both kinds of row satisfied
-        both queries and the page listed it twice, under contradicting labels — filed
-        as issue R1, 381 jobs on a real install.
+        One row per posting, which is the table's own shape rather than something a
+        `GROUP BY` has to produce. It used to be two calls, one for rows carrying a
+        standing verdict and one for the rest, each deduping only *within* itself — so
+        a job holding both kinds of row satisfied both queries and the page listed it
+        twice, under contradicting labels; filed as issue R1, 381 jobs on a real
+        install. Then one call over `_canonical_matches_sql`. Now neither is needed.
 
         The ranking that pair produced survives, because it is the one the page wants:
         judged jobs first by the verdict they got, then everything else by the
@@ -704,94 +1192,84 @@ class Database:
         first keeps a job that never reached the reranker at the bottom rather than
         the top.
 
-        `run_ids` narrows it to one day. The filter goes *inside* the aggregate, so
-        each job's chosen row is its newest among those runs — see
-        `_canonical_matches_sql`. Its placeholders therefore come **before** `limit`
-        in the parameter tuple, because the subquery is rendered first.
+        `run_ids` narrows it to one day, by `scored_run_id` — the sweep whose verdict
+        the row carries. `_SCORED` is what keeps the scrape out: without it every
+        unjudged posting in the table would be listed with no scores at all.
         """
         if run_ids is not None and not run_ids:
             return []
         ids = tuple(run_ids or ())
         judged = self._judged_sql()
         rank = f"CASE WHEN {judged} THEN relevance_score ELSE rerank_score END"
-        canonical = self._canonical_matches_sql(
-            self._MATCH_COLUMNS,
-            "LEFT JOIN jobs j ON j.run_id = m.run_id AND j.job_id = m.job_id",
-            where=f"WHERE {self._in_clause(ids)}" if ids else "",
-        )
+        scope = f" AND {self._in_clause(ids, 'scored_run_id')}" if ids else ""
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT * FROM ({canonical}) "
-                f"ORDER BY ({judged}) DESC, {rank} IS NULL, {rank} DESC LIMIT ?",
+                f"SELECT {self._MATCH_COLUMNS} FROM postings "
+                f"WHERE {self._SCORED}" + scope +
+                f" ORDER BY ({judged}) DESC, {rank} IS NULL, {rank} DESC LIMIT ?",
                 (*ids, int(limit)),
             ).fetchall()
         return [self._match_record(r) for r in rows]
 
     def load_unmatched_jobs(self, run_id: str | None, limit: int,
                             run_ids: Sequence[str] | None = None) -> list[dict]:
-        """Jobs the funnel never wrote a `matches` row for, at any of the three scopes.
+        """Postings nothing ever scored, at any of the three scopes.
 
         These are the title-gate rejections — `title_excluded` and
-        `title_low_relevance` — which `matcher.py` deliberately keeps out of `matches`
-        because there can be tens of thousands of them per run. They exist only in
-        `jobs`, so this is the only way onto the overview page, and they carry no
-        score of any kind: nothing read their descriptions. What they do carry is
-        `gate_reason`, the gate's own verdict, which `record_gate_reasons` wrote onto
-        the row the scraper had already made.
+        `title_low_relevance` — which `matcher.py` deliberately never scores, because
+        there can be tens of thousands of them per run. They carry no score of any
+        kind: nothing read their descriptions. What they do carry is `gate_reason`, the
+        gate's own verdict, which `record_gate_reasons` writes onto the row the scraper
+        had already made.
 
-        **One row per posting, from the sweep that FIRST saw it.** The scraper writes a
-        fresh `jobs` row on every sweep, so without `_FIRST_SIGHTING` the page for the
-        seventh sweep re-lists every posting the first sweep's title gate already threw
-        out, as though it had just found it — on a mature install, most of the section.
-        The anti-join keeps the row with the minimal `run_id`, which is also what makes
-        `GROUP BY j.job_id` unnecessary: `(run_id, job_id)` is the primary key, so that
-        row is unique and a tie is impossible. Do not restore the `GROUP BY` — it would
-        forbid `LIMIT` from short-circuiting the scan, and it is no longer what
-        guarantees uniqueness.
+        **One row per posting, filed under the sweep that FIRST saw it.** That is
+        `first_run_id`, a stored column. It replaced an anti-join
+        (`NOT EXISTS (… e.run_id < j.run_id)`) that had to derive the same fact from
+        7.7 rows per posting, plus the covering index without which one run-scope read
+        measured **31.8 s** against 7 ms. The rule it enforced is unchanged and still
+        load-bearing: without it the seventh sweep's page re-lists every posting the
+        first sweep's title gate threw out, as though it had just found it — on a mature
+        install, most of the section.
 
-        **The two `NOT EXISTS` clauses are scoped oppositely, deliberately**, and they
-        only read as a contradiction. The `matches` one is uncorrelated on `run_id` — the
-        question is *has anything ever read this job*, and a job the `SeenStore` skipped
-        this sweep because an earlier one judged it would otherwise be listed here with a
-        blank score as though nothing had. The `jobs` one is keyed on `run_id` — the
-        question is *is this the run that first saw it*. It is deliberately **not**
-        narrowed to the day's id set either, which is what makes a posting first seen by
-        a day's 9am sweep appear exactly once on that day's page: its earliest row is
-        inside the day's scope and survives, its 1pm row is killed.
+        **`match_json IS NULL` is the other half, and it is deliberately not scoped to
+        a run.** The question is *has anything ever scored this posting* — a job an
+        earlier sweep judged, which the matcher has since retired, must not be listed
+        here with a blank score as though nothing had. Pairing an unscoped state test
+        with a scoped sighting test used to look like a contradiction; with one row it
+        is simply a column that is either filled or not.
+
+        It is also deliberately **not** narrowed further at day scope: a posting a
+        day's 9am sweep first saw appears exactly once on that day's page, because
+        `first_run_id` names one sweep.
 
         The price, accepted twice over now, is that on second and later sweeps the five
         sections no longer sum to the `Jobs in scope` tile — that tile counts everything
         the scope did work on, which includes a job an earlier sweep first saw and this
         one re-judged after a deferral. Do not reconcile them.
 
-        Note "first seen" means *first row still in the database*: `prune_runs` deletes
-        `jobs` rows, so pruning the oldest sweeps makes a surviving posting reappear on
-        whichever page then holds its earliest row. Self-correcting, and honest.
+        Note "first seen" means *the first sighting still on record*: `prune_runs`
+        rewrites `first_run_id` to the oldest surviving sweep when it prunes the one a
+        posting was filed under, so a survivor re-files onto whichever page then holds
+        its earliest sighting. Self-correcting, and honest — but it is now a property of
+        `prune_runs` rather than of a query, so the two have to be read together.
 
-        **`gate_reason` is a correlated lookup rather than `MAX()` over a group**, and
-        the rule it carries — *any run that recorded a reason wins* — is still
-        load-bearing. The reason is not always on the earliest row: a sweep killed
-        outright (`--stop` is `taskkill /F`, which runs no `finally`) leaves `jobs` rows
-        the matcher never gated, writing neither a reason nor a `seen_jobs` entry, so the
-        *next* sweep gates the job and holds the reason. The anti-join keeps that earlier
-        NULL row, so a bare column would hand back NULL — exactly the regression `MAX`
-        was introduced to stop, re-entering through the back door. `COALESCE`
-        short-circuits on the common case, where the kept row carries the reason already.
+        **`gate_reason` is a bare column**, and the rule it used to need a
+        `COALESCE(…, MAX(…))` across runs for — *any run that recorded a reason wins* —
+        is now structural. The reason was not always on the earliest row: a sweep killed
+        outright (`--stop` is `taskkill /F`, which runs no `finally`) left `jobs` rows
+        the matcher never gated, so the *next* sweep gated the job and held the reason
+        on a later row. Both sweeps now write the same row.
 
-        Index-backed three ways, with no table scan at any scope: `idx_matches_job`
-        serves the first subquery, `idx_jobs_job` both the anti-join and the reason
-        lookup (both covering), and `idx_jobs_run` the run-scope filter. That matters
-        because the reports rebuild on a clock for the length of a sweep, not on funnel
-        events. Measured on a real install — 580,727 `jobs` rows over 135 sweeps — at
-        7 ms per run, 13 ms for a day and 58 ms at lifetime. `idx_jobs_job` is what buys
-        that and is not optional: without it the same run-scope read took **31.8 s**.
+        Index-backed at every scope by `idx_postings_first_run`, with no table scan.
+        That matters because the reports rebuild on a clock for the length of a sweep,
+        not on funnel events.
         """
         if run_ids is not None and not run_ids:
             return []
         ids = tuple(run_ids or ())
         scope = (
-            " AND j.run_id = ?" if run_id
-            else f" AND {self._in_clause(ids, 'j.run_id')}" if ids
+            " AND first_run_id = ?" if run_id
+            else f" AND {self._in_clause(ids, 'first_run_id')}" if ids
             else ""
         )
         params: tuple = (
@@ -799,15 +1277,8 @@ class Database:
         )
         with self._lock:
             rows = self._conn.execute(
-                "SELECT j.job_id, j.board_token, j.title, j.location, j.url, "
-                "       COALESCE(j.gate_reason, ("
-                "           SELECT MAX(p.gate_reason) FROM jobs p"
-                "           WHERE p.job_id = j.job_id AND p.gate_reason IS NOT NULL"
-                "       )) AS gate_reason "
-                "FROM jobs j "
-                "WHERE NOT EXISTS ("
-                "    SELECT 1 FROM matches m WHERE m.job_id = j.job_id)"
-                f"  AND {self._FIRST_SIGHTING}"
+                "SELECT job_id, board_token, title, location, url, gate_reason "
+                "FROM postings WHERE match_json IS NULL"
                 + scope +
                 " LIMIT ?",
                 params,
@@ -826,61 +1297,56 @@ class Database:
 
     def load_applied_matches(self, run_id: str | None = None,
                              run_ids: Sequence[str] | None = None) -> list[dict]:
-        """Every application, carrying the job's best match row where one exists.
+        """Every application, carrying the posting's verdict where it has one.
 
-        LEFT JOIN because an application can outlive the sweep that found it: the
-        `matches` rows for a run are per-run, `applied` is forever, and a user who
-        prunes old runs should still see what they applied to. Rows with no match
-        keep their title and company from `applied` and simply have no rationales.
+        **Two joins and a row-picking subquery went away here.** It used to join
+        `applied` to the newest of a job's `matches` rows (`m.rowid = (SELECT rowid …
+        ORDER BY scored_at DESC)`) and then to `jobs` for the location, because an
+        application outlives the sweep that found it while `matches` was per-run. One
+        row holds all three facts, so an application can no longer be rendered from a
+        row the page has stopped believing elsewhere — there is no other row.
 
-        The joined row is the job's **newest** match, the same one
-        `_canonical_matches_sql` picks for every other lifetime read, so an application
-        cannot be rendered from a row the page has stopped believing elsewhere. It used
-        to be the row with the best `relevance_score`, which differs only for a job
-        judged more than once.
+        A posting with an application but no verdict is still possible and still
+        matters: `exclude_companies` writes its `excluded` record before anything
+        scores the job. `match_json IS NULL` is what the fallback branch below reads,
+        and those rows keep their title and company from the posting itself.
 
         Ordered by the LLM's verdict, best first, so the applied accordion ranks the
         same way every other list on the overview page does. An application with no
-        match row left to point at sorts last rather than first, and the timestamp
-        breaks ties — nothing is lost by demoting it from the primary key, because
-        `_job_entry` prints it in the meta line either way.
+        verdict sorts last rather than first, and the timestamp breaks ties — nothing
+        is lost by demoting it from the primary key, because `_job_entry` prints it in
+        the meta line either way.
 
-        Only the scope `EXISTS` takes `run_ids`; the display join stays unscoped on
-        purpose. An application is a fact about a job, not about a sweep, so the day
-        page can and should render one from a match row written outside that day —
-        the same reading `overview_counts` applies, where run scope already means
-        "applications to jobs this sweep saw" rather than "made during it".
+        The scope filter is `scored_run_id`, and an unjudged application is **kept at
+        every scope**: it has no sweep to be filed under, and dropping it would hide
+        exactly the rows Needs Attention exists for. An application is a fact about a
+        job, not about a sweep — the same reading `overview_counts` applies.
         """
         if run_ids is not None and not run_ids:
             return []
         ids = tuple(run_ids or ())
         scope = (
-            " WHERE EXISTS (SELECT 1 FROM matches mm WHERE mm.job_id = a.job_id"
-            " AND mm.run_id = ?)" if run_id
-            else " WHERE EXISTS (SELECT 1 FROM matches mm WHERE mm.job_id = a.job_id"
-                 f" AND {self._in_clause(ids, 'mm.run_id')})" if ids
+            " AND (scored_run_id = ? OR scored_run_id IS NULL)" if run_id
+            else (f" AND ({self._in_clause(ids, 'scored_run_id')}"
+                  " OR scored_run_id IS NULL)") if ids
             else ""
         )
         params: tuple = (run_id,) if run_id else ids
         with self._lock:
             rows = self._conn.execute(
-                "SELECT a.job_id, a.board_token, a.title, a.absolute_url, "
-                "       a.applied_at, a.status, a.error, a.from_backlog, "
+                "SELECT job_id, board_token, url AS absolute_url, "
+                "       apply_status, apply_error, applied_at, from_backlog, title, "
                 f"       {self._MATCH_COLUMNS} "
-                "FROM applied a "
-                "LEFT JOIN matches m ON m.rowid = ("
-                "    SELECT rowid FROM matches WHERE job_id = a.job_id "
-                "    ORDER BY scored_at DESC, rowid DESC LIMIT 1) "
-                "LEFT JOIN jobs j ON j.run_id = m.run_id AND j.job_id = m.job_id "
+                "FROM postings WHERE apply_status IS NOT NULL"
                 + scope +
-                " ORDER BY m.relevance_score IS NULL, m.relevance_score DESC,"
-                " a.applied_at DESC",
+                " ORDER BY relevance_score IS NULL, relevance_score DESC,"
+                " applied_at DESC",
                 params,
             ).fetchall()
 
         out: list[dict] = []
         for r in rows:
-            record = self._match_record(r) if r["raw_json"] else {
+            record = self._match_record(r) if r["match_json"] else {
                 "job_id": r["job_id"],
                 "board_token": r["board_token"],
                 "title": r["title"],
@@ -888,8 +1354,8 @@ class Database:
                 "location": "",
             }
             record["applied_at"] = r["applied_at"]
-            record["applied_status"] = r["status"]
-            record["applied_error"] = r["error"]
+            record["applied_status"] = r["apply_status"]
+            record["applied_error"] = r["apply_error"]
             record["applied_from_backlog"] = bool(r["from_backlog"])
             out.append(record)
         return out
@@ -909,13 +1375,13 @@ class Database:
         placeholder 0 rather than a judgement.
         """
         sql = (
-            "SELECT encoder_score, rerank_score, relevance_score FROM matches "
+            "SELECT encoder_score, rerank_score, relevance_score FROM postings "
             "WHERE relevance_score IS NOT NULL AND rerank_score IS NOT NULL "
             "AND (skipped = 0 OR skipped IS NULL)"
         )
         params: tuple = ()
         if run_id:
-            sql += " AND run_id = ?"
+            sql += " AND scored_run_id = ?"
             params = (run_id,)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
@@ -1000,9 +1466,9 @@ class Database:
 
         `jobs_in_scope` is the matcher bar's denominator and the same number as the
         page's `Jobs in scope` tile — the same `_new_work_sql` call, so the two cannot
-        drift. It counts what this sweep had work to do on rather than every `jobs` row
-        it holds, which is what `matcher.py` bumps `jobs_processed` against; the two
-        halves of this bar are defined against each other and must change together.
+        drift. It counts what this sweep had work to do on, which is what `matcher.py`
+        bumps `jobs_processed` against; the two halves of this bar are defined against
+        each other and must change together.
         `submitted` and `attention` split the applier bar; they count applications to
         this run's shortlisted *representatives*, because siblings are never sent to the
         worker and would hold the bar short.
@@ -1017,11 +1483,11 @@ class Database:
                 self._new_work_sql(run_id, ()), (run_id, run_id)
             ).fetchone()
             applied = self._conn.execute(
-                "SELECT SUM(CASE WHEN a.status = 'submitted' THEN 1 ELSE 0 END) AS ok, "
-                "       SUM(CASE WHEN a.status != 'submitted' THEN 1 ELSE 0 END) AS bad "
-                "FROM applied a WHERE EXISTS (SELECT 1 FROM matches m "
-                "  WHERE m.job_id = a.job_id AND m.run_id = ? AND m.shortlisted = 1 "
-                f"  AND NOT ({self._sibling_sql('m')}))",
+                "SELECT SUM(CASE WHEN apply_status = 'submitted' THEN 1 ELSE 0 END) AS ok, "
+                "       SUM(CASE WHEN apply_status != 'submitted' THEN 1 ELSE 0 END) AS bad "
+                "FROM postings WHERE apply_status IS NOT NULL "
+                "  AND scored_run_id = ? AND shortlisted = 1 "
+                f"  AND NOT ({self._sibling_sql()})",
                 (run_id,),
             ).fetchone()
         out = dict(row)
@@ -1104,19 +1570,24 @@ class Database:
         # cannot hold the matcher bar short, and `unique_jobs` over every run. At day
         # scope those two scopes coincide and the figures collapse to one number, which
         # is the per-sweep double count going away.
-        tracked = "j.run_id IN (SELECT run_id FROM run_progress)"
+        # The tracked-sweeps scope is a named argument now. It used to be a
+        # `.replace("WHERE 1=1", …)` on the rendered string, which was fragile in a way
+        # that mattered: it also left the *verdict* half unscoped, so a posting judged
+        # by any sweep at all counted. Both halves take the filter now, which is
+        # coherent with `jobs_processed` being a sum over `run_progress` rows.
         in_scope_sql = (
             self._new_work_sql(None, ids) if ids
-            else self._new_work_sql(None, ()).replace("WHERE 1=1", f"WHERE {tracked}")
+            else self._new_work_sql(
+                None, (), run_id_set_sql="SELECT run_id FROM run_progress")
         )
         unique_sql = self._new_work_sql(None, ids)
-        canonical = self._canonical_matches_sql(
-            "m.job_id, m.raw_json, m.shortlisted",
-            where=f"WHERE {self._in_clause(ids)}" if ids else "",
+        shortlist_scope = (
+            f" AND {self._in_clause(ids, 'scored_run_id')}" if ids else ""
         )
         shortlist = (
-            f"SELECT job_id FROM ({canonical}) "
+            "SELECT job_id FROM postings "
             f"WHERE shortlisted = 1 AND NOT ({self._sibling_sql()})"
+            + shortlist_scope
         )
         with self._lock:
             sums = self._conn.execute(
@@ -1134,10 +1605,15 @@ class Database:
             shortlisted = self._conn.execute(
                 f"SELECT COUNT(*) AS n FROM ({shortlist})", ids
             ).fetchone()
+            # Still not a sum of per-sweep counters: every distinct shortlisted
+            # representative the install has ever had, against how many were applied
+            # to. `job_id IN (…)` rather than a second predicate on the same row,
+            # because the shortlist subquery carries its own scope.
             applied = self._conn.execute(
-                "SELECT SUM(CASE WHEN a.status = 'submitted' THEN 1 ELSE 0 END) AS ok, "
-                "       SUM(CASE WHEN a.status != 'submitted' THEN 1 ELSE 0 END) AS bad "
-                f"FROM applied a WHERE a.job_id IN ({shortlist})",
+                "SELECT SUM(CASE WHEN apply_status = 'submitted' THEN 1 ELSE 0 END) AS ok, "
+                "       SUM(CASE WHEN apply_status != 'submitted' THEN 1 ELSE 0 END) AS bad "
+                "FROM postings WHERE apply_status IS NOT NULL "
+                f"  AND job_id IN ({shortlist})",
                 ids,
             ).fetchone()
         return {
@@ -1258,86 +1734,149 @@ class Database:
             )
 
     def insert_jobs(self, run_id: str, jobs: list[Job]) -> None:
-        """Batch-insert one company's jobs in a single transaction. No-op if empty.
+        """Upsert one company's postings in a single transaction. No-op if empty.
 
-        **An upsert naming its own columns, not `INSERT OR REPLACE`**, and the
-        difference is the whole reason this is written the long way. `OR REPLACE`
-        *deletes the row and inserts a new one*, so a column this writer does not name
-        is not left alone — it comes back as its default. `jobs.gate_reason` is written
-        by `record_gate_reasons`, and `matcher._persist_hydrated_details` calls this
-        again on the same rows to attach their descriptions, so under `OR REPLACE` that
-        second call silently erased the title gate's verdict. Leaving the column out of
-        the statement was not enough; it has to be left out of the *update*.
+        The scraper's writer, and the only thing that creates a `postings` row. Every
+        other writer here is an `UPDATE` against a row this one made.
+
+        Four things about the statement, each of which has cost a bug once already:
+
+        1. **An upsert naming its own columns, never `INSERT OR REPLACE`.** `OR REPLACE`
+           *deletes the row and inserts a new one*, so a column this writer does not
+           name comes back as its default rather than being left alone. That cost the
+           title gate's verdict when `jobs` had exactly one such column; this row now
+           also carries `retired_at`, every score, `shortlisted`, `skip_reason`,
+           `match_json` and all five apply columns — **twenty-odd columns owned by the
+           matcher, the gates and the applier, which a re-sighting must not touch.**
+           Each is absent from the column list *and* from the `DO UPDATE SET`, and
+           those are two separate requirements.
+        2. **`MIN`/`MAX` on the run ids, not "leave `first_run_id` alone".** The latter
+           is idempotent but order-dependent: any writer inserting an older run after a
+           newer one — a test, a standalone re-scrape — would record a later first
+           sighting permanently. The two-argument scalars make the statement
+           commutative, which is what makes it safe to call twice, and
+           `matcher._persist_hydrated_details` does call it again mid-run on these same
+           rows. Lexicographic over a fixed-width UTC stamp is chronological by
+           construction, the same property `prune_runs` relies on.
+        3. **`COALESCE` on `content_text`.** `_persist_hydrated_details` passes Workday
+           and BambooHR rows whose hydration *failed*, carrying `content_text=None`; a
+           plain `excluded.content_text` would let this sweep's failure erase a
+           description an earlier sweep fetched — a loss the old per-run rows made
+           structurally impossible. The composite key is what makes this safe without a
+           board check: a conflict on `(board_token, job_id)` is the same posting by
+           construction, so there is no other employer's text to keep by mistake.
+        4. **Everything else is last-writer-wins**, which is right here: the only
+           writers are the live sweep, whose run ids only go forward, and that same
+           run's hydration pass.
+
+        Accepted wart from (3): `job_json` still takes the new value, so a row can
+        carry a description beside `detail_fetch_failed: true`. Harmless — only the
+        funnel reads that flag, in memory — and cheaper than a second `CASE`.
         """
         if not jobs:
             return
         rows = []
         for job in jobs:
             # The description lives in its own `content_text` column; keep it (and
-            # the never-read raw HTML) out of raw_json to avoid storing it 2-3x.
+            # the never-read raw HTML) out of job_json to avoid storing it 2-3x.
             raw = job.model_dump(mode="json", exclude={"content_html", "content_text"})
             rows.append((
-                run_id,
+                job.board_token or "",
                 job.job_id,
-                job.board_token,
                 job.source,
                 job.title,
                 job.location.name,
                 str(job.absolute_url),
                 job.updated_at.isoformat(),
                 job.scraped_at.isoformat(),
-                job.content_text,
+                run_id,
+                run_id,
                 json.dumps(raw, default=str),
+                job.content_text,
             ))
         with self._lock, self._conn:
             self._conn.executemany(
-                "INSERT INTO jobs"
-                "(run_id, job_id, board_token, source, title, location, url, "
-                " updated_at, scraped_at, content_text, raw_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(run_id, job_id) DO UPDATE SET "
-                "  board_token = excluded.board_token, source = excluded.source, "
-                "  title = excluded.title, location = excluded.location, "
-                "  url = excluded.url, updated_at = excluded.updated_at, "
+                "INSERT INTO postings"
+                "(board_token, job_id, source, title, location, url, "
+                " updated_at, scraped_at, first_run_id, last_run_id, "
+                " job_json, content_text) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(board_token, job_id) DO UPDATE SET "
+                "  source = excluded.source, title = excluded.title, "
+                "  location = excluded.location, url = excluded.url, "
+                "  updated_at = excluded.updated_at, "
                 "  scraped_at = excluded.scraped_at, "
-                "  content_text = excluded.content_text, "
-                "  raw_json = excluded.raw_json",
+                "  job_json = excluded.job_json, "
+                "  content_text = COALESCE(excluded.content_text, "
+                "                          postings.content_text), "
+                "  first_run_id = MIN(postings.first_run_id, excluded.first_run_id), "
+                "  last_run_id = MAX(postings.last_run_id, excluded.last_run_id)",
                 rows,
             )
 
-    def record_gate_reasons(self, run_id: str, pairs: list[tuple[str, str]]) -> None:
-        """Why the free title gate dropped these jobs. One statement, no-op if empty.
+    def record_gate_reasons(self, run_id: str,
+                            triples: list[tuple[str, str, str]]) -> None:
+        """Why the free title gate dropped these postings. One statement, no-op if empty.
 
-        The title gate rejects tens of thousands of jobs a sweep, so `matcher.py`
-        deliberately writes them no `matches` row — which left its verdict recorded
-        nowhere at all, and the overview's last section listing thousands of jobs with
-        no way to say why any of them was there. This puts the reason on the row the
-        scraper had already made, which costs one UPDATE per rejected job in a single
-        batched statement rather than a row in a table the reports group.
+        The title gate rejects tens of thousands of postings a sweep, which
+        `matcher.py` deliberately never scores — leaving its verdict recorded nowhere
+        at all, and the overview's last section listing thousands of jobs with no way
+        to say why any of them was there. This puts the reason on the row the scraper
+        had already made: one UPDATE per rejected posting in a single batched
+        statement, rather than rows in a table the reports group.
 
         **`insert_jobs` must never name this column**, and that is the whole reason
-        this is a separate writer. That one is `INSERT OR REPLACE`, and
-        `matcher._persist_hydrated_details` re-inserts a job to attach its description,
-        so a reason written here would be blanked by an upsert that knows nothing
-        about it.
+        this is a separate writer — see the first note on that method.
+
+        **Blank reasons are skipped.** `matcher._record_gate_reasons` passes
+        `r.skip_reason or ""`, and one row per posting means a later sweep writes the
+        same row an earlier one did — so without this filter an empty string could
+        overwrite a real `title_excluded`. This filter is now the whole of what a
+        cross-run `COALESCE(…, MAX(gate_reason))` lookup used to buy: the rule *any
+        sweep that recorded a reason wins* becomes "the last sweep to record a real one
+        wins", and nothing can blank it.
+
+        `run_id` is taken and deliberately unused: the verdict is a fact about the
+        posting, not about the sweep. It stays in the signature because every other
+        writer here takes one and the caller has it to hand.
 
         An `UPDATE` rather than an upsert because the row is guaranteed to exist: the
         scraper writes it (`storage/json_store.py`) before the batch ever reaches the
-        matcher. A pair naming a row that is somehow gone updates nothing and is not
-        an error — the reason is a label on a job, not a fact the sweep depends on.
+        matcher. A triple naming a row that is somehow gone updates nothing and is not
+        an error — the reason is a label on a posting, not a fact the sweep depends on.
         """
-        if not pairs:
+        rows = [
+            (reason, board_token or "", job_id)
+            for board_token, job_id, reason in triples
+            if reason
+        ]
+        if not rows:
             return
         with self._lock, self._conn:
             self._conn.executemany(
-                "UPDATE jobs SET gate_reason = ? WHERE run_id = ? AND job_id = ?",
-                [(reason, run_id, job_id) for job_id, reason in pairs],
+                "UPDATE postings SET gate_reason = ? "
+                "WHERE board_token = ? AND job_id = ?",
+                rows,
             )
 
     def load_jobs(self, run_id: str) -> list[Job]:
+        """The postings whose **newest sighting** is this run.
+
+        A narrower contract than this had, and the narrowing is forced rather than
+        chosen: it used to mean "every posting this run scraped", and no surviving
+        table records that — it is the fact the merge deletes. For any run that is not
+        the newest, postings a later sweep re-scraped are missing, and for an old
+        enough run the result is empty.
+
+        Which is safe for the only production caller: `matcher.py`'s standalone mode
+        (`python matcher.py`) reads `RunStore.latest_run`, the newest scrape, where
+        `last_run_id` is that run for everything it scraped. An orchestrated sweep
+        never comes here — the scraper hands it batches over a queue.
+        """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT content_text, raw_json FROM jobs WHERE run_id=?", (run_id,)
+                "SELECT content_text, job_json FROM postings WHERE last_run_id=?",
+                (run_id,),
             ).fetchall()
         jobs: list[Job] = []
         for row in rows:
@@ -1350,12 +1889,20 @@ class Database:
     @staticmethod
     def _row_to_job(row: sqlite3.Row) -> Job:
         """Rebuild a Job, re-injecting the description from its column since
-        raw_json no longer carries content_text (or content_html)."""
-        data = json.loads(row["raw_json"])
+        job_json no longer carries content_text (or content_html)."""
+        data = json.loads(row["job_json"])
         data["content_text"] = row["content_text"]
         return Job(**data)
 
-    def get_jobs(self, run_id: str, job_ids: Iterable[str]) -> dict[str, Job]:
+    def get_jobs(self, job_ids: Iterable[str]) -> dict[str, Job]:
+        """Postings by bare `job_id`. No `run_id` parameter any more.
+
+        Dropping it is deliberate rather than tidying: with one row per posting a run
+        filter here would have to mean `last_run_id`, which is a different question
+        from the one every caller was asking, and a parameter that silently changes
+        meaning is worse than one that is gone. (There is no production caller today
+        in any case.)
+        """
         ids = list(job_ids)
         if not ids:
             return {}
@@ -1366,9 +1913,9 @@ class Database:
                 chunk = ids[i:i + 500]
                 placeholders = ",".join("?" * len(chunk))
                 rows = self._conn.execute(
-                    f"SELECT job_id, content_text, raw_json FROM jobs "
-                    f"WHERE run_id=? AND job_id IN ({placeholders})",
-                    (run_id, *chunk),
+                    f"SELECT job_id, content_text, job_json FROM postings "
+                    f"WHERE job_id IN ({placeholders})",
+                    tuple(chunk),
                 ).fetchall()
                 for row in rows:
                     try:
@@ -1396,32 +1943,60 @@ class Database:
         rerank_score_wide: float | None = None,
         rerank_score: float | None = None,
         yoe_required: float | None = None,
-    ) -> None:
+    ) -> int:
+        """Write the funnel's scores and the judge's verdict onto the posting.
+
+        **A named-column `UPDATE`, and it must never go back to `INSERT OR REPLACE`.**
+        It was exactly that, against a `matches` table of its own, writing all fifteen
+        columns it owned. Against the merged row that statement is destructive in a way
+        no test would notice until a user's dashboard went blank: `OR REPLACE` deletes
+        and reinserts, so `job_json`, `content_text`, `first_run_id`, `gate_reason`,
+        `retired_at` and every apply column — the scrape and the application — would
+        come back as defaults. Same hazard as `insert_jobs`, from the other side.
+
+        It also must not insert. The scraper writes the row before the batch ever
+        reaches the matcher, which is the same guarantee `record_gate_reasons` relies
+        on, so a missed row means something is wrong upstream rather than that a row
+        needs making. Returns the rowcount so a caller can notice.
+
+        `title` is accepted and deliberately **not written**: the scraper owns it, and
+        the judge has no better version. It stays in the signature because
+        `MatchStore.append_result` has it and dropping it would churn that call site
+        for nothing.
+
+        `scored_at` is what every reader tests to mean "this posting has a verdict"
+        (`_SCORED`), so it must never be written NULL.
+        """
         with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO matches"
-                "(run_id, job_id, board_token, title, relevance_score, encoder_score, "
-                " rerank_score_wide, rerank_score, yoe_required, shortlisted, "
-                " skipped, skip_reason, source_run_id, scored_at, raw_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (run_id, job_id, board_token, title, relevance_score, encoder_score,
-                 rerank_score_wide, rerank_score, yoe_required, int(shortlisted),
-                 int(skipped), skip_reason, source_run_id, scored_at, raw_json),
-            )
+            return self._conn.execute(
+                "UPDATE postings SET "
+                "  scored_run_id = ?, source_run_id = ?, scored_at = ?, "
+                "  relevance_score = ?, encoder_score = ?, rerank_score = ?, "
+                "  rerank_score_wide = ?, yoe_required = ?, "
+                "  shortlisted = ?, skipped = ?, skip_reason = ?, match_json = ? "
+                "WHERE board_token = ? AND job_id = ?",
+                (run_id, source_run_id, scored_at, relevance_score, encoder_score,
+                 rerank_score, rerank_score_wide, yoe_required, int(shortlisted),
+                 int(skipped), skip_reason, raw_json, board_token or "", job_id),
+            ).rowcount
 
     def load_matches(self, run_id: str) -> list[dict]:
+        """Every verdict this sweep reached, as the raw MatchResult dicts."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT raw_json FROM matches WHERE run_id=?", (run_id,)
+                "SELECT match_json FROM postings WHERE scored_run_id=? "
+                f"AND {self._SCORED}",
+                (run_id,),
             ).fetchall()
-        return [json.loads(r["raw_json"]) for r in rows]
+        return [json.loads(r["match_json"]) for r in rows]
 
     def load_all_matches(self, run_id: str) -> list[dict]:
-        """Every match row for a run, enriched with the job's location and post date.
+        """Every verdict this sweep reached, with the posting's location and post date.
 
-        Backs the results CSV. LEFT JOIN because a match row must survive even if
-        its jobs row is missing — a partial export beats an export that silently
-        drops rows.
+        Backs the results CSV. The `LEFT JOIN jobs` this used to need is gone with the
+        merge, and so is the reason it had to be a LEFT JOIN — a verdict could outlive
+        the sighting it was joined to, and a partial export beat one that silently
+        dropped rows. One row carries both.
 
         Ordered best-first: LLM score, then the cross-encoder logit, then the old
         wide-pass column. The two rerank columns are sorted in sequence rather than
@@ -1430,22 +2005,21 @@ class Database:
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT m.raw_json, m.relevance_score, m.encoder_score, "
-                "       m.rerank_score_wide, m.rerank_score, m.yoe_required, "
-                "       m.skipped, m.skip_reason, "
-                "       m.shortlisted, m.scored_at, j.location, j.updated_at "
-                "FROM matches m LEFT JOIN jobs j "
-                "  ON j.run_id = m.run_id AND j.job_id = m.job_id "
-                "WHERE m.run_id=? "
-                "ORDER BY m.relevance_score IS NULL, m.relevance_score DESC, "
-                "         m.rerank_score IS NULL, m.rerank_score DESC, "
-                "         m.rerank_score_wide DESC",
+                "SELECT match_json, relevance_score, encoder_score, "
+                "       rerank_score_wide, rerank_score, yoe_required, "
+                "       skipped, skip_reason, "
+                "       shortlisted, scored_at, location, updated_at "
+                "FROM postings "
+                f"WHERE scored_run_id=? AND {self._SCORED} "
+                "ORDER BY relevance_score IS NULL, relevance_score DESC, "
+                "         rerank_score IS NULL, rerank_score DESC, "
+                "         rerank_score_wide DESC",
                 (run_id,),
             ).fetchall()
 
         out: list[dict] = []
         for r in rows:
-            record = json.loads(r["raw_json"])
+            record = json.loads(r["match_json"])
             record["location"] = r["location"] or record.get("location") or ""
             record["posted_at"] = r["updated_at"] or ""
             record["shortlisted"] = bool(r["shortlisted"])
@@ -1455,11 +2029,13 @@ class Database:
     def load_shortlisted(self, run_id: str) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT raw_json FROM matches WHERE run_id=? AND shortlisted=1 "
+                "SELECT match_json FROM postings "
+                "WHERE scored_run_id=? AND shortlisted=1 "
+                f"AND {self._SCORED} "
                 "ORDER BY relevance_score DESC",
                 (run_id,),
             ).fetchall()
-        return [json.loads(r["raw_json"]) for r in rows]
+        return [json.loads(r["match_json"]) for r in rows]
 
     def mark_not_shortlisted(self, job_id: str, reason: str,
                              location: str | None = None) -> int:
@@ -1479,10 +2055,19 @@ class Database:
         never-scored ones, the same misreading the CSV leaves `llm_score` empty to
         avoid.
 
-        **No `run_id` filter.** `matches` is keyed `(run_id, job_id)` and a job reached
-        from the backlog belongs to an earlier sweep, so every row for it is updated —
-        which also avoids leaving the stale duplicate the lifetime page would then
-        render twice, once under its real verdict and once under this one.
+        **Keyed on `job_id` alone, deliberately, and this is the one place the merge
+        left a loose end worth naming.** The applier reaches a job from the backlog
+        with its board token to hand, but the overview's decline button has only the
+        bare id — so this stays id-keyed and updates every posting that matches. Two
+        boards sharing an id is the one case where that touches a second posting;
+        un-shortlisting it is a conservative outcome (it keeps its score and its place
+        in Jobs Filtered), unlike marking it applied, which is why
+        `mark_applied_by_hand` refuses an ambiguous id instead.
+
+        It used to be id-keyed for a different reason that is now gone: `matches` was
+        `(run_id, job_id)`, so a backlog job scored in an earlier sweep needed every
+        one of its rows updated, or the lifetime page rendered it twice under
+        contradicting labels.
 
         `AND shortlisted = 1` makes it idempotent and a no-op for a job already
         retired. Returns how many rows changed, so the caller can log a miss.
@@ -1494,52 +2079,82 @@ class Database:
         """
         with self._lock, self._conn:
             rows = self._conn.execute(
-                "SELECT run_id, raw_json FROM matches "
+                "SELECT board_token, match_json FROM postings "
                 "WHERE job_id = ? AND shortlisted = 1",
                 (job_id,),
             ).fetchall()
             for row in rows:
-                raw = json.loads(row["raw_json"])
                 # The column and the blob both, because they are read from different
                 # places: `_match_record` overrides `shortlisted` from the column but
-                # takes `skip_reason` straight out of `raw_json`. `applier_location`
+                # takes `skip_reason` straight out of `match_json`. `applier_location`
                 # is an extra key rather than a `MatchResult` field — the blob is
                 # loaded as a plain dict, and nothing else needs to know about it.
+                #
+                # A shortlisted posting always has a verdict, so `match_json` is never
+                # NULL here; guarded anyway, because this runs off a user's button.
+                raw = json.loads(row["match_json"]) if row["match_json"] else {}
                 raw["skip_reason"] = reason
                 if location:
                     raw["applier_location"] = location
                 self._conn.execute(
-                    "UPDATE matches SET shortlisted = 0, skip_reason = ?, "
-                    "raw_json = ? WHERE run_id = ? AND job_id = ?",
-                    (reason, json.dumps(raw), row["run_id"], job_id),
+                    "UPDATE postings SET shortlisted = 0, skip_reason = ?, "
+                    "match_json = ? WHERE board_token = ? AND job_id = ?",
+                    (reason, json.dumps(raw), row["board_token"], job_id),
                 )
         return len(rows)
 
     # -- seen ----------------------------------------------------------------
+    #
+    # `retired_at` on the posting replaced a `seen_jobs` table keyed on `job_id`
+    # alone. The set the matcher holds in memory is therefore `(board_token, job_id)`
+    # pairs now — see `hireshire/matcher/seen.py` — which is what stops one board's
+    # verdict retiring another board's posting of the same id.
+    #
+    # A column rather than a derivation from `skip_reason`: retirement follows
+    # `_RETRYABLE_SKIP_REASONS`, and that rule stays in `matcher.py` where the funnel
+    # can read it, instead of being restated in SQL where the two could drift.
 
-    def seen_ids(self) -> set[str]:
+    def seen_ids(self) -> set[tuple[str, str]]:
+        """Every retired posting, as `(board_token, job_id)` pairs."""
         with self._lock:
-            rows = self._conn.execute("SELECT job_id FROM seen_jobs").fetchall()
-        return {r["job_id"] for r in rows}
+            rows = self._conn.execute(
+                "SELECT board_token, job_id FROM postings "
+                "WHERE retired_at IS NOT NULL"
+            ).fetchall()
+        return {(r["board_token"], r["job_id"]) for r in rows}
 
-    def mark_seen(self, job_ids: Iterable[str]) -> None:
-        first_seen = now_iso()
-        rows = [(jid, first_seen) for jid in job_ids]
+    def mark_seen(self, keys: Iterable[tuple[str, str]]) -> None:
+        """Retire these postings. `keys` are `(board_token, job_id)` pairs.
+
+        `WHERE retired_at IS NULL` is what makes this the `INSERT OR IGNORE` it
+        replaced: re-retiring an already-retired posting must not move its stamp,
+        which is the install's record of when the funnel first finished with it.
+        """
+        retired_at = now_iso()
+        rows = [(retired_at, board_token or "", job_id) for board_token, job_id in keys]
         if not rows:
             return
         with self._lock, self._conn:
             self._conn.executemany(
-                "INSERT OR IGNORE INTO seen_jobs(job_id, first_seen) VALUES (?, ?)", rows
+                "UPDATE postings SET retired_at = ? "
+                "WHERE board_token = ? AND job_id = ? AND retired_at IS NULL",
+                rows,
             )
 
     def forget_seen_scoring_errors(self, reasons: Iterable[str]) -> int:
-        """Un-retire jobs whose only recorded outcome was a scoring failure.
+        """Un-retire postings whose only recorded outcome was a scoring failure.
 
-        A job is retired into `seen_jobs` once it has an outcome, so a broken backend
-        used to retire everything it failed on — permanently, and invisibly, since
-        fixing the backend could not bring them back. This releases exactly those
-        jobs: ones with a skip row for one of `reasons` and no successful score in
-        any run. Returns how many were freed.
+        A posting is retired once it has an outcome, so a broken backend used to
+        retire everything it failed on — permanently, and invisibly, since fixing the
+        backend could not bring them back. This releases exactly those: a skip for one
+        of `reasons` standing as the posting's verdict. Returns how many were freed.
+
+        **The `EXCEPT` went away with the merge rather than being dropped.** It read
+        `… EXCEPT SELECT job_id FROM matches WHERE skipped = 0`, because `matches` held
+        one row per sweep per job and a later successful score sat beside the failure;
+        the posting had to stay retired on the strength of that other row. One row
+        means the failure either is the current verdict or has already been overwritten
+        by the success, so there is nothing to subtract.
         """
         reasons = list(reasons)
         if not reasons:
@@ -1547,12 +2162,9 @@ class Database:
         placeholders = ",".join("?" for _ in reasons)
         with self._lock, self._conn:
             cur = self._conn.execute(
-                "DELETE FROM seen_jobs WHERE job_id IN ("
-                "  SELECT job_id FROM matches"
-                f"  WHERE skipped = 1 AND skip_reason IN ({placeholders})"
-                "  EXCEPT"
-                "  SELECT job_id FROM matches WHERE skipped = 0"
-                ")",
+                "UPDATE postings SET retired_at = NULL "
+                "WHERE retired_at IS NOT NULL AND skipped = 1 "
+                f"AND skip_reason IN ({placeholders})",
                 reasons,
             )
             return cur.rowcount
@@ -1587,10 +2199,25 @@ class Database:
 
     # -- applier -------------------------------------------------------------
 
-    def applied_ids(self) -> set[str]:
+    def applied_ids(self) -> set[tuple[str, str]]:
+        """Every posting with an application record, as `(board_token, job_id)` pairs.
+
+        Pairs rather than bare ids, for the reason `seen_ids` returns pairs: the id
+        alone is not unique across boards, and this set is what stops a second
+        application to a job already applied to. Its two callers — the apply worker's
+        re-read before every launch, and the results CSV's `applied` column — both
+        have the board token to hand.
+
+        Every status counts, not just `submitted`: the question is "has this posting
+        been attempted", and an attempt that stopped short must not be attempted again
+        by the same sweep.
+        """
         with self._lock:
-            rows = self._conn.execute("SELECT job_id FROM applied").fetchall()
-        return {r["job_id"] for r in rows}
+            rows = self._conn.execute(
+                "SELECT board_token, job_id FROM postings "
+                "WHERE apply_status IS NOT NULL"
+            ).fetchall()
+        return {(r["board_token"], r["job_id"]) for r in rows}
 
     def recent_submissions(self, since_iso: str,
                            company: str | None = None) -> dict[str, list[str]]:
@@ -1602,8 +2229,8 @@ class Database:
         includes a job marked applied by hand — that writes plain `submitted` too.
         Install-wide on purpose: an employer does not care which sweep applied.
         """
-        sql = ("SELECT LOWER(TRIM(board_token)) AS company, applied_at FROM applied "
-               "WHERE status = 'submitted' AND applied_at >= ?")
+        sql = ("SELECT LOWER(TRIM(board_token)) AS company, applied_at FROM postings "
+               "WHERE apply_status = 'submitted' AND applied_at >= ?")
         args: tuple = (since_iso,)
         if company is not None:
             sql += " AND LOWER(TRIM(board_token)) = ?"
@@ -1616,13 +2243,19 @@ class Database:
         return out
 
     def load_applied(self) -> list[dict]:
-        # `dry_run` is deliberately not selected. The column survives in the schema
-        # because rows written before the applier became on/off carry real values and
-        # SQLite makes dropping a column awkward, but nothing reads it any more.
+        """Every application record, oldest first, in the old `applied` row shape.
+
+        The column names are mapped back (`apply_status` -> `status`, `apply_error` ->
+        `error`, `url` -> `absolute_url`) rather than exposed raw, because this is a
+        row shape two callers already read and renaming its keys would be churn with
+        no reader asking for it. The legacy `dry_run` column is gone: it was written
+        as 0 and selected by nothing.
+        """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT job_id, board_token, title, absolute_url, applied_at, status, "
-                "screenshot, error FROM applied ORDER BY applied_at"
+                "SELECT job_id, board_token, title, url AS absolute_url, applied_at, "
+                "       apply_status AS status, screenshot, apply_error AS error "
+                "FROM postings WHERE apply_status IS NOT NULL ORDER BY applied_at"
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -1638,28 +2271,37 @@ class Database:
         error: str | None,
         *,
         from_backlog: bool = False,
-    ) -> None:
-        """Write the outcome of one application.
+    ) -> int:
+        """Write the outcome of one application onto the posting.
+
+        **A named-column `UPDATE`, never `INSERT OR REPLACE`.** It was that, against an
+        `applied` table of its own; against the merged row it would delete the scrape
+        and the verdict and put back defaults. The same hazard as `upsert_match`, and
+        the reason both are listed on `insert_jobs`' first note.
+
+        `title` and `absolute_url` are accepted and **not written**: the scraper owns
+        both, and they were only ever on `applied` so that an application could outlive
+        the `matches` rows it pointed at. One row makes that impossible, which is the
+        same reasoning that kept `mark_applied_by_hand` off this writer. They stay in
+        the signature because all three call sites in `applier/worker.py` pass them.
 
         `from_backlog` says the job came off an earlier sweep's shortlist rather than
         the sweep that found it. It is **stored** because it cannot be derived later:
-        `applied` has no `run_id`, so nothing downstream can tell which sweep did the
+        there is no `run_id` here, so nothing downstream can tell which sweep did the
         applying, and `applied_at` against `scored_at` is a guess rather than a fact.
         Keyword-only with a default, so the writers that have no opinion — the
-        `excluded` row, the expiry pass, `applier/store.py` — stay as they were.
+        `excluded` row and the expiry pass — stay as they were.
+
+        Returns the rowcount, so a caller can notice a posting that is somehow gone.
         """
-        # The legacy `dry_run` column is written as 0 rather than left NULL, so old
-        # readers that still coerce it with bool() see "not a rehearsal" instead of
-        # tripping over None.
         with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO applied"
-                "(job_id, board_token, title, absolute_url, applied_at, status, "
-                " dry_run, screenshot, error, from_backlog) "
-                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
-                (job_id, board_token, title, absolute_url, applied_at, status,
-                 screenshot, error, int(from_backlog)),
-            )
+            return self._conn.execute(
+                "UPDATE postings SET apply_status = ?, applied_at = ?, "
+                "  apply_error = ?, screenshot = ?, from_backlog = ? "
+                "WHERE board_token = ? AND job_id = ?",
+                (status, applied_at, error, screenshot, int(from_backlog),
+                 board_token or "", job_id),
+            ).rowcount
 
     # -- outcomes the user records by hand -----------------------------------
     #
@@ -1677,26 +2319,31 @@ class Database:
     def mark_applied_by_hand(self, job_id: str, applied_at: str) -> str:
         """Record that the user applied to this job themselves. Idempotent.
 
-        Returns `"updated"` when an existing attempt was promoted, `"inserted"` when a
-        job had no `applied` row yet, or `"unknown"` when nothing on record names this
-        job — which is the only honest answer to a job_id the database has never seen,
-        and is why this does not blindly insert.
+        Returns `"updated"` when a posting was marked, `"unknown"` when nothing on
+        record names this job — the only honest answer to a job_id the database has
+        never seen, and why this does not blindly insert — or `"ambiguous"`, below.
 
-        **Three sources for the job's identity, in order**, because the page offers
-        this on every section a user can act on: an existing `applied` row, then the
-        canonical `matches` row, then `jobs`. The last one is not a nicety — a
-        title-gate rejection never gets a `matches` row at all, and it is exactly the
-        job a user is likeliest to have applied to behind the funnel's back.
+        **One `UPDATE`, where there used to be three sources for the job's identity.**
+        It tried an existing `applied` row, then the canonical `matches` row, then
+        `jobs`; the last was not a nicety, because a title-gate rejection has neither
+        of the first two and is exactly the job a user is likeliest to have applied to
+        behind the funnel's back. One row per posting means one lookup, and the
+        `"inserted"` return value collapses into `"updated"` — there is nothing left
+        to insert.
 
-        **A narrow `UPDATE`, not `record_applied`.** That writer is `INSERT OR REPLACE`
-        on the `job_id` primary key, so re-recording through it would blank
-        `board_token`, `title` and `absolute_url` — the three columns
-        `load_applied_matches` falls back on when the job's `matches` rows have been
-        pruned, i.e. exactly the old applications this feature exists to tidy up.
+        **`"ambiguous"` is new, and it is the one place the composite key shows through
+        to a user.** The page's buttons and `scripts/jobs_cli.py` pass a bare `job_id`,
+        which can name two postings when two boards mint the same id. Marking both
+        applied would be a lie about one of them, so this refuses and says so. The
+        alternative — widening the command to carry a board token — would ripple into
+        `scripts/approve.py`, which matches the exact command string, the
+        `mark-applied` skill and the button's copied command, for a case that is
+        vanishingly rare. (`mark_not_shortlisted` makes the opposite trade, for the
+        opposite reason: un-shortlisting the wrong posting is recoverable.)
 
-        `error` is cleared because it is the reason the job needed attention and that
-        reason is now discharged; `screenshot` is kept, because a partial capture of the
-        form is still the user's own record of the attempt.
+        `apply_error` is cleared because it is the reason the job needed attention and
+        that reason is now discharged; `screenshot` is kept, because a partial capture
+        of the form is still the user's own record of the attempt.
 
         The status written is plain `submitted`, which makes a hand-marked application
         indistinguishable from an automatic one on the page. That is accepted rather
@@ -1706,60 +2353,20 @@ class Database:
         silent undercount. Provenance, if it is ever wanted, belongs in a new column.
         """
         with self._lock, self._conn:
-            changed = self._conn.execute(
-                "UPDATE applied SET status = 'submitted', applied_at = ?, error = NULL "
-                "WHERE job_id = ?",
-                (applied_at, job_id),
-            ).rowcount
-            if changed:
-                return "updated"
-            # No attempt on record, so this is a shortlisted job the user got to first.
-            # Its identity comes from the canonical match row for the same reason every
-            # other lifetime read uses that rule: `matches` is keyed `(run_id, job_id)`
-            # and a job that was deferred once carries more than one row.
-            canonical = self._canonical_matches_sql(
-                "m.job_id, m.board_token, m.title, m.raw_json"
-            )
-            row = self._conn.execute(
-                f"SELECT * FROM ({canonical}) WHERE job_id = ?", (job_id,)
-            ).fetchone()
-            if row is not None:
-                try:
-                    url = (json.loads(row["raw_json"]) or {}).get("absolute_url") or ""
-                except (TypeError, ValueError):
-                    url = ""
-                board_token, title = row["board_token"] or "", row["title"] or ""
-            else:
-                # Neither an attempt nor a match row: a job the free title gate threw
-                # out, which is why it has no `matches` row at all and why it appears
-                # under Total Jobs Seen rather than anywhere else. The user applied to
-                # it themselves, so `jobs` is where its identity has to come from —
-                # without this branch the page's button copied a command that answered
-                # `unknown` and wrote nothing, for the largest section on it.
-                #
-                # Newest row, by the same rule `_canonical_matches_sql` follows:
-                # `jobs` is keyed `(run_id, job_id)`, so a job seen on several sweeps
-                # has several rows. `MAX(scraped_at)` with bare columns is SQLite's
-                # documented pick-that-row form.
-                job = self._conn.execute(
-                    "SELECT board_token, title, url, MAX(scraped_at) FROM jobs "
-                    "WHERE job_id = ? GROUP BY job_id",
-                    (job_id,),
-                ).fetchone()
-                if job is None:
-                    # In no table this database has. Still the only honest answer.
-                    return "unknown"
-                board_token = job["board_token"] or ""
-                title = job["title"] or ""
-                url = job["url"] or ""
+            rows = self._conn.execute(
+                "SELECT board_token FROM postings WHERE job_id = ?", (job_id,)
+            ).fetchall()
+            if not rows:
+                return "unknown"
+            if len(rows) > 1:
+                return "ambiguous"
             self._conn.execute(
-                "INSERT OR REPLACE INTO applied"
-                "(job_id, board_token, title, absolute_url, applied_at, status, "
-                " dry_run, screenshot, error) "
-                "VALUES (?, ?, ?, ?, ?, 'submitted', 0, NULL, NULL)",
-                (job_id, board_token, title, url, applied_at),
+                "UPDATE postings SET apply_status = 'submitted', applied_at = ?, "
+                "  apply_error = NULL "
+                "WHERE board_token = ? AND job_id = ?",
+                (applied_at, rows[0]["board_token"], job_id),
             )
-        return "inserted"
+        return "updated"
 
     def decline_job(self, job_id: str) -> dict:
         """Record that the user is not pursuing this job. Idempotent.
@@ -1769,10 +2376,12 @@ class Database:
 
         Two writes, and both are needed:
 
-        * **Delete any `applied` row.** A failed attempt is what puts the job under
+        * **Clear the application record.** A failed attempt is what puts the job under
           Needs Attention, and `applied_ids` is what keeps it out of every other
-          section. Leaving the row and giving it a new status would not work: any status
-          that is not `submitted` renders under Needs Attention by design.
+          section. Giving it a new status instead would not work: any status that is
+          not `submitted` renders under Needs Attention by design. So `apply_status`
+          goes back to NULL, which is exactly what deleting the `applied` row used to
+          mean — and is why a NULL there has to keep meaning "no record at all".
         * **Un-shortlist it** with `DECLINED_BY_USER`, which is what stops
           `load_pending_applications` handing it to the applier again and what files it
           under Jobs Filtered with a reason the user can read. `mark_not_shortlisted`
@@ -1785,12 +2394,20 @@ class Database:
         un-shortlisted but still attention-listed, which the next call finishes.
 
         `mark_not_shortlisted` matches only `shortlisted = 1`, so it returns 0 for a job
-        already retired. That is reported rather than treated as a failure: deleting the
-        `applied` row is on its own enough to clear Needs Attention.
+        already retired. That is reported rather than treated as a failure: clearing the
+        application record is on its own enough to clear Needs Attention.
+
+        Keyed on the bare `job_id`, like `mark_not_shortlisted` and for the same
+        reason — the button has nothing else — and conservative in the same way: the
+        worst an ambiguous id can do is retire a posting the user did not mean, which
+        keeps its score and its place in Jobs Filtered.
         """
         with self._lock, self._conn:
             deleted = self._conn.execute(
-                "DELETE FROM applied WHERE job_id = ?", (job_id,)
+                "UPDATE postings SET apply_status = NULL, applied_at = NULL, "
+                "  apply_error = NULL, screenshot = NULL, from_backlog = 0 "
+                "WHERE job_id = ? AND apply_status IS NOT NULL",
+                (job_id,),
             ).rowcount
         unshortlisted = self.mark_not_shortlisted(job_id, DECLINED_BY_USER)
         return {"deleted": bool(deleted), "unshortlisted": unshortlisted}
@@ -1803,43 +2420,43 @@ class Database:
         can no longer see is a job the applier will never be handed again, and that is
         the whole basis for retiring it.
 
-        **The age test is a `HAVING` on the aggregate, not a `WHERE` on the row**, and
-        that is load-bearing. `matches` is keyed `(run_id, job_id)`, so a job scored in
-        one sweep and rescored in a later one has two rows — the same fact
-        `_canonical_matches_sql` exists for, resolved the same way. A row-level
-        `scored_at <` would match the stale row and report a job as expired
-        while its fresh row still sits in the backlog — the applier would retire a job
-        it is actively retrying. Against `MAX(scored_at)` the two predicates are
-        complements by construction.
+        **The age test is a plain `WHERE` on the row now, and that is only safe because
+        the row is unique.** It had to be `HAVING MAX(scored_at)` over a group:
+        `matches` was keyed `(run_id, job_id)`, so a job scored in one sweep and
+        rescored in a later one had two rows, and a row-level `scored_at <` would match
+        the stale one and report a job as expired while its fresh row still sat in the
+        backlog — the applier retiring a job it was actively retrying. One row per
+        posting carries the newest verdict by construction, so the two predicates are
+        complements again, which is what the two loaders need: a job the backlog can no
+        longer see is a job the applier will never be handed again, and that is the
+        whole basis for retiring it.
 
-        Filtering after the group does not move the bare columns: SQLite takes them
-        from the row that produced the `MAX()`, which is the newest match either way.
+        `job_url` comes off the posting's own `url` column rather than out of the JSON
+        blob, which is the one behaviour change here: the blob's `absolute_url` was the
+        only copy `matches` had, and the scraper's column is the better source.
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT m.job_id, m.board_token, m.title, m.relevance_score, m.raw_json, "
-                "MAX(m.scored_at) AS scored_at "
-                "FROM matches m "
-                "WHERE m.shortlisted = 1 "
-                f"AND NOT ({self._sibling_sql('m')}) "
-                "AND NOT EXISTS (SELECT 1 FROM applied a WHERE a.job_id = m.job_id) "
-                "GROUP BY m.job_id "
-                f"HAVING MAX(m.scored_at) {having} ? "
-                "ORDER BY m.relevance_score DESC",
+                "SELECT board_token, job_id, title, relevance_score, url, scored_at "
+                "FROM postings "
+                "WHERE shortlisted = 1 "
+                f"AND NOT ({self._sibling_sql()}) "
+                "AND apply_status IS NULL "
+                f"AND scored_at {having} ? "
+                "ORDER BY relevance_score DESC",
                 (stamp_iso,),
             ).fetchall()
-        out = []
-        for r in rows:
-            raw = json.loads(r["raw_json"])
-            out.append({
+        return [
+            {
                 "job_id": r["job_id"],
                 "company": r["board_token"],
                 "title": r["title"],
-                "job_url": raw.get("absolute_url") or "",
+                "job_url": r["url"] or "",
                 "relevance_score": r["relevance_score"],
                 "scored_at": r["scored_at"],
-            })
-        return out
+            }
+            for r in rows
+        ]
 
     def load_pending_applications(self, since_iso: str) -> list[dict]:
         """Shortlisted jobs scored since `since_iso` with no `applied` row, best first.
@@ -1869,7 +2486,7 @@ class Database:
         """
         return self._unapplied("<", before_iso)
 
-    # -- retention (manual, via scripts/prune_runs.py) -----------------------
+    # -- retention (manual, via `scripts/jobs_cli.py prune`) -----------------
 
     def all_run_ids(self) -> list[str]:
         """Distinct run_ids ordered newest-first by their earliest start time."""
@@ -1880,12 +2497,43 @@ class Database:
             ).fetchall()
         return [r["run_id"] for r in rows]
 
-    def prune_runs(self, keep: int | None = None, before: str | None = None) -> list[str]:
-        """Delete run-scoped rows for old runs. Returns the deleted run_ids.
+    #: SQLite's default variable limit is 999, so an id list goes in in chunks. A
+    #: `prune_runs(before=…)` on a long-lived install can name hundreds of sweeps.
+    _PRUNE_CHUNK = 900
 
-        `keep` retains the N most-recent runs; `before` deletes runs whose
-        run_id (ISO-timestamp string) sorts before the given date. Cross-run
-        tables (seen_jobs, applied) are never touched.
+    def prune_runs(self, keep: int | None = None, before: str | None = None) -> list[str]:
+        """Forget old sweeps, and the postings nothing came of. Returns the run ids.
+
+        `keep` retains the N most-recent runs; `before` deletes runs whose run_id (an
+        ISO-timestamp string, so lexicographic order is chronological) sorts before the
+        given date.
+
+        **The posting half is the dangerous part of this method, and the predicate on
+        it is not optional.** `jobs`, `matches`, `applied` and `seen_jobs` all used to
+        be in the table list below, and `applied` was explicitly excluded because an
+        application is a fact about a job rather than about a sweep — a user who prunes
+        old runs should still see what they applied to. The merge makes the posting
+        *be* the application record, screenshot path and all, so a bare
+        `DELETE … WHERE last_run_id IN (…)` would destroy exactly what the old code
+        went out of its way to keep. Hence `apply_status IS NULL AND shortlisted = 0`:
+        retention means "forget the postings nothing came of", and an applied or
+        still-shortlisted posting is never prunable by age.
+
+        **Keyed on `last_run_id`, not `first_run_id`.** A posting first seen by a
+        pruned sweep is still live if a kept sweep found it again, and deleting it
+        would empty the kept sweep's own pages.
+
+        The `UPDATE` after it is what keeps `load_unmatched_jobs`' documented caveat
+        true: "first seen" means the first sighting *still on record*, so a survivor
+        filed under a sweep that is going away re-files onto its oldest surviving one.
+        Without it, such a posting would appear on no run or day page at all and only
+        at lifetime scope — a third behaviour nobody has reasoned about. It runs after
+        the delete so it touches fewer rows.
+
+        Note what this deliberately does **not** do: express the rule as
+        `NOT EXISTS (SELECT 1 FROM runs …)`. An abandoned sweep never writes its
+        pipeline `runs` row — that is what `abandoned_runs` exists for — so that form
+        would delete live postings.
         """
         run_ids = self.all_run_ids()
         to_delete: list[str] = []
@@ -1896,12 +2544,24 @@ class Database:
         to_delete = sorted(set(to_delete))
         if not to_delete:
             return []
-        tables = ("runs", "run_companies", "jobs", "matches", "pipeline_results",
-                  "run_progress")
+        tables = ("runs", "run_companies", "pipeline_results", "run_progress")
         with self._lock, self._conn:
             for rid in to_delete:
                 for table in tables:
                     self._conn.execute(f"DELETE FROM {table} WHERE run_id=?", (rid,))
+            for i in range(0, len(to_delete), self._PRUNE_CHUNK):
+                chunk = to_delete[i:i + self._PRUNE_CHUNK]
+                holes = ",".join("?" * len(chunk))
+                self._conn.execute(
+                    f"DELETE FROM postings WHERE last_run_id IN ({holes}) "
+                    "AND apply_status IS NULL AND shortlisted = 0",
+                    tuple(chunk),
+                )
+                self._conn.execute(
+                    "UPDATE postings SET first_run_id = last_run_id "
+                    f"WHERE first_run_id IN ({holes})",
+                    tuple(chunk),
+                )
         return to_delete
 
 

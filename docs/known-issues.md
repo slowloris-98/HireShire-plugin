@@ -1,14 +1,14 @@
 # Known issues
 
-Last verified against the code on 2026-10-02.
+Last verified against the code on 2026-10-03.
 Source: `DATA/logs/orchestration.log` (sweeps of 2026-09-16 through 2026-10-02).
 
 Only *outstanding* issues are listed. A fully resolved one is deleted rather than
 marked fixed — the fix is in `CHANGELOG.md` and the git history, and a table of
 things that are no longer true is a table nobody rereads. **IDs are stable and are
-never reused**, so gaps are expected (D1 was added on 2026-10-03; A2, A3 and S1 were resolved and removed on
-2026-09-22, A5 and R1 on 2026-09-22, S4 on 2026-10-02) and `CLAUDE.md`'s references to an issue by number
-stay valid.
+never reused**, so gaps are expected (A2, A3 and S1 were resolved and removed on
+2026-09-22, A5 and R1 on 2026-09-22, S4 on 2026-10-02, and D1 was added and resolved on
+2026-10-03) and `CLAUDE.md`'s references to an issue by number stay valid.
 
 ## Applier
 
@@ -26,14 +26,6 @@ stay valid.
 |---|-------|--------|--------|
 | S2 | Every scoring call and apply session fails at once with `0xC0000142` while the sweep carries on scraping | **A stale inherited console.** A Windows child attaches to its parent's console by default, and `USER32.dll`'s initialisation attaches the process to that console's window station and desktop *before any user code runs*. When the console the sweeper inherited goes stale — the Claude Code session that started the background shell task ended or restarted, or its terminal was closed — that attach fails and **every** subsequent spawn dies in ~20 ms with no stdout and no stderr, while the parent is unaffected because it only does HTTP. (career-ops-hq/career-ops#3809 for the identical signature in a long-lived parent; openai/codex#46412 for the window-station mechanism.) **The evidence is per sweeper process, and an event rather than an accumulation**, which is what forces this reading: one process scored cleanly at 23:25, 00:33 and 01:39 on 2026-10-01/02, then failed every cycle from 02:46 through 09:26 and never recovered; the 10:10 restart cured it instantly, after which scoring failed with a real `out of credits` error and the applier submitted two applications. The 21:21 restart on 10-01 judged 43 jobs and submitted 1, and the 22:35 cycle in that same process failed. Onset was 3h20m into one process and ~74 min into another. | **Fixed in 0.23.0 — verification pending.** `claude_cli.own_console_kwargs()` gives every fully-piped child its own invisible console, so the parent's console lifetime stops mattering; `tests/test_child_console.py` pins that over the shipped spawn sites, and pins the two re-exec launchers that must keep inheriting stdio. **The old suspects are retired, not merely unproven:** desktop-heap exhaustion from concurrent load is ruled out alongside leaked processes, a locked screen and sleep — a census at 12:49 on 10-02 found 344 processes, zero orphaned CLI or browser children, and both `codex --version` and `claude --version` launching cleanly from a fresh console, and the onset times rule out any accumulation. The earlier note that a locked screen was already excluded (the 21:05 sweep ran almost entirely locked and made ~30 apply sessions and 166 codex calls before failing) now has a mechanism that explains it. Delete this row once a sweeper process has outlived the session that started it and gone on scoring cleanly. A separate lead from the same log, **not** this symptom: with `matcher.concurrency: 4`, concurrent `codex exec` processes race on one directory — `codex_skills_extension: failed to install system skills: Access is denied (os error 5)`. |
 | S3 | Results CSV shows `llm_score` 0 for jobs never scored (10 rows, sweep `2026-09-21_202917`) | These are duplicates of a job whose scoring call failed (S2), so they copied its placeholder 0. `results_export._never_scored` returns `False` for **any** row carrying a `cluster_representative`, without asking whether that representative actually returned a verdict. The overview page is right for a different reason: `overview._job_entry` reads `skip_reason` directly rather than calling `_never_scored`. | Open. Note `reporting.data._never_scored` carries the identical bug — it is simply not on the path that renders the score — and `tests/test_reporting.py` pins the two copies together, so a fix has to change both. |
-
-## Storage
-
-Measured against the live install on 2026-10-03, read-only.
-
-| # | Issue | Reason | Status |
-|---|-------|--------|--------|
-| D1 | The `jobs` table stores a full copy of every posting on every sweep, and nothing can reclaim it | `insert_jobs` is keyed `(run_id, job_id)`, so a posting the scraper finds again gets a fresh row carrying its `content_text` and `raw_json` verbatim. Measured: **580,727 rows for 75,732 distinct postings (7.7x)**, of which **504,995 (87%) are re-sightings holding 3.81 GB** — out of a 5.34 GB database file, 4.47 GB of which is row payload (`content_text` 4.07 GB, `raw_json` 0.40 GB). One Apple posting has **134** rows. Recent sweeps add ~2,200-3,000 rows and ~11 MB each, so ~65 MB/day at a 4-hour poll, unbounded. The per-run row is not gratuitous — `jobs.gate_reason` is that sweep's title-gate verdict and `scrape_counts["jobs"]` is what the run page's scraper note prints — but only those are per-run facts; the description is the same bytes every time. `run_companies` is worse by ratio (1,592,052 rows / 16,746 employers, 95x) and does not matter, because it is thin metadata, not text. `matches` is 1.1x and that is deliberate: a deferral legitimately gets a second row when a later sweep judges it. | **Open, and there is no mitigation at all.** `Database.prune_runs(keep=…, before=…)` is written and tested, but **`scripts/prune_runs.py` does not exist** — the section comment at `db.py:1872` names it and the file was never added, so the method has no caller outside the test suite and no user can reach it even from a terminal. That is the `bad_slugs` lesson one step worse: not "the only road back is a terminal command" but no road back. Note the cost is the file on disk and the reads that group the whole table (a `COUNT` over `jobs` took 39.6 s; the lifetime page's snapshot 6.0 s), not correctness — 0.24.0 moved the overview's last section, the `Jobs in scope` tile and the progress bars onto `_new_work_sql` and the `idx_jobs_job` anti-join, so every page now counts postings rather than sightings regardless of how many rows back them. |
 
 ## Proposed fixes
 
@@ -64,26 +56,6 @@ Measured against the live install on 2026-10-03, read-only.
   with `tasklist /FI "IMAGENAME eq chrome.exe"` before and after one real session — in
   persistent-profile mode it may close the page without ending the process, and a model
   may not comply, so it does not go into the one shared prompt on a guess.
-- **D1:** two independent steps, and the first is worth doing on its own.
-  **(a) Make retention reachable.** `prune_runs` already works; what is missing is the
-  entry point the comment claims. A `scripts/jobs_cli.py` subcommand rather than the
-  `scripts/prune_runs.py` that was never written, since that file already has the
-  `_rebuild_reports` plumbing and the `approve.py` guard recognises its argv shape — a
-  retention command is useless in a plugin whose premise is that users never open a
-  terminal unless a skill can run it without a permission dialog. It must `VACUUM`
-  afterwards or the file does not shrink, and it must refuse to run while a sweep holds
-  the database. One thing to write down rather than rediscover: pruning interacts with
-  the first-sighting rule 0.24.0 added, because "first seen" means *first row still in
-  the database*, so deleting the oldest sweeps re-files surviving postings under
-  whichever page then holds their earliest row. Self-correcting and honest, but it will
-  look like a bug to whoever sees it first.
-  **(b) Stop writing the duplicate in the first place**, which is the actual fix and is
-  a schema change: the description and `raw_json` belong in one row per posting, with a
-  thin per-run row keeping `gate_reason` and the sighting itself. It touches
-  `insert_jobs`, `matcher._persist_hydrated_details`, `load_jobs`, `load_unmatched_jobs`,
-  `prune_runs` and every `jobs` reader, and it needs a migration that an interrupted
-  sweep cannot leave half-applied — so it should not be attempted until (a) has bought
-  the time to do it properly.
 - **S3:** in `_never_scored`, a duplicate should count as scored only if its
   representative actually got a verdict — the same check `overview._job_entry` makes.
   Both copies of the rule change together.

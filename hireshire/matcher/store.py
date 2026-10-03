@@ -45,9 +45,18 @@ class MatchStore:
         return results
 
     async def append_result(self, result: MatchResult) -> None:
-        """Commit one result immediately — survives a mid-run crash."""
+        """Commit one result immediately — survives a mid-run crash.
+
+        `upsert_match` is an `UPDATE` onto the posting the scraper wrote, so a
+        rowcount of 0 means the verdict landed on nothing. That cannot happen in the
+        pipeline — `RunStore.save_company` writes the postings before it queues the
+        batch — so it is logged rather than raised: one judged job lost is worth a
+        warning, and aborting a sweep over it would be worse. Silence is the one
+        option that is not acceptable, since the symptom is a job that was paid for
+        and then vanished from every page.
+        """
         shortlisted = is_shortlisted(result, self._threshold)
-        await asyncio.to_thread(
+        written = await asyncio.to_thread(
             self._db.upsert_match,
             self.run_id,
             result.job_id,
@@ -65,6 +74,12 @@ class MatchStore:
             result.rerank_score,
             result.yoe_required,
         )
+        if not written:
+            logger.warning(
+                "Verdict for %s/%s matched no posting — it was not scraped by this "
+                "run, so the score has not been recorded",
+                result.board_token, result.job_id,
+            )
 
     def finalise(
         self,

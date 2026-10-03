@@ -77,10 +77,18 @@ def harness(tmp_path, monkeypatch):
     return db
 
 
-def run_queue_mode(jobs):
+def run_queue_mode(jobs, db=None):
     """Drive matcher.main the way orchestrate does: one company batch, then the
-    sentinel."""
+    sentinel.
+
+    Including the scrape, which the real pipeline does first: `RunStore.save_company`
+    writes the postings and *then* queues the batch, and `upsert_match` is an UPDATE
+    onto those rows. A harness that only queued would have the matcher write its
+    verdicts onto nothing.
+    """
     async def go():
+        if db is not None and not db.get_jobs([j.job_id for j in jobs]):
+            db.insert_jobs(RUN_ID, jobs)
         in_q: asyncio.Queue = asyncio.Queue()
         out_q: asyncio.Queue = asyncio.Queue()
         await in_q.put(("acme", jobs))
@@ -141,7 +149,7 @@ def test_no_llm_run_emits_every_job_including_cluster_siblings(harness):
         make_job("d3", "Multi-Media Account Executive - 101.5", content_text="one requisition"),
         make_job("solo", "Client Success Manager"),
     ]
-    forwarded = run_queue_mode(jobs)
+    forwarded = run_queue_mode(jobs, db)
 
     rows = {r["job_id"]: r for r in db.load_all_matches(RUN_ID)}
     # The regression: all four jobs must have a row. Three of them are one cluster,
@@ -174,7 +182,7 @@ def test_no_llm_run_makes_no_scoring_calls(harness, monkeypatch):
         raise AssertionError("skip_llm must not construct an LLM backend")
 
     monkeypatch.setattr(matcher_mod, "make_backend", explode)
-    run_queue_mode([make_job("j1", "Account Manager")])
+    run_queue_mode([make_job("j1", "Account Manager")], harness)
     assert len(harness.load_all_matches(RUN_ID)) == 1
 
 
@@ -183,7 +191,7 @@ def test_passthrough_rows_are_shortlisted_despite_a_high_threshold(harness):
     passing. With threshold 85 — which nothing ever reached — this is what makes a
     --no-llm run produce a non-empty shortlist to exercise the rest of the pipeline.
     """
-    run_queue_mode([make_job("j1", "Account Manager")])
+    run_queue_mode([make_job("j1", "Account Manager")], harness)
     rows = harness.load_all_matches(RUN_ID)
     assert rows[0]["relevance_score"] is None
     assert rows[0]["shortlisted"] is True
@@ -195,21 +203,25 @@ def test_the_matcher_bar_counts_this_sweeps_own_work(harness):
 
     Its numerator still has to count jobs that never get a `matches` row — a title-gate
     rejection is work this sweep did — but **not** one the seen-store skips because an
-    earlier sweep judged it. That job is in this run's `jobs` table all the same, since
-    the scraper re-inserts every posting it finds, and `_new_work_sql` leaves it out of
-    the denominator for the same reason. The two halves are defined against each other:
-    counting the whole batch against a first-sighting denominator reads a clamped 100%
-    from the first batch of every repeat sweep.
+    earlier sweep judged it. That posting still carries this sweep in `last_run_id`,
+    since the scraper upserts every posting it finds, and `_new_work_sql` leaves it out
+    of the denominator because its `first_run_id` and `scored_run_id` both name the
+    earlier sweep. The two halves are defined against each other: counting the whole
+    batch against a first-sighting denominator reads a clamped 100% from the first
+    batch of every repeat sweep.
     """
     db = harness
     db.start_progress(RUN_ID, apply_enabled=False)
-    db.mark_seen(["old"])
     # What the scraper leaves behind: `old` was found by an earlier sweep and found
     # again by this one, `j1` only by this one.
     db.insert_jobs(OLDER_RUN_ID, [make_job("old", "Account Manager")])
     db.insert_jobs(RUN_ID, [make_job("j1", "Account Manager"),
                             make_job("old", "Account Manager")])
-    run_queue_mode([make_job("j1", "Account Manager"), make_job("old", "Account Manager")])
+    # Retired *after* the scrape, deliberately: `mark_seen` is an UPDATE onto the
+    # posting, so retiring an id nothing has scraped yet records nothing at all.
+    db.mark_seen([("acme", "old")])
+    run_queue_mode([make_job("j1", "Account Manager"),
+                    make_job("old", "Account Manager")], db)
 
     assert len(db.load_all_matches(RUN_ID)) == 1
     progress = db.run_progress(RUN_ID)
@@ -226,7 +238,7 @@ def test_the_call_cap_still_bounds_a_no_llm_run(harness):
     the same selection the real one would rather than a more permissive path.
     """
     jobs = [make_job(f"j{i}", f"Account Manager {i}") for i in range(6)]
-    run_queue_mode(jobs)
+    run_queue_mode(jobs, harness)
 
     rows = harness.load_all_matches(RUN_ID)
     dropped = [r for r in rows if r.get("skip_reason") == matcher_mod.CAP_SKIP_REASON]
