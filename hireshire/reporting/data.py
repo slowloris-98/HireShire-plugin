@@ -650,7 +650,10 @@ def overview_snapshot(
 
     # The title-gate rejections, which live only in `jobs` — nothing wrote them a
     # `matches` row. They carry no score, so appending them after the rows that do
-    # keeps the blanks at the bottom of the last section.
+    # keeps the blanks at the bottom of the last section. One row per posting, from the
+    # sweep that first saw it: the half above is filtered by the run that reached a
+    # verdict, this half by the run that first laid eyes on it. `load_unmatched_jobs`
+    # says why the two halves differ.
     seen += [
         r for r in db.load_unmatched_jobs(run_id, MAX_TAIL_ROWS, run_ids=run_ids)
         if r.get("job_id") not in applied_ids

@@ -20,6 +20,3 @@ applied materials
 Debug:
 monitor dies after 2 hours. we need a system that can run for long sessions like 24 hrs
 instead of using claude and codex cli, intercept the api call for these and use these api calls for scoring (lightweight solution)
-
-
-applied intuition
