@@ -319,6 +319,99 @@ def test_a_reason_recorded_on_any_sweep_wins_at_lifetime_scope(tmp_path):
     assert [r["gate_reason"] for r in rows] == ["title_excluded"]
 
 
+def test_a_re_scraped_job_belongs_to_the_sweep_that_first_saw_it(tmp_path):
+    """The headline rule for the overview's last section, at run scope.
+
+    The scraper writes a fresh `jobs` row for every posting on every sweep, so without
+    the first-sighting anti-join the seventh sweep's page re-lists every posting the
+    first sweep's title gate already threw out — on a mature install, most of the
+    section. `j2` is the control: it is new to the later sweep and must still appear.
+    """
+    db = _db(tmp_path)
+    first, later = "2026-07-07T00-00-00Z", "2026-07-08T00-00-00Z"
+    db.insert_jobs(first, [_job("j1")])
+    db.record_gate_reasons(first, [("j1", "title_excluded")])
+    db.insert_jobs(later, [_job("j1"), _job("j2")])
+    db.record_gate_reasons(later, [("j2", "title_low_relevance")])
+
+    assert [r["job_id"] for r in db.load_unmatched_jobs(first, 50)] == ["j1"]
+    assert [r["job_id"] for r in db.load_unmatched_jobs(later, 50)] == ["j2"]
+
+
+def test_a_day_lists_the_jobs_that_day_first_saw_exactly_once(tmp_path):
+    """Day scope means new to the **day**, and the anti-join is deliberately not
+    narrowed to the day's id set — which is what makes a posting the 9am sweep found and
+    the 1pm sweep found again appear once rather than twice or not at all. Its earliest
+    row is inside the day and survives; the later row is killed."""
+    db = _db(tmp_path)
+    morning, afternoon = "2026-07-07T09-00-00Z", "2026-07-07T13-00-00Z"
+    next_day = "2026-07-08T09-00-00Z"
+    db.insert_jobs(morning, [_job("j1")])
+    db.record_gate_reasons(morning, [("j1", "title_excluded")])
+    db.insert_jobs(afternoon, [_job("j1")])
+    db.insert_jobs(next_day, [_job("j1")])
+
+    day = db.load_unmatched_jobs(None, 50, run_ids=[morning, afternoon])
+    assert [r["job_id"] for r in day] == ["j1"]
+    assert db.load_unmatched_jobs(None, 50, run_ids=[next_day]) == []
+    # Lifetime was always right — `GROUP BY job_id` collapsed the repeats — and the
+    # anti-join must not change that.
+    assert [r["job_id"] for r in db.load_unmatched_jobs(None, 50)] == ["j1"]
+
+
+def test_a_reason_recorded_on_a_later_sweep_still_reaches_the_page(tmp_path):
+    """The inverse of the test above this pair, and the one that fails if the
+    `COALESCE` lookup is ever "simplified" back to a bare column.
+
+    A sweep killed outright (`--stop` is `taskkill /F`, which runs no `finally`) leaves
+    `jobs` rows the matcher never gated: no `gate_reason`, and no `seen_jobs` entry
+    either, so the *next* sweep gates the job and holds the reason. The anti-join keeps
+    the earlier NULL row, so the reason has to be fetched across runs rather than read
+    off the row that survived.
+    """
+    db = _db(tmp_path)
+    killed, next_sweep = "2026-07-07T00-00-00Z", "2026-07-08T00-00-00Z"
+    db.insert_jobs(killed, [_job("j1")])  # scraped, never gated
+    db.insert_jobs(next_sweep, [_job("j1")])
+    db.record_gate_reasons(next_sweep, [("j1", "title_excluded")])
+
+    assert [r["gate_reason"] for r in db.load_unmatched_jobs(None, 50)] == ["title_excluded"]
+    # And at the scope the job is now filed under, which is the killed sweep.
+    assert [r["gate_reason"] for r in db.load_unmatched_jobs(killed, 50)] == ["title_excluded"]
+    assert db.load_unmatched_jobs(next_sweep, 50) == []
+
+
+def test_the_jobs_in_scope_tile_counts_work_done_not_rows_held(tmp_path):
+    """The tile and the matcher bar's denominator are one query, and it is deliberately
+    **wider** than the last section's list: first sightings *plus* jobs this scope
+    reached a verdict on.
+
+    `j2` is the case that forces the second half. The call cap deferred it on the first
+    sweep — no verdict, not retired into `seen_jobs` — and the later sweep judges it. A
+    strict first-sighting tile would leave it out while the page's Relevant and Jobs
+    Filtered sections list it, putting the top of the funnel below the lists beneath it.
+    `j1` is the control: merely re-scraped, so it is work the first sweep did.
+    """
+    db = _db(tmp_path)
+    first, later = "2026-07-07T00-00-00Z", "2026-07-08T00-00-00Z"
+    db.insert_jobs(first, [_job("j1"), _job("j2")])
+    db.record_gate_reasons(first, [("j1", "title_excluded")])
+    db.insert_jobs(later, [_job("j1"), _job("j2")])
+    db.upsert_match(later, "j2", "acme", "Eng", 70, False, False, None, later,
+                    "2026-07-08T00:00:00+00:00", '{"job_id": "j2"}')
+
+    assert db.overview_counts(run_id=first)["seen"] == 2
+    assert db.overview_counts(run_id=later)["seen"] == 1  # j2 only, re-judged
+    assert db.overview_counts(run_ids=[first, later])["seen"] == 2
+    # Lifetime is unchanged by all of this: every posting's earliest row passes the
+    # first-sighting half, so it still reads one per posting.
+    assert db.overview_counts()["seen"] == 2
+
+    # The bar reads the same number as the tile, by construction.
+    db.start_progress(later, False)
+    assert db.run_progress(later)["jobs_in_scope"] == 1
+
+
 def test_marking_a_title_gated_job_applied_builds_its_row_from_jobs(tmp_path):
     """The case with no `matches` row at all: the free title gate threw it out, so it
     appears under Total Jobs Seen and nowhere else. Before `jobs` was the third source

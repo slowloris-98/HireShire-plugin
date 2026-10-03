@@ -402,6 +402,30 @@ def test_a_title_gate_job_reaches_the_page_with_no_score(tmp_path):
     assert snap["seen"][-1].get("rerank_score") is None
 
 
+def test_a_re_sighted_title_gate_job_leaves_the_section_but_not_the_tile(tmp_path):
+    """The last section lists a posting under the sweep that **first saw** it; the
+    `Jobs in scope` tile counts everything the sweep did work on. So they diverge on
+    purpose, and by design the tile reads higher — do not reconcile them.
+
+    `j9` was gated by an earlier sweep and the scraper found it again on this one. It
+    belongs to that earlier sweep's page, and this sweep's tile still counts it, because
+    the tile's question is how many postings this sweep had in front of it.
+    """
+    db = _populated(tmp_path)
+    db.insert_jobs(OLDER, [_job("j9", title="Barista")])
+    db.record_gate_reasons(OLDER, [("j9", "title_excluded")])
+    db.insert_jobs(RUN, [_job("j9", title="Barista")])
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j9") == []
+    assert snap["seen_total"] == 1   # j3 alone, the cutoff drop this run reached
+    assert snap["counts"]["seen"] > snap["seen_total"]
+
+    older = data.overview_snapshot(db, OLDER)
+    assert _section_of(older, "j9") == ["seen"]
+    assert older["seen"][0]["gate_reason"] == "title_excluded"
+
+
 def test_the_sql_judged_predicate_matches_never_scored(tmp_path):
     """`db._judged_sql` has to reach inside `raw_json` for `cluster_representative`,
     because no column carries it. Keying off `skip_reason` instead looks equivalent

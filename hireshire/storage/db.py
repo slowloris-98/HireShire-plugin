@@ -95,6 +95,19 @@ CREATE TABLE IF NOT EXISTS jobs (
     PRIMARY KEY (run_id, job_id)
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_run ON jobs(run_id);
+-- `job_id`-leading, because the overview's last section asks a question about a
+-- posting ACROSS runs rather than about one run: `load_unmatched_jobs` has to know
+-- whether an earlier sweep already saw this job, and `overview_counts` asks the same.
+--
+-- **It is required, not an optimisation.** Without it the first-sighting anti-join
+-- falls back to the primary key, which can only use its `run_id < ?` prefix and so
+-- scans every earlier run's rows: measured on a real install (580,727 `jobs` rows over
+-- 135 sweeps) one run-scope read took 31.8s, against 7ms with this index -- on a page
+-- that rebuilds every few seconds for the length of a sweep. All three columns so the
+-- anti-join and the `gate_reason` lookup are both covering. Like `idx_matches_job`
+-- below, an index in this script reaches an existing database with no migration; it
+-- builds in under a second on that install.
+CREATE INDEX IF NOT EXISTS idx_jobs_job ON jobs(job_id, run_id, gate_reason);
 
 CREATE TABLE IF NOT EXISTS matches (
     run_id          TEXT NOT NULL,
@@ -454,6 +467,62 @@ class Database:
             f"(skipped = 0 OR skipped IS NULL OR {self._sibling_sql(alias)})"
         )
 
+    # "No sweep before this one saw this posting", over `jobs j`. The scraper writes a
+    # fresh `jobs` row for every posting on every sweep, so a run-scoped read of that
+    # table counts a posting once per sweep that found it rather than once. Spelled here
+    # because two readers ask it and must agree: the overview's last section
+    # (`load_unmatched_jobs`) and the `Jobs in scope` tile / matcher bar
+    # (`_new_work_sql`). `idx_jobs_job` answers it from the index alone.
+    #
+    # The comparison is lexicographic over a fixed-width UTC stamp, which is
+    # chronological by construction -- the same property `prune_runs` relies on.
+    _FIRST_SIGHTING = ("NOT EXISTS (SELECT 1 FROM jobs e "
+                       "WHERE e.job_id = j.job_id AND e.run_id < j.run_id)")
+
+    def _new_work_sql(self, run_id: str | None, ids: Sequence[str]) -> str:
+        """`COUNT(DISTINCT j.job_id)` over the postings a scope did work on.
+
+        The `Jobs in scope` tile and the matcher bar's denominator are the same number
+        by contract (see `run_progress`), so the rule is written once. "Did work on"
+        means **first saw**, or **reached a verdict on** -- the second half is why this
+        is not simply `_FIRST_SIGHTING`. A job the call cap deferred in sweep #1 and
+        sweep #5 finally judged is real work #5 did, and it is listed under #5's
+        Relevant and Jobs Filtered sections; counting only first sightings would put the
+        top of the funnel *below* the lists beneath it, which is the one thing a funnel
+        tile must never do.
+
+        It is also what the matcher bar's numerator counts: `matcher.py` bumps
+        `jobs_processed` with the jobs not already in `seen_jobs`, which is this set
+        clause for clause -- a title-gate verdict retires a job into `seen_jobs`, a cap
+        drop deliberately does not. The two must change together.
+
+        At lifetime scope there is no filter, and the first-sighting half is true of
+        every posting's earliest row, so this degenerates to
+        `COUNT(DISTINCT job_id) FROM jobs` -- the number the lifetime page prints today,
+        unchanged by construction.
+
+        `COUNT(DISTINCT)` rather than a bare count because at day scope one posting can
+        qualify through its first-sighting row in one of the day's sweeps and its
+        `matches` row in another. The caller owns the parameters, and the scope ids
+        appear **twice** -- once for `j.run_id`, once for `m.run_id`.
+        """
+        scope = (
+            " AND j.run_id = ?" if run_id
+            else f" AND {self._in_clause(ids, 'j.run_id')}" if ids
+            else ""
+        )
+        judged_scope = (
+            " AND m.run_id = ?" if run_id
+            else f" AND {self._in_clause(ids)}" if ids
+            else ""
+        )
+        return (
+            "SELECT COUNT(DISTINCT j.job_id) AS n FROM jobs j WHERE 1=1" + scope +
+            f" AND ({self._FIRST_SIGHTING} OR EXISTS ("
+            "    SELECT 1 FROM matches m WHERE m.job_id = j.job_id"
+            + judged_scope + "))"
+        )
+
     @staticmethod
     def _in_clause(run_ids: Sequence[str], column: str = "m.run_id") -> str:
         """``column IN (?,?,…)`` for a day's worth of run ids. Spelled once.
@@ -516,6 +585,15 @@ class Database:
         resurfaced in several sweeps is one job on the lifetime page — unlike a per-run
         total's totals, which sum per-run counts and say so.
 
+        `seen` — the `Jobs in scope` tile — counts the postings this scope did **work**
+        on, through `_new_work_sql`, not the `jobs` rows it holds. The scraper re-inserts
+        every posting on every sweep, so a plain count over that table counted a posting
+        once per sweep that found it: at day scope literally over, and at run scope as
+        work this sweep had in fact done once and then skipped. Lifetime is unchanged by
+        it, for the reason `_new_work_sql` gives. It is deliberately **wider** than the
+        last section's list, which shows first sightings only — see
+        `load_unmatched_jobs`, and do not reconcile the two.
+
         The two `matches` figures differ by scope in *which* row they ask. A run-scoped
         query needs no choosing: `(run_id, job_id)` is the primary key, so the run holds
         exactly one row per job. Across the install a job can hold rows from several
@@ -543,6 +621,11 @@ class Database:
             else ""
         )
         params: tuple = (run_id,) if run_id else ids
+        # The tile counts postings this scope did WORK on, not `jobs` rows it holds:
+        # the scraper re-inserts every posting on every sweep. See `_new_work_sql`; the
+        # scope ids are passed twice because the predicate names them twice.
+        seen_sql = self._new_work_sql(run_id, ids)
+        seen_params: tuple = params + params
         if run_id:
             relevant_sql = ("SELECT COUNT(DISTINCT job_id) AS n FROM matches "
                             f"WHERE {self._relevant_sql()}" + run_filter)
@@ -558,10 +641,7 @@ class Database:
             shortlisted_sql = (f"SELECT COUNT(*) AS n FROM ({canonical}) "
                                "WHERE shortlisted = 1")
         with self._lock:
-            seen = self._conn.execute(
-                "SELECT COUNT(DISTINCT job_id) AS n FROM jobs WHERE 1=1" + run_filter,
-                params,
-            ).fetchone()
+            seen = self._conn.execute(seen_sql, seen_params).fetchone()
             relevant = self._conn.execute(relevant_sql, params).fetchone()
             shortlisted = self._conn.execute(shortlisted_sql, params).fetchone()
             # `applied` has no run_id — an application is a fact about a job, not
@@ -659,30 +739,52 @@ class Database:
         `gate_reason`, the gate's own verdict, which `record_gate_reasons` wrote onto
         the row the scraper had already made.
 
-        **`MAX(j.gate_reason)` rather than the bare column**, because a job can have
-        a `jobs` row in several runs and only some of them gated it: the `SeenStore`
-        skips a job an earlier sweep already judged, so the later row's reason is
-        NULL, and a bare column would hand back that NULL and lose the verdict on the
-        lifetime page. `MAX` ignores NULLs, so any run that recorded a reason wins.
-        It does mean the other bare columns come from the row holding that maximum
-        rather than an arbitrary one — which changes nothing, since title, company,
-        location and url are properties of the posting and identical across runs by
-        construction.
+        **One row per posting, from the sweep that FIRST saw it.** The scraper writes a
+        fresh `jobs` row on every sweep, so without `_FIRST_SIGHTING` the page for the
+        seventh sweep re-lists every posting the first sweep's title gate already threw
+        out, as though it had just found it — on a mature install, most of the section.
+        The anti-join keeps the row with the minimal `run_id`, which is also what makes
+        `GROUP BY j.job_id` unnecessary: `(run_id, job_id)` is the primary key, so that
+        row is unique and a tie is impossible. Do not restore the `GROUP BY` — it would
+        forbid `LIMIT` from short-circuiting the scan, and it is no longer what
+        guarantees uniqueness.
 
-        The `NOT EXISTS` is **not** correlated on `run_id`, and that is the whole
-        subtlety. A job the `SeenStore` skipped this sweep because an earlier one
-        already judged it has no `matches` row for *this* run, and correlating would
-        list it here with a blank score as though nothing had ever read it. The price
-        is that on second and later sweeps the page's four sections no longer sum to
-        the `Jobs in scope` tile. That is the lesser of the two lies.
+        **The two `NOT EXISTS` clauses are scoped oppositely, deliberately**, and they
+        only read as a contradiction. The `matches` one is uncorrelated on `run_id` — the
+        question is *has anything ever read this job*, and a job the `SeenStore` skipped
+        this sweep because an earlier one judged it would otherwise be listed here with a
+        blank score as though nothing had. The `jobs` one is keyed on `run_id` — the
+        question is *is this the run that first saw it*. It is deliberately **not**
+        narrowed to the day's id set either, which is what makes a posting first seen by
+        a day's 9am sweep appear exactly once on that day's page: its earliest row is
+        inside the day's scope and survives, its 1pm row is killed.
 
-        Index-backed both ways: `idx_matches_job` serves the subquery and
-        `idx_jobs_run` the run-scope filter — which matters because the reports now
-        rebuild on a clock for the length of a sweep, not on funnel events.
+        The price, accepted twice over now, is that on second and later sweeps the five
+        sections no longer sum to the `Jobs in scope` tile — that tile counts everything
+        the scope did work on, which includes a job an earlier sweep first saw and this
+        one re-judged after a deferral. Do not reconcile them.
 
-        The scope filter is the only thing `run_ids` changes: there is no aggregate
-        here to place it inside, because `GROUP BY j.job_id` is already one row per
-        job whatever set of runs produced them.
+        Note "first seen" means *first row still in the database*: `prune_runs` deletes
+        `jobs` rows, so pruning the oldest sweeps makes a surviving posting reappear on
+        whichever page then holds its earliest row. Self-correcting, and honest.
+
+        **`gate_reason` is a correlated lookup rather than `MAX()` over a group**, and
+        the rule it carries — *any run that recorded a reason wins* — is still
+        load-bearing. The reason is not always on the earliest row: a sweep killed
+        outright (`--stop` is `taskkill /F`, which runs no `finally`) leaves `jobs` rows
+        the matcher never gated, writing neither a reason nor a `seen_jobs` entry, so the
+        *next* sweep gates the job and holds the reason. The anti-join keeps that earlier
+        NULL row, so a bare column would hand back NULL — exactly the regression `MAX`
+        was introduced to stop, re-entering through the back door. `COALESCE`
+        short-circuits on the common case, where the kept row carries the reason already.
+
+        Index-backed three ways, with no table scan at any scope: `idx_matches_job`
+        serves the first subquery, `idx_jobs_job` both the anti-join and the reason
+        lookup (both covering), and `idx_jobs_run` the run-scope filter. That matters
+        because the reports rebuild on a clock for the length of a sweep, not on funnel
+        events. Measured on a real install — 580,727 `jobs` rows over 135 sweeps — at
+        7 ms per run, 13 ms for a day and 58 ms at lifetime. `idx_jobs_job` is what buys
+        that and is not optional: without it the same run-scope read took **31.8 s**.
         """
         if run_ids is not None and not run_ids:
             return []
@@ -698,12 +800,16 @@ class Database:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT j.job_id, j.board_token, j.title, j.location, j.url, "
-                "       MAX(j.gate_reason) AS gate_reason "
+                "       COALESCE(j.gate_reason, ("
+                "           SELECT MAX(p.gate_reason) FROM jobs p"
+                "           WHERE p.job_id = j.job_id AND p.gate_reason IS NOT NULL"
+                "       )) AS gate_reason "
                 "FROM jobs j "
                 "WHERE NOT EXISTS ("
                 "    SELECT 1 FROM matches m WHERE m.job_id = j.job_id)"
+                f"  AND {self._FIRST_SIGHTING}"
                 + scope +
-                " GROUP BY j.job_id LIMIT ?",
+                " LIMIT ?",
                 params,
             ).fetchall()
         return [
@@ -893,9 +999,13 @@ class Database:
         for a run made before progress was recorded.
 
         `jobs_in_scope` is the matcher bar's denominator and the same number as the
-        page's `Jobs in scope` tile. `submitted` and `attention` split the applier
-        bar; they count applications to this run's shortlisted *representatives*,
-        because siblings are never sent to the worker and would hold the bar short.
+        page's `Jobs in scope` tile — the same `_new_work_sql` call, so the two cannot
+        drift. It counts what this sweep had work to do on rather than every `jobs` row
+        it holds, which is what `matcher.py` bumps `jobs_processed` against; the two
+        halves of this bar are defined against each other and must change together.
+        `submitted` and `attention` split the applier bar; they count applications to
+        this run's shortlisted *representatives*, because siblings are never sent to the
+        worker and would hold the bar short.
         """
         with self._lock:
             row = self._conn.execute(
@@ -904,7 +1014,7 @@ class Database:
             if row is None:
                 return None
             jobs = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM jobs WHERE run_id = ?", (run_id,)
+                self._new_work_sql(run_id, ()), (run_id, run_id)
             ).fetchone()
             applied = self._conn.execute(
                 "SELECT SUM(CASE WHEN a.status = 'submitted' THEN 1 ELSE 0 END) AS ok, "
@@ -949,6 +1059,13 @@ class Database:
         so jobs from runs that predate progress tracking cannot hold the matcher bar
         short.
 
+        Both `jobs` figures go through `_new_work_sql` rather than counting rows, so a
+        posting several of a day's sweeps scraped is one posting. `jobs_processed` is a
+        sum of per-sweep counters that now count the same thing (`matcher.py` bumps it
+        with `unseen`), so the matcher bar's two halves still answer each other. At day
+        scope `jobs_in_scope` and `unique_jobs` collapse to one number — their two scopes
+        coincide there — and that collapse *is* the double count going away.
+
         The applier is different on purpose: every distinct shortlisted
         representative this install has ever had, against how many have an
         application. A sum of per-sweep counters reads ~100% whenever no sweep is
@@ -981,10 +1098,18 @@ class Database:
             }
         ids = tuple(run_ids or ())
         progress_scope = f" WHERE {self._in_clause(ids, 'run_id')}" if ids else ""
-        jobs_scope = (
-            f"WHERE {self._in_clause(ids, 'run_id')}" if ids
-            else "WHERE run_id IN (SELECT run_id FROM run_progress)"
+        # Both `jobs` figures count new work rather than rows, for the reason
+        # `_new_work_sql` gives. They keep their two different scopes: `jobs_in_scope`
+        # over the tracked sweeps only, so jobs from runs predating progress tracking
+        # cannot hold the matcher bar short, and `unique_jobs` over every run. At day
+        # scope those two scopes coincide and the figures collapse to one number, which
+        # is the per-sweep double count going away.
+        tracked = "j.run_id IN (SELECT run_id FROM run_progress)"
+        in_scope_sql = (
+            self._new_work_sql(None, ids) if ids
+            else self._new_work_sql(None, ()).replace("WHERE 1=1", f"WHERE {tracked}")
         )
+        unique_sql = self._new_work_sql(None, ids)
         canonical = self._canonical_matches_sql(
             "m.job_id, m.raw_json, m.shortlisted",
             where=f"WHERE {self._in_clause(ids)}" if ids else "",
@@ -1002,16 +1127,10 @@ class Database:
                 "FROM run_progress" + progress_scope,
                 ids,
             ).fetchone()
-            jobs = self._conn.execute(
-                f"SELECT COUNT(*) AS n FROM jobs {jobs_scope}", ids
-            ).fetchone()
+            jobs = self._conn.execute(in_scope_sql, ids + ids).fetchone()
             # What the scraper bar prints. Each posting once however many sweeps found
             # it — the `Jobs in scope` rule, over whatever set of runs is in scope.
-            unique = self._conn.execute(
-                "SELECT COUNT(DISTINCT job_id) AS n FROM jobs"
-                + (f" WHERE {self._in_clause(ids, 'run_id')}" if ids else ""),
-                ids,
-            ).fetchone()
+            unique = self._conn.execute(unique_sql, ids + ids).fetchone()
             shortlisted = self._conn.execute(
                 f"SELECT COUNT(*) AS n FROM ({shortlist})", ids
             ).fetchone()

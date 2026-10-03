@@ -797,12 +797,18 @@ async def main(
                         ):
                             results.extend(group)
 
-                    # The overview's matcher bar. The whole batch, not what reached
-                    # the reranker: seen-store skips and title-gate rejections write
-                    # no `matches` row, and the bar's denominator is every job the
-                    # scraper put in scope. Last in the iteration, so it means done.
+                    # The overview's matcher bar. `unseen`, not the whole batch, and
+                    # not what reached the reranker either: title-gate rejections write
+                    # no `matches` row but are work this sweep did, while a job the
+                    # `SeenStore` skipped is work an earlier one did. That is exactly
+                    # what `Database._new_work_sql` counts on the other side of the bar
+                    # -- a title-gate verdict retires a job into `seen_jobs`, a cap drop
+                    # deliberately does not and so returns as new work -- and the
+                    # numerator and denominator have to change together or the bar reads
+                    # a clamped 100% from the first batch of every repeat sweep.
+                    # Last in the iteration, so it means done.
                     await asyncio.to_thread(
-                        db.bump_progress, run_id, jobs_processed=len(batch_jobs)
+                        db.bump_progress, run_id, jobs_processed=len(unseen)
                     )
             except Exception:
                 logger.exception("Matcher queue loop failed")

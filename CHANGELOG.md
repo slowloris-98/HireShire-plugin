@@ -4,6 +4,28 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.24.0] — 2026-10-03
+
+### Fixed
+
+- **The dashboard's Total Jobs Seen list no longer repeats the same job on every
+  sweep.** HireShire re-checks every employer on every sweep, so it keeps finding the
+  same postings — and that bottom section was listing a posting again each time, as
+  though it had just turned up. On one real install it showed around 900 jobs for a
+  sweep that had in fact seen 54 new ones, and 580,000 listings across its history
+  covering only 75,732 actual jobs. A job now appears under the sweep that **first**
+  found it and nowhere else, so the list is a list of what is new. The same goes for a
+  day's page: each posting appears once, filed under the day it first showed up. The
+  lifetime page already counted each job once and reads the same as before.
+
+- **The Jobs in scope tile and the Matcher bar now count jobs rather than sightings.**
+  They had the same double-counting behind them, which on a day's page could show a
+  figure several times the number of jobs the day actually involved. They now count
+  what a sweep had work to do on — jobs it first saw, plus jobs it scored this time
+  after an earlier sweep ran out of budget for them — so the Matcher bar fills against
+  a number that means something. These tiles stay deliberately higher than the list
+  below them, which shows first sightings only.
+
 ## [0.23.0] — 2026-10-02
 
 ### Fixed

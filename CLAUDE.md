@@ -770,11 +770,34 @@ The last section, `Total Jobs Seen`, is the only one that reads the **`jobs` tab
 rather than `matches` (`Database.load_unmatched_jobs`). That is what finally puts the
 title-gate rejections on a page — `matcher.py` keeps them out of `matches` on purpose,
 since there can be tens of thousands a run — and it is why that section alone is
-script-built from a JSON payload with a filter box. Its `NOT EXISTS` is deliberately
-**not** correlated on `run_id`: a job the `SeenStore` skipped because an earlier sweep
-judged it would otherwise be listed here with a blank score, as though nothing had
-ever read it. The price, accepted, is that on later sweeps the five sections no longer
-sum to the `Jobs in scope` tile. Its payload carries **no LLM key** — a key holding 0
+script-built from a JSON payload with a filter box. It carries **two** `NOT EXISTS`
+clauses, scoped oppositely, and they only read as a contradiction. The `matches` one is
+deliberately **not** correlated on `run_id` — the question is *has anything ever read
+this job*, and a job the `SeenStore` skipped because an earlier sweep judged it would
+otherwise be listed here with a blank score, as though nothing had. The `jobs` one is
+keyed on `run_id`: **a posting belongs to the sweep that first saw it, and to no
+other.** The scraper writes a fresh `jobs` row for every posting on every sweep, so
+without it the seventh sweep's page re-lists everything the first sweep's title gate
+threw out — on a mature install, most of the section. That anti-join also replaced
+`GROUP BY j.job_id` as what makes the rows unique, since `(run_id, job_id)` is the
+primary key and the earliest row is therefore one row; restoring the `GROUP BY` would
+only forbid `LIMIT` from short-circuiting. And it is deliberately **not** narrowed to a
+day's id set, which is what makes a posting the day's 9am sweep found and its 1pm sweep
+found again appear exactly once on the day page.
+
+**The `jobs` half is filtered by first sighting and the `matches` half is not**, and the
+asymmetry is the point: a `matches` row is work a run *did* on a posting, a `jobs` row is
+only the scraper seeing it again. Filtering the other half would re-create the regression
+`_canonical_matches_sql` exists to stop — a job today judged vanishing from today's page
+the moment a later sweep touched it. Note "first seen" means *first row still in the
+database*: `prune_runs` deletes `jobs` rows, so pruning the oldest sweeps makes a
+surviving posting reappear on whichever page then holds its earliest row. Self-correcting,
+and honest.
+
+The price, accepted twice over now, is that on later sweeps the five sections no longer
+sum to the `Jobs in scope` tile — that tile is deliberately **wider**, counting every
+posting the scope did work on, which includes one an earlier sweep first saw and this one
+re-judged after a deferral. Do not reconcile them. Its payload carries **no LLM key** — a key holding 0
 invites a renderer to print it as a verdict — while the renderer still prints an em
 dash in that column, so the six shared columns match the sections above. A printed
 dash and an absent key are not the same thing; only the key is dangerous.
@@ -794,13 +817,21 @@ group. Four consequences:
   leaving it out was not enough, it has to be left out of an `ON CONFLICT … DO UPDATE`.
   `matcher._persist_hydrated_details` re-inserts a job to attach its description, so
   under the old writer that second call silently erased the gate's verdict.
-- **`load_unmatched_jobs` reads `MAX(j.gate_reason)`, not the bare column.** A job can
-  have a `jobs` row in several runs and only some of them gated it — the `SeenStore`
-  skips a job an earlier sweep judged — so a bare column hands back the later row's
-  NULL and loses the verdict at lifetime scope. `MAX` ignores NULLs, so any run that
-  recorded a reason wins; the other bare columns then come from that row, which
-  changes nothing, since title, company, location and url are properties of the
-  posting.
+- **`load_unmatched_jobs` fetches `gate_reason` across runs, not off the row it
+  returns.** A job can have a `jobs` row in several runs and only some of them gated it
+  — the `SeenStore` skips a job an earlier sweep judged — so a bare column hands back
+  the other row's NULL and loses the verdict. The rule is *any run that recorded a
+  reason wins*, and it used to be a `MAX()` over the group; once the first-sighting
+  anti-join chose the row, it had to become a `COALESCE` onto a correlated lookup
+  instead, because **the reason is not always on the earliest row.** A sweep killed
+  outright (`--stop` is `taskkill /F`, which runs no `finally`) leaves `jobs` rows the
+  matcher never gated, writing neither a reason nor a `seen_jobs` entry, so the *next*
+  sweep gates the job and holds it. The anti-join keeps that earlier NULL row, so a bare
+  column would re-introduce the exact regression `MAX` was added to stop — and the
+  original test would still pass, because it records the reason on the earlier sweep.
+  `tests/test_db.py::test_a_reason_recorded_on_a_later_sweep_still_reaches_the_page` is
+  the one that catches it. The other bare columns come from the earliest row, which
+  changes nothing, since title, company, location and url are properties of the posting.
 - **The column is fed by two different columns and `_tail_payload` normalises them**:
   `matches.skip_reason` for the jobs the cutoff and the YoE gate dropped,
   `jobs.gate_reason` for the title gate's own three. That is done there rather than in
@@ -885,8 +916,17 @@ Three rules to keep:
   sent.** Its total is `apply_queued`, which covers representatives only; siblings
   never reach the queue. The backlog is left out, because it belongs to earlier
   sweeps' shortlists.
-- **The matcher bar counts the whole batch** once it is finished. Its total is the
-  `Jobs in scope` tile.
+- **The matcher bar counts what the sweep had work to do on**, not the whole batch, and
+  its two halves are defined against each other. `matcher.py` bumps `jobs_processed`
+  with `unseen` — the batch minus the jobs an earlier sweep already retired into
+  `seen_jobs` — and the total is the `Jobs in scope` tile, which is the same
+  `Database._new_work_sql` call. That rule is *first sighting **or** a verdict this
+  scope reached*: a title-gate rejection writes no `matches` row but is work this sweep
+  did, while a cap drop is not retired and so legitimately returns as work later. Change
+  one half without the other and the bar reads a clamped 100% from the first batch of
+  every repeat sweep. It is **not** plain first-sighting for the same reason the tile is
+  not: a posting the cap deferred and a later sweep judged is real work that sweep did,
+  and it is listed in that sweep's Relevant and Jobs Filtered sections.
 - **Both pages show their bars all the time, but the lifetime page's are different
   numbers.** The run page keeps that sweep's bars after it ends, as a record of where
   each stage stopped. The lifetime page shows install-wide bars
@@ -895,10 +935,15 @@ Three rules to keep:
     the matcher's total counts jobs from those sweeps only, so older runs cannot hold
     it short.
   - The lifetime scraper bar **prints unique jobs but fills by companies**. A company
-    count summed across sweeps means nothing to a user, and unique jobs
-    (`COUNT(DISTINCT job_id)` over every run) has no total to fill against. The
-    bar's `count` key is what lets a bar print a figure that is not its fill. The run
-    page keeps printing companies, because that is how far a live scrape has got.
+    count summed across sweeps means nothing to a user, and unique jobs (one posting
+    however many sweeps found it, via `_new_work_sql` over every run) has no total to
+    fill against. The bar's `count` key is what lets a bar print a figure that is not
+    its fill. The run page keeps printing companies, because that is how far a live
+    scrape has got.
+  - **Both `jobs` figures count postings, never rows**, and they keep their two
+    different scopes: the matcher's total over the tracked sweeps only, `unique_jobs`
+    over every run. At *day* scope those scopes coincide and the two collapse to one
+    number — which is the per-sweep double count going away, not a bug to pull apart.
   - The applier is **not** a sum. It is every distinct shortlisted representative
     ever, against how many have an `applied` row. A sum of per-sweep counters reads
     ~100% whenever no sweep is running; the backlog keeps meaning something, and it
@@ -917,7 +962,13 @@ The lifetime page carries its own throttle (`LIFETIME_INTERVAL_S`, 60 s) because
 queries group a table that has no `run_id` filter to narrow them; everything else in
 `refresh` is indexed on `run_id` and stays cheap however long the user has been at it —
 including the `jobs` read behind `Total Jobs Seen`, which `idx_jobs_run` covers and
-whose `NOT EXISTS` rides `idx_matches_job`.
+whose two `NOT EXISTS` clauses ride `idx_matches_job` and `idx_jobs_job` — the latter
+`(job_id, run_id, gate_reason)`, so the first-sighting anti-join and the `gate_reason`
+lookup are both answered from the index alone. **That index is required, not an
+optimisation.** Without it the anti-join falls back to the primary key, which can only
+use its `run_id < ?` prefix and scans every earlier run's rows: measured on a real
+install (580,727 `jobs` rows over 135 sweeps) one run-scope read took **31.8 s**,
+against 7 ms with it — 13 ms for a day, 58 ms at lifetime, no table scan at any scope.
 
 All three tables now fill continuously — `run_companies`, `jobs` and `matches` — because
 selection is a per-job cutoff and each employer's batch is judged as it arrives. Both

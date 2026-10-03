@@ -27,6 +27,7 @@ from hireshire.models.job import Job
 from hireshire.storage.db import Database
 
 RUN_ID = "2026-08-14T00-00-00Z"
+OLDER_RUN_ID = "2026-08-13T00-00-00Z"
 
 
 def make_job(
@@ -188,17 +189,33 @@ def test_passthrough_rows_are_shortlisted_despite_a_high_threshold(harness):
     assert rows[0]["shortlisted"] is True
 
 
-def test_the_matcher_bar_counts_the_whole_batch(harness):
-    """The overview's matcher bar divides by every job in scope, so its numerator
-    has to count jobs that never get a `matches` row: here, one the seen-store
-    skips because an earlier sweep judged it."""
+def test_the_matcher_bar_counts_this_sweeps_own_work(harness):
+    """The overview's matcher bar divides by what this sweep had work to do on, so its
+    numerator counts `unseen` rather than the whole batch.
+
+    Its numerator still has to count jobs that never get a `matches` row — a title-gate
+    rejection is work this sweep did — but **not** one the seen-store skips because an
+    earlier sweep judged it. That job is in this run's `jobs` table all the same, since
+    the scraper re-inserts every posting it finds, and `_new_work_sql` leaves it out of
+    the denominator for the same reason. The two halves are defined against each other:
+    counting the whole batch against a first-sighting denominator reads a clamped 100%
+    from the first batch of every repeat sweep.
+    """
     db = harness
     db.start_progress(RUN_ID, apply_enabled=False)
     db.mark_seen(["old"])
+    # What the scraper leaves behind: `old` was found by an earlier sweep and found
+    # again by this one, `j1` only by this one.
+    db.insert_jobs(OLDER_RUN_ID, [make_job("old", "Account Manager")])
+    db.insert_jobs(RUN_ID, [make_job("j1", "Account Manager"),
+                            make_job("old", "Account Manager")])
     run_queue_mode([make_job("j1", "Account Manager"), make_job("old", "Account Manager")])
 
     assert len(db.load_all_matches(RUN_ID)) == 1
-    assert db.run_progress(RUN_ID)["jobs_processed"] == 2
+    progress = db.run_progress(RUN_ID)
+    assert progress["jobs_processed"] == 1
+    # And the bar reads done rather than clamped: numerator and denominator agree.
+    assert progress["jobs_in_scope"] == 1
 
 
 def test_the_call_cap_still_bounds_a_no_llm_run(harness):
