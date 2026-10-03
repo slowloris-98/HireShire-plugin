@@ -25,6 +25,7 @@ from hireshire.matcher.scorer import (
     ScoringSchema,
 )
 from hireshire.matcher.seen import SeenStore
+from hireshire.models.job import Job, Location
 from hireshire.storage.db import Database
 
 
@@ -244,40 +245,70 @@ def test_verdicts_still_retire_a_job(reason):
     assert reason not in matcher_mod._RETRYABLE_SKIP_REASONS
 
 
+def _posting(db: Database, job_id: str, run_id: str = "run-1") -> Job:
+    """Scrape one posting, and hand it back so it can be asked about.
+
+    `SeenStore` is keyed `(board_token, job_id)` and tests membership with the object
+    rather than the tuple, so a test needs the `Job` itself — and `upsert_match` and
+    `mark_seen` are both UPDATEs onto the row the scraper makes, so there has to be
+    one.
+    """
+    now = datetime.now(timezone.utc)
+    job = Job(
+        source="greenhouse", board_token="acme", job_id=job_id,
+        title="Account Manager", location=Location(name="Remote"),
+        absolute_url=f"https://example.com/{job_id}",  # type: ignore[arg-type]
+        updated_at=now, scraped_at=now, content_text="text",
+    )
+    db.insert_jobs(run_id, [job])
+    return job
+
+
 def test_seen_store_releases_jobs_retired_by_a_scoring_error(tmp_path):
     db = Database(tmp_path / "test.db")
     now = datetime.now(timezone.utc).isoformat()
+    jobs = {}
     for job_id, skipped, reason in [
         ("failed", 1, "api_error"),
         ("judged", 0, None),
         ("empty", 1, "no_content_text"),
     ]:
+        jobs[job_id] = _posting(db, job_id)
         db.upsert_match(
             run_id="run-1", job_id=job_id, board_token="acme", title="Account Manager",
             relevance_score=0, shortlisted=False, skipped=bool(skipped),
             skip_reason=reason, source_run_id="run-1", scored_at=now, raw_json="{}",
         )
-    db.mark_seen(["failed", "judged", "empty"])
+    db.mark_seen([("acme", j) for j in jobs])
 
     seen = SeenStore(db=db)
 
-    assert "failed" not in seen, "a job the backend failed on must become eligible again"
-    assert "judged" in seen and "empty" in seen, "real outcomes must still retire a job"
+    assert jobs["failed"] not in seen, \
+        "a job the backend failed on must become eligible again"
+    assert jobs["judged"] in seen and jobs["empty"] in seen, \
+        "real outcomes must still retire a job"
 
 
 def test_a_job_scored_successfully_later_is_not_released(tmp_path):
-    """One bad run followed by a good one must not un-retire the job."""
+    """One bad run followed by a good one must not un-retire the job.
+
+    The posting holds one verdict, so the good run's score *replaces* the failure
+    rather than sitting beside it — which is what `forget_seen_scoring_errors` now
+    reads. It used to need an `EXCEPT` over a second `matches` row to reach the same
+    answer.
+    """
     db = Database(tmp_path / "test.db")
     now = datetime.now(timezone.utc).isoformat()
+    job = _posting(db, "j1")
     for run_id, skipped, reason in [("run-1", 1, "api_error"), ("run-2", 0, None)]:
         db.upsert_match(
             run_id=run_id, job_id="j1", board_token="acme", title="Account Manager",
             relevance_score=80, shortlisted=True, skipped=bool(skipped),
             skip_reason=reason, source_run_id=run_id, scored_at=now, raw_json="{}",
         )
-    db.mark_seen(["j1"])
+    db.mark_seen([("acme", "j1")])
 
-    assert "j1" in SeenStore(db=db)
+    assert job in SeenStore(db=db)
 
 
 # --- the circuit breaker ---------------------------------------------------

@@ -26,6 +26,10 @@ def _db(tmp_path) -> Database:
 
 
 def _match(db: Database, job_id: str, *, shortlisted=True, rep=None) -> None:
+    # The posting first: every writer below this one is an UPDATE onto the scraper's
+    # row, so a fixture that skips the scrape records nothing.
+    if not db.get_jobs([job_id]):
+        db.insert_jobs(RUN, [_job(job_id)])
     raw = {"job_id": job_id, "board_token": "acme", "title": "Engineer",
            "relevance_score": 80, "cluster_representative": rep}
     db.upsert_match(RUN, job_id, "acme", "Engineer", 80, shortlisted, rep is not None,
@@ -108,11 +112,12 @@ def test_the_applier_split_counts_representatives_only(tmp_path):
                            ("bad", "error"), ("unlisted", "submitted")):
         db.record_applied(job_id, "acme", "Engineer", "", "2026-09-19T11:00:00+00:00",
                           status, None, None)
-    db.insert_jobs(RUN, [])
-
     got = db.run_progress(RUN)
     assert (got["submitted"], got["attention"]) == (1, 1)
-    assert got["jobs_in_scope"] == 0
+    # All four postings were scraped and judged by this sweep, so the matcher bar's
+    # denominator is 4 while the applier's is 2. The two bars count different things
+    # and are not meant to agree.
+    assert got["jobs_in_scope"] == 4
 
 
 def test_pruning_a_run_removes_its_progress(tmp_path):

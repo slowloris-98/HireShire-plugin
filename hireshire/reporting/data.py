@@ -232,8 +232,20 @@ def _never_scored(record: dict) -> bool:
 _FREE_GATE_VERDICTS = ("rerank_below_cutoff", "yoe_below_requirement")
 
 
+def _key(record: dict) -> tuple[str, str]:
+    """A posting's identity, as `(board_token, job_id)`.
+
+    The bare `job_id` is only unique per board — Greenhouse and BambooHR both mint bare
+    integers, and Workday falls back to the job *title* — which is why `postings` is
+    keyed on the pair. This page has to use the same key or it will treat two
+    employers' postings as one: with an id-keyed `applied_ids`, applying to one board's
+    job 12345 would hide another board's job 12345 from Jobs Shortlisted entirely.
+    """
+    return (record.get("board_token") or "", record.get("job_id") or "")
+
+
 def partition_jobs(
-    records: list[dict], applied_ids: set[str]
+    records: list[dict], applied_ids: set[tuple[str, str]]
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Split match rows into the overview page's last three sections, in page order.
 
@@ -254,22 +266,22 @@ def partition_jobs(
     siblings, because they were grouped after the rerank and never competed for a
     slot. Here a sibling follows its verdict — it carries a real score copied from its
     representative and belongs beside it.
+
+    `applied_ids` is a set of `(board_token, job_id)` pairs — see `_key`.
     """
     shortlisted: list[dict] = []
     filtered: list[dict] = []
     seen: list[dict] = []
     # Structural, not a fallback for a loader that misbehaves. Every loader returns one
-    # row per job — run scope because `(run_id, job_id)` is the primary key, lifetime and
-    # day scope because the query groups on `job_id` (day scope within the day's runs) —
-    # but the page's one real promise should not rest on the shape of whichever query
-    # fed it.
-    placed: set[str] = set()
+    # row per posting now, because `postings` holds one — but the page's one real
+    # promise should not rest on the shape of whichever query fed it.
+    placed: set[tuple[str, str]] = set()
 
     for record in records:
-        job_id = record.get("job_id")
-        if job_id in applied_ids or job_id in placed:
+        key = _key(record)
+        if key in applied_ids or key in placed:
             continue
-        placed.add(job_id)
+        placed.add(key)
         if (record.get("skip_reason") or "") in _FREE_GATE_VERDICTS:
             seen.append(record)
         elif record.get("shortlisted"):
@@ -621,10 +633,11 @@ def overview_snapshot(
     # vanishing. `excluded` is the one no session produces: the applier wrote it
     # itself because the employer's portal needs an account login.
     # Both halves stay in `applied_ids`, so neither reappears under Shortlisted.
+    # Keyed `(board_token, job_id)` like the table itself — see `_key`.
     attempts = db.load_applied_matches(run_id, run_ids=run_ids)
     applied = [r for r in attempts if r.get("applied_status") == "submitted"]
     attention = [r for r in attempts if r.get("applied_status") != "submitted"]
-    applied_ids = {r.get("job_id") for r in attempts}
+    applied_ids = {_key(r) for r in attempts}
 
     if run_id:
         rows = db.load_all_matches(run_id) if records is None else records
@@ -636,8 +649,8 @@ def overview_snapshot(
         # labels. The single limit covers both ends of the old pair because the
         # ordering puts the judged block first.
         #
-        # Day scope is the same call with the day's runs, so the row it picks per job
-        # is that job's newest *within the day* — see `_canonical_matches_sql`. The
+        # Day scope is the same call narrowed to the day's runs, which filters on
+        # `scored_run_id` — the sweep that reached the verdict the row carries. The
         # limit is the lifetime one; over-generous for a day, which is the safe
         # direction.
         rows = db.load_lifetime_matches(
@@ -648,15 +661,15 @@ def overview_snapshot(
     shortlisted, filtered, seen = partition_jobs(rows, applied_ids)
     shown_shortlisted = mark_holds(db, shortlisted[:MAX_JOB_ROWS], _company_limit())
 
-    # The title-gate rejections, which live only in `jobs` — nothing wrote them a
-    # `matches` row. They carry no score, so appending them after the rows that do
-    # keeps the blanks at the bottom of the last section. One row per posting, from the
-    # sweep that first saw it: the half above is filtered by the run that reached a
-    # verdict, this half by the run that first laid eyes on it. `load_unmatched_jobs`
-    # says why the two halves differ.
+    # The title-gate rejections — postings nothing ever scored, so `match_json` is
+    # NULL. They carry no score, so appending them after the rows that do keeps the
+    # blanks at the bottom of the last section. The half above is filtered by the sweep
+    # that reached a verdict (`scored_run_id`), this half by the sweep that first laid
+    # eyes on the posting (`first_run_id`); `load_unmatched_jobs` says why the two
+    # differ.
     seen += [
         r for r in db.load_unmatched_jobs(run_id, MAX_TAIL_ROWS, run_ids=run_ids)
-        if r.get("job_id") not in applied_ids
+        if _key(r) not in applied_ids
     ]
 
     snapshot: dict[str, Any] = {

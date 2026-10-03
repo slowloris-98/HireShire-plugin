@@ -122,12 +122,16 @@ def test_a_missing_cross_score_renders_blank_rather_than_zero(tmp_path):
 
 
 def test_applied_and_shortlisted_read_yes_or_no(tmp_path):
-    """Two words a spreadsheet can filter on, not two empty-or-1 columns. `applied`
-    comes from the caller because the `applied` table is keyed on the job alone and
-    has no run to scope it by."""
+    """Two words a spreadsheet can filter on, not two empty-or-1 columns.
+
+    The application set comes from the caller because no match record carries it, and
+    it is `(board_token, job_id)` pairs rather than bare ids — the id alone is not
+    unique across boards.
+    """
     path = tmp_path / "x.csv"
     write_results_csv(
-        [record(), record(job_id="j2", shortlisted=False)], path, {"j1"}
+        [record(), record(job_id="j2", shortlisted=False)], path,
+        {("acme", "j1")},
     )
     rows = read(path)
 

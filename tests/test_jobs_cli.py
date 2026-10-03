@@ -15,6 +15,7 @@ import sys
 import pytest
 
 from hireshire import paths
+from hireshire.models.job import Job, Location
 from hireshire.storage.db import DECLINED_BY_USER, Database
 
 sys.path.insert(0, str(paths.ROOT / "scripts"))
@@ -29,7 +30,23 @@ def _db(tmp_path) -> Database:
     return Database(tmp_path / "test.db")
 
 
+def _posting(db: Database, job_id: str) -> None:
+    """Scrape the posting, which every writer below this one updates rather than
+    creates. A fixture that skipped it would record nothing at all."""
+    if db.get_jobs([job_id]):
+        return
+    db.insert_jobs(RUN, [Job(
+        source="greenhouse", board_token="acme", job_id=job_id,
+        title="Backend Engineer", location=Location(name="Remote"),
+        absolute_url=f"https://example.com/jobs/{job_id}",  # type: ignore[arg-type]
+        updated_at="2026-09-09T00:00:00+00:00",
+        scraped_at="2026-09-09T00:00:00+00:00",
+        content_text="We need a backend engineer.",
+    )])
+
+
 def _shortlisted(db: Database, job_id: str, *, score: int = 85) -> None:
+    _posting(db, job_id)
     raw = json.dumps({
         "job_id": job_id, "board_token": "acme", "title": "Backend Engineer",
         "absolute_url": f"https://example.com/jobs/{job_id}",
@@ -41,6 +58,7 @@ def _shortlisted(db: Database, job_id: str, *, score: int = 85) -> None:
 
 def _attempt(db: Database, job_id: str, status: str = "error",
              error: str = "Stuck on a required question — check whether it was sent.") -> None:
+    _posting(db, job_id)
     db.record_applied(job_id, "acme", "Backend Engineer",
                       f"https://example.com/jobs/{job_id}",
                       "2026-09-09T08:00:00+00:00", status, None, error)
@@ -141,7 +159,7 @@ def test_several_jobs_are_one_command_and_one_approval(cli, capsys):
         ["applied", "--job-id", "j1", "--job-id", "j2", "--job-id", "j3"]
     ) == 0
     payload = _out(capsys)
-    assert [r["result"] for r in payload["results"]] == ["inserted"] * 3
+    assert [r["result"] for r in payload["results"]] == ["updated"] * 3
 
 
 def test_a_job_the_database_never_saw_changes_nothing_and_rebuilds_nothing(cli, capsys):

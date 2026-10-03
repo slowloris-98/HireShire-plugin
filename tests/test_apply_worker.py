@@ -27,6 +27,7 @@ from hireshire.applier import limits
 from hireshire.applier import reasons
 from hireshire.applier import worker
 from hireshire.applier.config import ApplierSettings
+from hireshire.models.job import Job, Location
 from hireshire.storage.db import Database
 
 
@@ -100,6 +101,35 @@ def _job(job_id: str, company: str = "acme") -> dict:
             "job_url": f"https://example.com/jobs/{job_id}"}
 
 
+def _posting(job_id: str, company: str = "acme") -> Job:
+    now = datetime.now(timezone.utc)
+    return Job(
+        source="greenhouse",
+        board_token=company,
+        job_id=job_id,
+        title="Account Manager",
+        location=Location(name="Remote"),
+        absolute_url=f"https://example.com/jobs/{job_id}",  # type: ignore[arg-type]
+        updated_at=now,
+        scraped_at=now,
+        content_text="We need an account manager.",
+    )
+
+
+def _seed(db: Database, jobs, run_id: str = "2026-09-19T12-00-00Z") -> None:
+    """Scrape the postings these queue items name, so the applier has rows to write.
+
+    `record_applied` and `mark_not_shortlisted` are UPDATEs against the posting the
+    scraper made — the applier never creates one — so a fixture that queues a job
+    without scraping it first would record nothing at all. This is what the real
+    pipeline does before the worker ever sees the job.
+    """
+    db.insert_jobs(run_id, [
+        _posting(j["job_id"], j.get("company") or "acme")
+        for j in jobs if j.get("job_id")
+    ])
+
+
 def _run_dir(tmp_path, stamp: str = "2026-09-19_120000") -> Path:
     """This sweep's results folder — what `paths.make_run_dir` hands the worker.
 
@@ -116,10 +146,24 @@ def _applied(tmp_path, stamp: str = "2026-09-19_120000") -> Path:
     return _run_dir(tmp_path, stamp) / "applied"
 
 
+def _record(db: Database, job_id: str, company: str, *args, **kw) -> None:
+    """`record_applied`, having scraped the posting it writes onto.
+
+    The writer is an UPDATE — the applier never creates a posting — so a fixture that
+    records an application for a job id nothing ever scraped would write nothing at
+    all. Seeded only when the posting is missing, so a test that scrapes under a
+    particular run id keeps control of `first_run_id`.
+    """
+    if not db.get_jobs([job_id]):
+        db.insert_jobs("2026-09-19T12-00-00Z", [_posting(job_id, company)])
+    db.record_applied(job_id, company, *args, **kw)
+
+
 def _run(tmp_path, jobs, settings=None, db=None, backlog=False, run_dir=None):
     db = db or Database(tmp_path / "test.db")
     settings = settings or _settings(tmp_path)
     run_dir = run_dir if run_dir is not None else _run_dir(tmp_path)
+    _seed(db, jobs)
 
     async def go():
         q: asyncio.Queue = asyncio.Queue()
@@ -138,10 +182,11 @@ def _statuses(db: Database) -> dict[str, str]:
 
 
 def _applied_rows(db: Database) -> list[dict]:
-    """Raw `applied` rows. `load_applied` does not select every column, and these
-    tests are about one it leaves out."""
+    """Raw rows for the postings with an application. `load_applied` does not select
+    every column, and these tests are about one it leaves out."""
     with db._lock:
-        return [dict(r) for r in db._conn.execute("SELECT * FROM applied")]
+        return [dict(r) for r in db._conn.execute(
+            "SELECT * FROM postings WHERE apply_status IS NOT NULL")]
 
 
 # --- how the session is launched --------------------------------------------
@@ -566,21 +611,26 @@ def test_a_retired_location_skip_leaves_the_backlog(tmp_path, launcher):
 
 def test_a_location_skip_retires_the_job_in_every_run_that_shortlisted_it(
         tmp_path, launcher):
-    """`matches` is keyed `(run_id, job_id)` and a backlog job's row belongs to an
-    earlier sweep, so `mark_not_shortlisted` takes no `run_id`. Updating only one row
-    would leave the other shortlisted — back in the backlog, and rendered a second
-    time on the lifetime page under a contradicting label."""
+    """`mark_not_shortlisted` takes no `run_id`, and a backlog job is why.
+
+    A job reached from the backlog was judged by an *earlier* sweep, so a writer
+    scoped to the current one would retire nothing and the job would go straight back
+    into the backlog — one browser session per sweep, to re-read a location that
+    cannot change. It used to have to update a row per sweep for the same reason, or
+    the lifetime page rendered the job twice under contradicting labels.
+    """
     _, script, _ = launcher
     script.append(_outcome(status="skipped_location", location="Paris"))
     db = Database(tmp_path / "test.db")
-    _match(db, "r0", "j1")
-    _match(db, "r1", "j1", score=75)
+    _match(db, "r0", "j1")                      # judged by an earlier sweep
     _run(tmp_path, [_job("j1")], db=db)
 
-    for run_id in ("r0", "r1"):
-        (row,) = db.load_all_matches(run_id)
-        assert row["shortlisted"] is False, run_id
-        assert row["skip_reason"] == worker.LOCATION_SKIP_REASON, run_id
+    (row,) = db.load_all_matches("r0")
+    assert row["shortlisted"] is False
+    assert row["skip_reason"] == worker.LOCATION_SKIP_REASON
+    # No application record: a job in the wrong country is not something the user can
+    # go and do by hand, so it is un-shortlisted into Jobs Filtered instead.
+    assert _statuses(db) == {}
 
 
 def test_retiring_a_job_twice_is_a_no_op(tmp_path):
@@ -612,7 +662,7 @@ def test_a_location_skip_with_no_location_text_still_retires_the_job(tmp_path, l
 def test_excluded_and_already_applied_jobs_launch_nothing(tmp_path, launcher):
     calls, _, _ = launcher
     db = Database(tmp_path / "test.db")
-    db.record_applied("j2", "acme", "t", "u", "2026-09-01T00:00:00+00:00",
+    _record(db, "j2", "acme", "t", "u", "2026-09-01T00:00:00+00:00",
                       "submitted", None, None)
     stats, _ = _run(tmp_path, [_job("j1", company="google"), _job("j2")], db=db)
     assert calls == []
@@ -627,7 +677,7 @@ def test_an_excluded_employer_is_recorded_so_it_needs_attention(tmp_path, launch
     is what puts it under Needs Attention and takes it out of the backlog."""
     calls, _, _ = launcher
     db = Database(tmp_path / "test.db")
-    _match(db, "r0", "j1")
+    _match(db, "r0", "j1", company="Google")
     stats, _ = _run(tmp_path, [_job("j1", company="Google")], db=db)
 
     assert calls == [] and stats["excluded"] == 1
@@ -824,14 +874,23 @@ def test_cancelling_the_worker_kills_the_session_in_flight(tmp_path, launcher):
 # --- the backlog ------------------------------------------------------------
 
 def _match(db: Database, run_id: str, job_id: str, *, shortlisted=True, rep=None,
-           scored_at: datetime | None = None, score=80) -> None:
+           scored_at: datetime | None = None, score=80, company="acme") -> None:
+    """One shortlisted posting, scraped and judged by `run_id`.
+
+    `company` has to be settable because it is half the posting's key: a fixture that
+    scrapes under `acme` and then queues the job as `google` names two different
+    postings, and the worker would write its verdict onto the one the test is not
+    looking at.
+    """
     scored_at = scored_at or datetime.now(timezone.utc)
-    raw = {"job_id": job_id, "board_token": "acme", "title": "Account Manager",
+    raw = {"job_id": job_id, "board_token": company, "title": "Account Manager",
            "absolute_url": f"https://example.com/jobs/{job_id}",
            "relevance_score": score, "cluster_representative": rep}
+    # The posting first: `upsert_match` is an UPDATE onto the row the scraper made.
+    db.insert_jobs(run_id, [_posting(job_id, company)])
     # Compact separators, as `model_dump_json` writes every real row — the no-JSON1
     # fallback in `Database._sibling_sql` depends on it.
-    db.upsert_match(run_id, job_id, "acme", "Account Manager", score, shortlisted,
+    db.upsert_match(run_id, job_id, company, "Account Manager", score, shortlisted,
                     False, None, run_id, scored_at.isoformat(),
                     json.dumps(raw, separators=(",", ":")))
 
@@ -850,7 +909,7 @@ def test_pending_applications_are_shortlisted_unapplied_recent_representatives(
     _match(db, "r0", "stale", scored_at=old)
     _match(db, "r0", "twice", score=70)
     _match(db, "r1", "twice", score=75)
-    db.record_applied("applied", "acme", "t", "u", "2026-09-01T00:00:00+00:00",
+    _record(db, "applied", "acme", "t", "u", "2026-09-01T00:00:00+00:00",
                       "error", None, None)
 
     since = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
@@ -889,20 +948,13 @@ def test_the_verdicts_no_session_produces_do_not_claim_a_backlog_origin(
     """`excluded` never reaches Jobs Applied, and the expiry pass is backlog-only by
     definition, so the flag would say nothing on either. Both keep the default."""
     db = Database(tmp_path / "test.db")
-    _match(db, "r0", "excl")
+    _match(db, "r0", "excl", company="Google")
     _stale(db, "gone")
-    db.upsert_match("r0", "excl", "Google", "Account Manager", 80, True, False, None,
-                    "r0", datetime.now(timezone.utc).isoformat(),
-                    json.dumps({"job_id": "excl", "board_token": "Google",
-                                "title": "Account Manager",
-                                "absolute_url": "https://example.com/jobs/excl",
-                                "relevance_score": 80,
-                                "cluster_representative": None},
-                               separators=(",", ":")))
 
     _run(tmp_path, [], db=db, backlog=True)
 
-    rows = {r["job_id"]: (r["status"], r["from_backlog"]) for r in _applied_rows(db)}
+    rows = {r["job_id"]: (r["apply_status"], r["from_backlog"])
+            for r in _applied_rows(db)}
     assert rows["excl"] == ("excluded", 0)
     assert rows["gone"] == (worker.EXPIRED_STATUS, 0)
 
@@ -961,7 +1013,7 @@ def test_the_backlogs_two_halves_partition_the_unapplied_shortlist(tmp_path, jso
     _stale(db, "stale")
     _stale(db, "sibling", rep="fresh")            # judged by proxy, never applied to
     _stale(db, "done")
-    db.record_applied("done", "acme", "t", "u", "2026-09-01T00:00:00+00:00",
+    _record(db, "done", "acme", "t", "u", "2026-09-01T00:00:00+00:00",
                       "error", None, None)
     _stale(db, "rejected", shortlisted=False)
     _stale(db, "rescored", score=70)              # the stale row that survives…
@@ -1162,11 +1214,11 @@ def test_a_third_job_at_one_company_is_held_and_writes_nothing(tmp_path, launche
 def test_the_hold_counts_only_recent_submissions(tmp_path, launcher):
     calls, _, _ = launcher
     db = Database(tmp_path / "test.db")
-    db.record_applied("old1", "acme", "t", "u", _ago(80), "submitted", None, None)
-    db.record_applied("old2", "acme", "t", "u", _ago(75), "submitted", None, None)
-    db.record_applied("err", "acme", "t", "u", _ago(1), "error", None, "x")
-    db.record_applied("exc", "acme", "t", "u", _ago(1), "excluded", None, "x")
-    db.record_applied("new", "acme", "t", "u", _ago(1), "submitted", None, None)
+    _record(db, "old1", "acme", "t", "u", _ago(80), "submitted", None, None)
+    _record(db, "old2", "acme", "t", "u", _ago(75), "submitted", None, None)
+    _record(db, "err", "acme", "t", "u", _ago(1), "error", None, "x")
+    _record(db, "exc", "acme", "t", "u", _ago(1), "excluded", None, "x")
+    _record(db, "new", "acme", "t", "u", _ago(1), "submitted", None, None)
 
     stats, _ = _run(tmp_path, [_job("j1"), _job("j2")], db=db)
 
@@ -1178,7 +1230,7 @@ def test_a_hand_marked_application_counts(tmp_path, launcher):
     calls, _, _ = launcher
     db = Database(tmp_path / "test.db")
     for j in ("h1", "h2"):
-        db.record_applied(j, "acme", "t", "u", _ago(2), "error", None, "x")
+        _record(db, j, "acme", "t", "u", _ago(2), "error", None, "x")
         db.mark_applied_by_hand(j, _ago(1))
 
     stats, _ = _run(tmp_path, [_job("j1")], db=db)
@@ -1196,15 +1248,15 @@ def test_a_held_job_is_applied_to_from_the_backlog_once_a_slot_frees(tmp_path, l
     calls, _, _ = launcher
     db = Database(tmp_path / "test.db")
     _match(db, "r0", "held")
-    db.record_applied("x1", "acme", "t", "u", _ago(10), "submitted", None, None)
-    db.record_applied("x2", "acme", "t", "u", _ago(5), "submitted", None, None)
+    _record(db, "x1", "acme", "t", "u", _ago(10), "submitted", None, None)
+    _record(db, "x2", "acme", "t", "u", _ago(5), "submitted", None, None)
 
     stats, _ = _run(tmp_path, [], db=db, backlog=True)
     assert calls == [] and stats["held"] == 1
     assert [r["job_id"] for r in db.load_pending_applications(_window_start())] == ["held"]
 
     # A later sweep, after the older submission has aged out of the window.
-    db.record_applied("x1", "acme", "t", "u", _ago(73), "submitted", None, None)
+    _record(db, "x1", "acme", "t", "u", _ago(73), "submitted", None, None)
     stats, _ = _run(tmp_path, [], db=db, backlog=True)
     assert len(calls) == 1 and stats["submitted"] == 1
 
@@ -1278,7 +1330,8 @@ def test_an_unbuildable_provider_records_nothing_and_leaves_every_job_pending(
     assert calls == [], "a session was launched with no usable provider"
     assert _statuses(db) == {}, "a job was retired over an unavailable CLI"
     assert stats["expired"] == 0 and stats["submitted"] == 0
-    for row in db._conn.execute("SELECT shortlisted FROM matches"):
+    for row in db._conn.execute(
+            "SELECT shortlisted FROM postings WHERE scored_at IS NOT NULL"):
         assert row["shortlisted"] == 1, "the backlog can no longer retry this job"
     assert "apply provider unavailable" in caplog.text, \
         "the user was not told why nothing applied"

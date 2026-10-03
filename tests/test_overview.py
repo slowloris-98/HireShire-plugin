@@ -23,6 +23,9 @@ from hireshire.storage.db import DECLINED_BY_USER, PHASE_PIPELINE, Database
 
 RUN = "2026-09-09T06-51-12Z"
 OLDER = "2026-09-01T00-00-00Z"
+#: A sweep *after* `RUN`. Needed now that a later verdict replaces an earlier one
+#: rather than sitting beside it: "the newest wins" can only be tested forwards.
+LATER = "2026-09-20T00-00-00Z"
 
 
 def _run_id_at_local(year, month, day, hour) -> str:
@@ -94,11 +97,20 @@ def _raw(job_id: str, **over) -> dict:
 def _match(db: Database, run_id: str, job_id: str, *, score=78, shortlisted=False,
            skipped=False, reason=None, rerank=7.19,
            scored_at="2026-09-09T07:00:00+00:00", **over) -> None:
-    """One `matches` row. `scored_at` is a parameter because the lifetime loader
-    chooses a job's canonical row by it — rows written at the same instant leave it
-    nothing to choose between."""
+    """One verdict, written onto the posting.
+
+    `scored_at` stays a parameter even though nothing chooses a canonical row by it
+    any more: it is what `_SCORED` tests, and the applier's backlog window reads it.
+
+    The posting is scraped first when it is missing. `upsert_match` is an UPDATE onto
+    the row the scraper made, so a verdict written against nothing would silently
+    vanish — and seeding it here rather than in every test keeps the ones that
+    deliberately scrape under an *earlier* run in control of `first_run_id`.
+    """
     raw = _raw(job_id, relevance_score=score, skipped=skipped,
                skip_reason=reason, rerank_score=rerank, **over)
+    if not db.get_jobs([job_id]):
+        db.insert_jobs(run_id, [_job(job_id, raw["board_token"])])
     db.upsert_match(
         run_id, job_id, raw["board_token"], raw["title"], score, shortlisted,
         skipped, reason, run_id, scored_at, json.dumps(raw),
@@ -108,6 +120,8 @@ def _match(db: Database, run_id: str, job_id: str, *, score=78, shortlisted=Fals
 
 def _apply(db: Database, job_id: str, status: str = "submitted",
            error: str | None = None, from_backlog: bool = False) -> None:
+    if not db.get_jobs([job_id]):
+        db.insert_jobs(RUN, [_job(job_id)])
     db.record_applied(
         job_id, "acme", "Backend Engineer", f"https://example.com/jobs/{job_id}",
         "2026-09-09T08:00:00+00:00", status, None, error,
@@ -165,10 +179,9 @@ def _snapshot(db: Database, run_id: str | None = RUN, **over) -> dict:
 def _day_db(tmp_path) -> Database:
     """One job, judged by two sweeps on `DAY` and re-judged two days later.
 
-    That shape is the whole point: `matches` is keyed `(run_id, job_id)`, so j1 holds
-    three rows, and each scope has to pick the right one. The `scored_at` values are
-    distinct because the canonical row is chosen by `MAX(scored_at)` — rows written at
-    the same instant leave it nothing to choose between.
+    That shape is still the point, for the opposite reason: j1 holds **one** row, so
+    each scope has to agree about which sweep owns its verdict. The sweeps are applied
+    oldest-first, as a real install would, so the row ends up stamped `NEXT_DAY`.
     """
     db = _db(tmp_path)
     plan = (
@@ -413,7 +426,7 @@ def test_a_re_sighted_title_gate_job_leaves_the_section_but_not_the_tile(tmp_pat
     """
     db = _populated(tmp_path)
     db.insert_jobs(OLDER, [_job("j9", title="Barista")])
-    db.record_gate_reasons(OLDER, [("j9", "title_excluded")])
+    db.record_gate_reasons(OLDER, [("acme", "j9", "title_excluded")])
     db.insert_jobs(RUN, [_job("j9", title="Barista")])
 
     snap = _snapshot(db)
@@ -427,19 +440,19 @@ def test_a_re_sighted_title_gate_job_leaves_the_section_but_not_the_tile(tmp_pat
 
 
 def test_the_sql_judged_predicate_matches_never_scored(tmp_path):
-    """`db._judged_sql` has to reach inside `raw_json` for `cluster_representative`,
+    """`db._judged_sql` has to reach inside `match_json` for `cluster_representative`,
     because no column carries it. Keying off `skip_reason` instead looks equivalent
     and is not — a sibling inherits its representative's reason — and when the two
     disagree a judged job silently drops into the never-scored table."""
     db = _populated(tmp_path)
     _match(db, RUN, "j6", score=0, skipped=True, reason="llm_call_cap_reached")
     _match(db, RUN, "j7", score=0, skipped=True, reason="api_error")
-    db.insert_jobs(RUN, [_job("j6"), _job("j7")])
 
     with db._lock:
         by_sql = {
             r["job_id"] for r in db._conn.execute(
-                f"SELECT m.job_id FROM matches m WHERE {db._judged_sql('m')}"
+                f"SELECT job_id FROM postings "
+                f"WHERE {db._SCORED} AND {db._judged_sql()}"
             )
         }
     by_python = {
@@ -506,11 +519,18 @@ def test_lifetime_counts_a_resurfaced_job_once(tmp_path):
 
 
 def test_the_relevant_tile_drops_a_job_a_later_sweep_overturned(tmp_path):
-    """The tile used to ask "did any row ever say so", which keeps a superseded
-    reading alive for good: a job deferred on the call cap and later cut by the
-    cross-encoder stayed relevant forever. It now reads the same canonical row the
-    sections render. The per-run tile is unaffected — that sweep really did defer it,
-    and `(run_id, job_id)` leaves it nothing to choose between."""
+    """A superseded reading must not stay relevant forever.
+
+    The tile used to ask "did any row ever say so", which kept one alive for good: a
+    job deferred on the call cap and later cut by the cross-encoder was relevant at
+    lifetime scope permanently. One row per posting answers it by construction.
+
+    **The earlier sweep's tile drops it too, and that is the deliberate change the
+    merge makes visible.** A posting carries one verdict, stamped with the sweep that
+    reached it, so OLDER no longer claims a deferral that RUN has replaced. OLDER
+    still counts the posting under `Jobs in scope` — it first saw it — which is why
+    that tile is documented as wider than the sections below it.
+    """
     db = _populated(tmp_path)
     db.record_company(OLDER, "acme", "greenhouse", "ok", 1, 0.2, None)
     db.insert_jobs(OLDER, [_job("j6")])
@@ -520,7 +540,8 @@ def test_the_relevant_tile_drops_a_job_a_later_sweep_overturned(tmp_path):
     _match(db, RUN, "j6", score=0, skipped=True, reason="rerank_below_cutoff",
            rerank=2.94)
 
-    assert db.overview_counts(OLDER)["relevant"] == 1
+    assert db.overview_counts(OLDER)["relevant"] == 0      # RUN holds j6's verdict
+    assert db.overview_counts(OLDER)["seen"] == 1          # but OLDER first saw it
     assert db.overview_counts(None)["relevant"] == 2       # j1 and j2, not j6
 
 
@@ -542,19 +563,27 @@ def test_the_lifetime_applier_bar_and_the_shortlist_tile_are_one_number(tmp_path
 
 
 def test_the_lifetime_loader_keeps_the_jobs_current_row(tmp_path):
-    """One row per job_id, and the row is the newest — not the best it ever did.
+    """One row per posting, holding the verdict of the sweep that judged it last.
 
-    This reverses the original rule, and the reversal is the point. `matches` is keyed
-    `(run_id, job_id)`, so a rescored job keeps its old row; "best" would let a reading
-    a later sweep overturned outlive the one that replaced it."""
+    This reverses the original "best it ever did" rule, and the reversal is the point:
+    "best" would let a reading a later sweep overturned outlive the one that replaced
+    it. It used to be enforced by `MAX(scored_at)` over a job's several `matches`
+    rows; now the later verdict simply overwrites the earlier one.
+
+    **Write order is what decides, not the `scored_at` value**, which is safe for the
+    one reason worth writing down: the only writer is a live sweep, and sweeps only
+    ever judge forwards. Nothing re-scores a job under an older run id — the backlog
+    applies, it does not judge — so a verdict arriving out of order is not a shape
+    this pipeline can produce.
+    """
     db = _populated(tmp_path)          # j2 scored 71 in RUN
-    db.insert_jobs(OLDER, [_job("j2")])
-    _match(db, OLDER, "j2", score=91, rerank=9.50,
-           scored_at="2026-09-01T07:00:00+00:00")
+    db.insert_jobs(LATER, [_job("j2")])
+    _match(db, LATER, "j2", score=91, rerank=9.50,
+           scored_at="2026-09-20T07:00:00+00:00")
 
     j2 = [r for r in db.load_lifetime_matches(limit=100) if r["job_id"] == "j2"]
     assert len(j2) == 1
-    assert j2[0]["relevance_score"] == 71
+    assert j2[0]["relevance_score"] == 91
 
 
 def test_a_rescored_job_is_listed_once_with_its_verdict(tmp_path):
@@ -690,35 +719,49 @@ def test_both_scopes_carry_the_same_header(tmp_path):
 
 
 def test_a_day_counts_a_job_two_of_its_sweeps_saw_once(tmp_path):
-    """`matches` is keyed `(run_id, job_id)`, so a job two of the day's sweeps judged
-    holds two rows. The day page has to choose one, exactly as the lifetime page does,
-    or the tiles read double and the list below prints the job twice."""
+    """A posting two of a day's sweeps found is one posting on that day's page.
+
+    It used to be the hard case — `matches` keyed `(run_id, job_id)` gave j1 a row per
+    sweep, and a day page that failed to choose read double and printed the job twice.
+    One row per posting makes it true by construction, which is worth a test precisely
+    because nothing in the query says so any more.
+    """
     db = _day_db(tmp_path)
     counts = db.overview_counts(None, run_ids=[DAY_A, DAY_B])
-    snap = data.overview_snapshot(db, None, run_ids=[DAY_A, DAY_B])
 
+    # The day first saw it, so it is work that day did.
     assert counts["seen"] == 1
-    assert counts["relevant"] == 1
-    assert counts["shortlisted"] == 1
-    assert _section_of(snap, "j1") == ["shortlisted"]
+    # Its verdict belongs to NEXT_DAY, so this day claims neither of those figures.
+    assert counts["relevant"] == 0
+    assert counts["shortlisted"] == 0
 
 
-def test_a_day_shows_the_verdict_that_day_reached(tmp_path):
-    """The load-bearing half: the scope filter sits *inside* the canonical aggregate, so
-    each job's chosen row is its newest **among that day's sweeps**. Outside, the
-    aggregate would pick the job's all-time newest row and the outer `WHERE` would then
-    discard the job entirely — a job this day judged would vanish from this day's page
-    the moment a later sweep touched it."""
+def test_the_verdict_belongs_to_the_sweep_that_reached_it(tmp_path):
+    """A posting holds its **current** state, not a ledger entry per sweep.
+
+    This is the most visible consequence of the merge, and it is deliberate. j1 was
+    shortlisted on `DAY` and overturned two days later; that later verdict replaces
+    the earlier one rather than sitting beside it, so the earlier day's page no longer
+    lists j1 under Shortlisted. The earlier day keeps it in `Jobs in scope` — it first
+    saw it — which is why that tile is documented as wider than the sections.
+
+    What this replaced: a scope filter pushed *inside* a `MAX(scored_at)` aggregate, so
+    that a day page picked each job's newest row **among that day's sweeps**. Put
+    outside, the aggregate chose the all-time newest row and the outer `WHERE` then
+    discarded the job entirely. Neither problem exists with one row — but neither does
+    the old answer, and a reader expecting the day page to be a record of what that day
+    decided should find this test instead of being surprised by a dashboard.
+    """
     db = _day_db(tmp_path)
 
     first = data.overview_snapshot(db, None, run_ids=[DAY_A, DAY_B])
     later = data.overview_snapshot(db, None, run_ids=[NEXT_DAY])
     lifetime = data.overview_snapshot(db, None)
 
-    # The first day still holds its own verdict, and the job has not gone missing.
-    assert _section_of(first, "j1") == ["shortlisted"]
-    assert first["shortlisted"][0]["relevance_score"] == 88
-    # The later sweep overturned it, and both the later day and lifetime say so.
+    # The day that first saw it counts it, and lists it nowhere: its verdict moved on.
+    assert first["counts"]["seen"] == 1
+    assert _section_of(first, "j1") == []
+    # The sweep that reached the verdict shows it, and so does lifetime scope.
     assert _section_of(later, "j1") == ["seen"]
     assert _section_of(lifetime, "j1") == ["seen"]
 
@@ -998,7 +1041,7 @@ def test_the_tail_says_why_each_job_is_there(tmp_path):
     column."""
     db = _populated(tmp_path)
     db.insert_jobs(RUN, [_job("j9", title="Barista")])
-    db.record_gate_reasons(RUN, [("j9", "title_excluded")])
+    db.record_gate_reasons(RUN, [("acme", "j9", "title_excluded")])
 
     html = overview.build(_snapshot(db), RUN)
     payload = json.loads(
@@ -1396,6 +1439,9 @@ def _held_db(tmp_path) -> Database:
     now = datetime.now(timezone.utc)
     _match(db, RUN, "j1", shortlisted=True)
     _match(db, RUN, "j2", shortlisted=True, board_token="beta")
+    # The two earlier submissions need postings of their own: `record_applied` is an
+    # UPDATE onto the scraper's row, and `recent_submissions` counts what it wrote.
+    db.insert_jobs(RUN, [_job("x1"), _job("x2")])
     for n, h in (("x1", 10), ("x2", 5)):
         db.record_applied(n, "acme", "t", "u", (now - timedelta(hours=h)).isoformat(),
                           "submitted", None, None)

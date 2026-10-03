@@ -4,6 +4,64 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.25.0] — 2026-10-03
+
+### Changed
+
+- **HireShire now keeps one record per job instead of a fresh copy on every sweep.**
+  It re-checks every employer every few hours, so it keeps finding the same postings —
+  and it had been storing the whole advert again each time it did. On one real install
+  that was a 5.3 GB database holding **75,732 jobs as 580,727 copies**, growing by
+  about 65 MB a day with nothing able to reclaim any of it. A job is now one row that
+  gets updated, so the file stops growing except when there are genuinely new jobs.
+
+  **Three things to know before you update:**
+
+  1. **Stop your sweep first** — `sh scripts/hireshire.sh --stop`. The upgrade happens
+     the first time HireShire opens its database afterwards, and it will not run while
+     a sweep started on the old version is still going. If one is, you will get a
+     one-line message telling you so rather than anything breaking.
+  2. **It needs free disk space** roughly equal to the size of your database, and it
+     checks before it starts. If there is not enough it refuses and tells you both
+     numbers. The upgrade frees up far more than it needs.
+  3. **Reclaim the space afterwards** with `python scripts/jobs_cli.py compact`. The
+     upgrade frees the old data inside the file but does not shrink the file itself —
+     that is a separate step because it takes a couple of minutes and should not happen
+     in the middle of something else. On the install above it took the file from 5.3 GB
+     to under 1 GB.
+
+  The upgrade is a single all-or-nothing step: if it is interrupted — a crash, a power
+  cut, closing the terminal — your database is left exactly as it was and it simply
+  tries again next time. It takes a few minutes on a large install and a moment on a
+  small one, and it logs a line when it starts and when it finishes.
+
+- **The dashboards read the same, with one deliberate difference.** A job that one
+  sweep ran out of budget for and a later sweep scored now appears on the **later**
+  sweep's page, where the score was actually worked out, rather than on both. It still
+  counts towards the earlier sweep's *Jobs in scope*, because that sweep did find it.
+  Day and lifetime pages are unchanged.
+
+- **Two jobs from different job boards that happen to share an id are no longer
+  confused for each other.** Some boards number their jobs from 1, so two employers
+  could both have a "job 12345" — and HireShire used to treat the second one as already
+  seen, silently skipping it, or credit one employer's application to the other. Each
+  posting is now identified by its board *and* its id.
+
+### Added
+
+- **`python scripts/jobs_cli.py compact`** reclaims disk space, and with `--keep N` or
+  `--before YYYY-MM-DD` also forgets old sweeps. Jobs you have applied to or that are
+  still on a shortlist are never forgotten, whatever their age. This is the first time
+  retention has been reachable at all: the code behind it had been written and tested
+  for months with nothing able to call it.
+
+### Fixed
+
+- The dashboard no longer takes tens of seconds to count jobs on a long-lived install.
+  Two of its slowest reads — a full count over every stored sighting (39.6 s on the
+  install above) and a cross-sweep lookup that needed a dedicated index to stay under
+  31.8 s — are single-row lookups now.
+
 ## [0.24.0] — 2026-10-03
 
 ### Fixed

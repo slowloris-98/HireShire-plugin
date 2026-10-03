@@ -308,7 +308,7 @@ Five things follow that are easy to break:
   loosens the gate further on its own.
 - **`min_score` is a raw logit and is personal.** Not a probability, not comparable
   between users, and void the moment `rerank.model` changes. `scripts/calibrate_cutoffs.py`
-  derives it from the user's own `matches` rows; the shipped 3.0 is a starting point
+  derives it from the user's own scored postings; the shipped 3.0 is a starting point
   borrowed from this project's own analysis corpus (where it admits ~61 jobs a sweep,
   inside `top_k`), not a value tuned to any particular user. It sits deliberately well
   above 0.0 — the models' own decision boundary, which shipped through 0.2.x and was
@@ -452,22 +452,33 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
   for `Assistant Coach` and `Assistant Restaurant Manager`), and localised employers
   fragment (~+900 to +1,010 LLM calls per sweep, which land on the retryable cap).
 
-Note that `MatchStore.finalise` records only summary stats — individual rows reach
-the `matches` table via `append_result`. Budget drops and cluster siblings are
-appended explicitly so the user can see what the budget cost; title-gate rejections
-deliberately are not, since there can be tens of thousands per run. They are not
-unrecorded, though: `matcher._record_gate_reasons` writes the gate's verdict onto
-`jobs.gate_reason`, which is what the overview's last section prints as its `Reason`
-column. A column on a row that already exists is not a row in a table the reports
-group, and that distinction is the whole basis for this split.
+Note that `MatchStore.finalise` records only summary stats — individual verdicts reach
+the posting via `append_result`. Budget drops and cluster siblings are written
+explicitly so the user can see what the budget cost; title-gate rejections deliberately
+are not, since there can be tens of thousands per run. They are not unrecorded, though:
+`matcher._record_gate_reasons` writes the gate's verdict onto `postings.gate_reason`,
+which is what the overview's last section prints as its `Reason` column. A column the
+reports do not group is not the same as a scored row, and that distinction is the whole
+basis for this split — `match_json IS NULL` is what the last section reads to find them.
+
+`append_result` goes through `upsert_match`, which is an **`UPDATE`** onto the row the
+scraper wrote and never inserts: `RunStore.save_company` writes a company's postings
+before it queues the batch, so the row is guaranteed. A rowcount of 0 therefore means
+something is wrong upstream rather than that a row needs making, and it is **logged**
+rather than raised — one judged job lost is worth a warning, aborting a sweep over it
+is not, and silence is the one option that is not acceptable, since the symptom would
+be a job that was paid for and then vanished from every page.
 
 **Two files come out of a run, and they are not interchangeable.**
 `<stamp>_results.json` is the shortlist the apply skill consumes via
 `last_run.json`'s `json` pointer — **one row per cluster**, because 31 siblings
 would otherwise become 31 applications. `<stamp>_results.csv`
-(`results_export.py`) is the user's own file: every row in `matches`, best first,
-eight columns — `posted_at, company, job_title, link, llm_score, cross_score,
-applied, shortlisted`. A budget drop renders a **blank** `llm_score`, not the `0`
+(`results_export.py`) is the user's own file: every posting this sweep judged, best
+first, eight columns — `posted_at, company, job_title, link, llm_score, cross_score,
+applied, shortlisted`. Its `applied` column reads a set of **`(board_token, job_id)`
+pairs** from `Database.applied_ids`, not bare ids: an id alone is not unique across
+boards, so an id-keyed set would mark one employer's posting applied on the strength
+of another's. A budget drop renders a **blank** `llm_score`, not the `0`
 that `filtered_result` puts in the model — printing that zero reads as a verdict
 and is what hid the broken reranker for an entire run.
 
@@ -579,17 +590,22 @@ folder name. `Database.known_run_ids` is where that list comes from, and the uni
 `run_progress` and `runs` is not belt-and-braces: a sweep in flight is only in the
 first, a standalone phase run only in the second.
 
-Two things about the day scope in SQL that must not be reversed. The filter goes
-**inside** `_canonical_matches_sql`, which is the mirror of the rule below that state
-predicates go outside, and the two only look contradictory: inside, `MAX(m.scored_at)`
-picks each job's newest row *among the day's sweeps*, which is what a day page means;
-outside, the aggregate would pick the job's all-time newest row and the outer `WHERE`
-would then discard the job **entirely** whenever that row belonged to another day, so a
-job today judged would vanish from today's page the moment a later sweep touched it.
-And `run_ids=[]` means "a day with no sweeps" and must read **zero**: `IN ()` is a SQLite
-syntax error and a truthiness test (`if run_ids:`) falls through to *lifetime* scope, so
-the whole install's numbers would render under a heading naming one empty day. Every
-reader branches on `is not None`, and `refresh` skips the page as well.
+One thing about the day scope in SQL that must not be reversed: `run_ids=[]` means
+"a day with no sweeps" and must read **zero**. `IN ()` is a SQLite syntax error and a
+truthiness test (`if run_ids:`) falls through to *lifetime* scope, so the whole
+install's numbers would render under a heading naming one empty day. Every reader
+branches on `is not None`, and `refresh` skips the page as well.
+
+There used to be a second rule here — the day filter went *inside*
+`_canonical_matches_sql`, mirroring the rule that state predicates go outside — and it
+is gone with that method. It existed because `matches` held one row per sweep per job:
+inside, `MAX(m.scored_at)` picked each job's newest row *among the day's sweeps*, while
+outside the aggregate chose the all-time newest row and the outer `WHERE` then
+discarded the job **entirely** whenever that row belonged to another day. One row per
+posting removes the choice. **It also removes the old answer**, and that is the
+user-visible half: a day's page now shows the verdicts that day's sweeps *reached*
+(`scored_run_id`), so a job a later sweep re-judged has moved to the later page. See
+the `postings` note below.
 
 It had a second exception, an `Est. cost` tile, and `render.SHOW_COST` now ships
 **off**. The figure was the Claude CLI's own client-side estimate at list price, and a
@@ -648,19 +664,32 @@ in `applied_ids`, so a needs-attention job never also appears under Shortlisted.
 
 **The user can record either outcome by hand, and the two are deliberately
 asymmetric.** `/hireshire:mark-applied` over `scripts/jobs_cli.py` writes what the
-applier could not: `Database.mark_applied_by_hand` promotes the row to `submitted`,
-and `Database.decline_job` **deletes** it and un-shortlists the job with
-`DECLINED_BY_USER`. A declined job gets no `applied` row at all, and that is forced
+applier could not: `Database.mark_applied_by_hand` sets `apply_status` to `submitted`,
+and `Database.decline_job` **clears the application record** and un-shortlists the job
+with `DECLINED_BY_USER`. A declined job keeps `apply_status` NULL, and that is forced
 rather than chosen — every status that is not `submitted` renders under Needs
 Attention by design, so a "not pursuing" status would sit in the one section the
-feature exists to clear. It is the `location_mismatch` shape exactly: a verdict
-reached after scoring, so `skipped` stays 0 and the job keeps its LLM score in Jobs
-Filtered. Three consequences:
+feature exists to clear. **A NULL there therefore has to keep meaning "no application
+record at all"**, which is what an absent `applied` row used to mean. It is the
+`location_mismatch` shape exactly: a verdict reached after scoring, so `skipped` stays
+0 and the job keeps its LLM score in Jobs Filtered. Four consequences:
 
-- **The promotion is a narrow `UPDATE`, never `record_applied`.** That writer is
-  `INSERT OR REPLACE` on the primary key, so it would blank `board_token`, `title`
-  and `absolute_url` — the columns `load_applied_matches` falls back on once a job's
-  `matches` rows are pruned, which is exactly the old application being tidied up.
+- **Both are narrow `UPDATE`s, and `record_applied` is one too now.** That writer was
+  `INSERT OR REPLACE` on its own table's primary key, so re-recording through it would
+  blank `board_token`, `title` and `absolute_url` — the columns an application fell
+  back on once a job's `matches` rows were pruned. Those columns belong to the scraper
+  and live on the posting, so the hazard is gone at the root; what is unchanged is that
+  this is a separate writer, and why.
+- **Both are keyed on the bare `job_id`, which is the one place the composite key shows
+  through to a user.** The page's buttons and the CLI have nothing else, and an id can
+  name two postings when two boards mint the same one. The two outcomes make opposite
+  trades, deliberately: `decline_job` and `mark_not_shortlisted` act on every match,
+  because un-shortlisting the wrong posting is recoverable (it keeps its score and its
+  place in Jobs Filtered), while `mark_applied_by_hand` returns **`ambiguous`** and
+  writes nothing, because claiming an application that was never made is not. Widening
+  the command to carry a board token was rejected: `scripts/approve.py` matches the
+  exact command string, so it would ripple into the guard, the `mark-applied` skill and
+  the button's copied command, for a case that is vanishingly rare.
 - **A hand-marked application is indistinguishable from an automatic one**, because
   the status written is plain `submitted`. A second "counts as applied" status would
   have to be added to `overview_counts`, `run_progress`, `lifetime_progress` and
@@ -683,17 +712,19 @@ reliably a secure context and `navigator.clipboard` can simply be absent.
 **Four of the five sections carry buttons, and which buttons is a statement about the
 row, not a style choice.** Needs Attention and Jobs Shortlisted get both outcomes.
 Jobs Filtered and `Total Jobs Seen` get **`applied` only** (`_APPLIED_ONLY`): those
-jobs are already un-shortlisted or were never shortlisted and have no `applied` row,
-so `decline_job` would delete nothing and un-shortlist nothing, and offering it would
-hand the user a command that answers `nothing_to_change`. Jobs Applied gets neither —
-the outcome is recorded. Do not "restore" the pair for symmetry.
+jobs are already un-shortlisted or were never shortlisted and have no application
+record, so `decline_job` would clear nothing and un-shortlist nothing, and offering it
+would hand the user a command that answers `nothing_to_change`. Jobs Applied gets
+neither — the outcome is recorded. Do not "restore" the pair for symmetry.
 
-Putting the button on those two sections forced a third source of identity in
-`Database.mark_applied_by_hand`: an `applied` row, then the canonical `matches` row,
-then **`jobs`**. A title-gate rejection has neither of the first two — that is why it
-is in `Total Jobs Seen` and nowhere else — so without that branch the button copied a
-command that answered `unknown` and wrote nothing, for the largest section on the page.
-`"unknown"` still means what it said: a `job_id` in no table at all.
+Putting the button on those two sections used to force a **third** source of identity
+in `Database.mark_applied_by_hand`: an `applied` row, then the canonical `matches` row,
+then `jobs`. A title-gate rejection had neither of the first two — that is why it is in
+`Total Jobs Seen` and nowhere else — so without that branch the button copied a command
+that answered `unknown` and wrote nothing, for the largest section on the page. One row
+per posting leaves one lookup, so the three sources and the `"inserted"` return value
+are gone; `"unknown"` still means what it said, a `job_id` the database has never seen,
+and `"ambiguous"` is the new answer for an id two boards both mint.
 
 **All five sections read the same way, and the rows stay `<details>` for one
 load-bearing reason.** Each section is a filter box over a sticky six-column header
@@ -734,31 +765,31 @@ siblings (grouped after the rerank, never competed for a slot) while the section
 a sibling follow its verdict, since it carries a real score copied from its
 representative.
 
-**What they must agree on is which row per job they read, and lifetime scope is where
-that has teeth.** `matches` is keyed `(run_id, job_id)`, so a job dropped on a
-*deferral* — the call cap, a scoring failure — comes back and its later sweep writes a
-**second row** beside the first. Day scope needs the same rule for the same reason —
-two of a day's sweeps can each write a row for one job — with the scope filter *inside*
-the aggregate, as the reporting section above explains.
-`Database._canonical_matches_sql` is the one place
-that chooses between them: `MAX(m.scored_at)` with bare columns, the same trick and the
-same rule `_unapplied` uses for the backlog window. The lifetime sections, the
-`Relevant jobs` and `Jobs shortlisted` tiles and the lifetime applier bar all go
-through it, so a tile can no longer count a job on a reading the list below has
-dropped. Run scope needs none of this — `(run_id, job_id)` is the primary key — and its
-queries are deliberately left alone.
+**What they must agree on is which row per posting they read, and the answer is now
+"there is one".** `postings` is keyed `(board_token, job_id)` and holds the posting's
+*current state*, so every scope reads the same row and a tile can no longer count a job
+on a reading the list below has dropped.
 
-Three things about that rule which should not be re-derived:
+That is the one thing `Database._canonical_matches_sql` existed to buy, and it is gone
+with it. It wrapped every lifetime read in `MAX(m.scored_at) … GROUP BY m.job_id`,
+because `matches` was keyed `(run_id, job_id)`: a job dropped on a *deferral* — the call
+cap, a scoring failure — came back and a later sweep wrote a **second row** beside the
+first, so each reader had to choose. Choosing wrong was expensive: counting "any row
+that ever said so" listed 381 jobs twice on the lifetime page and left 8 more in the
+`Relevant jobs` tile on a reading the cross-encoder had since overturned.
 
-- **It is "newest", not "the row that has a verdict".** Preferring a judged row looks
-  safer and is not: `_judged_sql` is also true of a cluster sibling whose representative
-  **failed**, which carries a placeholder 0 and nothing behind it, so the preference
-  would bury a genuine `rerank_below_cutoff` written weeks later. Measured on a real
-  install, no job's newest row loses a real verdict — the matcher retires a judged job,
-  so a verdict is always the last word — and both rules produce identical tiles.
-- **The predicates go on the outer select.** `_judged_sql()`, `_relevant_sql()` and
-  `_sibling_sql()` read the row the aggregate has already chosen. Inside the aggregate
-  they would be answered by rows the group is discarding.
+Three things about it that should not be re-derived or reinvented:
+
+- **The rule survives, made once at write time instead of on every read: newest wins.**
+  The matcher retires a judged job, so a verdict is always the last word and only a
+  later sweep can supersede a deferral. The refinement that looks safer — prefer a row
+  with a standing verdict — stays rejected and is now unrepresentable: `_judged_sql` is
+  also true of a cluster sibling whose representative **failed**, which carries a
+  placeholder 0 and nothing behind it, so the preference would bury a genuine
+  `rerank_below_cutoff` written weeks later.
+- **Its two placement rules are gone rather than relocated**, and neither should come
+  back when something looks asymmetric: state predicates on the outer select, scope
+  filters inside the aggregate. There is no aggregate.
 - **The sections used to load in two halves and must not again.** One query for rows
   with a standing verdict and one for the rest, each deduping only *within* itself, put
   381 jobs on the page twice under contradicting labels — and its judged half carried
@@ -766,33 +797,39 @@ Three things about that rule which should not be re-derived:
   1,233 on the same install). `partition_jobs` keeps a `placed` set anyway: the page's
   one real promise should not rest on the shape of whichever query fed it.
 
-The last section, `Total Jobs Seen`, is the only one that reads the **`jobs` table**
-rather than `matches` (`Database.load_unmatched_jobs`). That is what finally puts the
-title-gate rejections on a page — `matcher.py` keeps them out of `matches` on purpose,
-since there can be tens of thousands a run — and it is why that section alone is
-script-built from a JSON payload with a filter box. It carries **two** `NOT EXISTS`
-clauses, scoped oppositely, and they only read as a contradiction. The `matches` one is
-deliberately **not** correlated on `run_id` — the question is *has anything ever read
-this job*, and a job the `SeenStore` skipped because an earlier sweep judged it would
-otherwise be listed here with a blank score, as though nothing had. The `jobs` one is
-keyed on `run_id`: **a posting belongs to the sweep that first saw it, and to no
-other.** The scraper writes a fresh `jobs` row for every posting on every sweep, so
-without it the seventh sweep's page re-lists everything the first sweep's title gate
-threw out — on a mature install, most of the section. That anti-join also replaced
-`GROUP BY j.job_id` as what makes the rows unique, since `(run_id, job_id)` is the
-primary key and the earliest row is therefore one row; restoring the `GROUP BY` would
-only forbid `LIMIT` from short-circuiting. And it is deliberately **not** narrowed to a
-day's id set, which is what makes a posting the day's 9am sweep found and its 1pm sweep
-found again appear exactly once on the day page.
+**A run page is a record of what that sweep did, not a ledger entry per sweep**, and
+that is the most visible consequence of the collapse. The verdict figures filter on
+`scored_run_id`, the sweep that reached the verdict the row carries, so a job sweep #1
+deferred on the call cap and sweep #5 judged appears on **#5's** page and not on #1's.
+#1 still counts it under `Jobs in scope`, because #1 first saw it — which is why that
+tile is documented as wider than the sections beneath it. Day and lifetime scopes are
+unaffected: they ask the same question of the same row.
 
-**The `jobs` half is filtered by first sighting and the `matches` half is not**, and the
-asymmetry is the point: a `matches` row is work a run *did* on a posting, a `jobs` row is
-only the scraper seeing it again. Filtering the other half would re-create the regression
-`_canonical_matches_sql` exists to stop — a job today judged vanishing from today's page
-the moment a later sweep touched it. Note "first seen" means *first row still in the
-database*: `prune_runs` deletes `jobs` rows, so pruning the oldest sweeps makes a
-surviving posting reappear on whichever page then holds its earliest row. Self-correcting,
-and honest.
+The last section, `Total Jobs Seen`, is the one that lists postings **nothing ever
+scored** (`Database.load_unmatched_jobs`, `match_json IS NULL`). That is what puts the
+title-gate rejections on a page — `matcher.py` never scores them on purpose, since
+there can be tens of thousands a run — and it is why that section alone is script-built
+from a JSON payload with a filter box. Two halves, and they only read as a
+contradiction:
+
+- **`match_json IS NULL` is not scoped to a run.** The question is *has anything ever
+  scored this posting*, and a job an earlier sweep judged — which the matcher has since
+  retired — must not be listed here with a blank score as though nothing had.
+- **`first_run_id` is: a posting belongs to the sweep that first saw it, and to no
+  other.** Without it the seventh sweep's page re-lists everything the first sweep's
+  title gate threw out, as though it had just found it — on a mature install, most of
+  the section. It is a stored column; it replaced an anti-join
+  (`NOT EXISTS (… e.run_id < j.run_id)`) that derived the same fact from 7.7 rows per
+  posting, plus the covering index that anti-join made mandatory. Because it names one
+  sweep, a posting a day's 9am sweep found and its 1pm sweep found again appears exactly
+  once on the day page, with no extra rule.
+
+Note "first seen" means *the first sighting still on record*, and that is now a property
+of **`prune_runs`** rather than of a query: when it prunes the sweep a surviving posting
+was filed under, it rewrites `first_run_id` to the oldest sweep that is left. Without
+that rewrite such a posting would appear on no run or day page at all and only at
+lifetime scope — a third behaviour nobody has reasoned about. Self-correcting, and
+honest, but the two have to be read together.
 
 The price, accepted twice over now, is that on later sweeps the five sections no longer
 sum to the `Jobs in scope` tile — that tile is deliberately **wider**, counting every
@@ -803,13 +840,13 @@ dash in that column, so the six shared columns match the sections above. A print
 dash and an absent key are not the same thing; only the key is dangerous.
 
 **It is the one section with a `Reason` column, and the only reason it can have one is
-that the verdict is now persisted.** `jobs.gate_reason` holds it, written by
+that the verdict is now persisted.** `postings.gate_reason` holds it, written by
 `matcher._record_gate_reasons` in one batched `UPDATE` per company batch. The title
-gate rejects tens of thousands of jobs a sweep and `matcher.py` deliberately writes
-them no `matches` row for that reason — which left the verdict recorded nowhere, and
-thousands of rows on a page with no way to say why any of them was there. A column on
-a row the scraper had already made costs an UPDATE, not a row in a table the reports
-group. Four consequences:
+gate rejects tens of thousands of jobs a sweep and `matcher.py` deliberately never
+scores them for that reason — which left the verdict recorded nowhere, and thousands of
+rows on a page with no way to say why any of them was there. A column on a row the
+scraper had already made costs an UPDATE, not a row in a table the reports group. Four
+consequences:
 
 - **The scraper must not write the column, and `insert_jobs` had to stop being
   `INSERT OR REPLACE` for that to hold.** `OR REPLACE` *deletes the row and inserts a
@@ -817,26 +854,31 @@ group. Four consequences:
   leaving it out was not enough, it has to be left out of an `ON CONFLICT … DO UPDATE`.
   `matcher._persist_hydrated_details` re-inserts a job to attach its description, so
   under the old writer that second call silently erased the gate's verdict.
-- **`load_unmatched_jobs` fetches `gate_reason` across runs, not off the row it
-  returns.** A job can have a `jobs` row in several runs and only some of them gated it
-  — the `SeenStore` skips a job an earlier sweep judged — so a bare column hands back
-  the other row's NULL and loses the verdict. The rule is *any run that recorded a
-  reason wins*, and it used to be a `MAX()` over the group; once the first-sighting
-  anti-join chose the row, it had to become a `COALESCE` onto a correlated lookup
-  instead, because **the reason is not always on the earliest row.** A sweep killed
-  outright (`--stop` is `taskkill /F`, which runs no `finally`) leaves `jobs` rows the
-  matcher never gated, writing neither a reason nor a `seen_jobs` entry, so the *next*
-  sweep gates the job and holds it. The anti-join keeps that earlier NULL row, so a bare
-  column would re-introduce the exact regression `MAX` was added to stop — and the
-  original test would still pass, because it records the reason on the earlier sweep.
-  `tests/test_db.py::test_a_reason_recorded_on_a_later_sweep_still_reaches_the_page` is
-  the one that catches it. The other bare columns come from the earliest row, which
-  changes nothing, since title, company, location and url are properties of the posting.
+
+  **The merge multiplied that hazard by twenty and added two more writers to it.** One
+  row now carries `retired_at`, every score, `shortlisted`, `skip_reason`, `match_json`
+  and all five apply columns — everything the matcher, the gates and the applier own —
+  so a re-sighting must touch none of them. And `upsert_match` and `record_applied`
+  were `INSERT OR REPLACE` against tables of their own; against the merged row either
+  would have destroyed the scrape and put back defaults. All three are named-column
+  statements now, the two verdict writers are `UPDATE`s that never insert, and that is
+  the single most important invariant in `db.py`.
+- **`gate_reason` is a bare column, and the rule it used to need a cross-run lookup for
+  is now structural.** The rule is *any sweep that recorded a reason wins*. It was a
+  `MAX()` over a job's rows, then — once the first-sighting anti-join chose one row — a
+  `COALESCE` onto a correlated lookup, because **the reason was not always on the
+  earliest row**: a sweep killed outright (`--stop` is `taskkill /F`, which runs no
+  `finally`) left `jobs` rows the matcher never gated, so the *next* sweep gated the
+  job and held the reason. Both sweeps write the same row now. What is left of the rule
+  is a filter in the writer: `matcher._record_gate_reasons` passes `skip_reason or ""`,
+  and `record_gate_reasons` **skips blanks**, so a later sweep cannot overwrite a real
+  `title_excluded` with an empty string. That filter is the whole of the protection, and
+  `tests/test_db.py::test_a_reason_recorded_on_a_later_sweep_still_reaches_the_page`
+  is the test that notices if it goes.
 - **The column is fed by two different columns and `_tail_payload` normalises them**:
-  `matches.skip_reason` for the jobs the cutoff and the YoE gate dropped,
-  `jobs.gate_reason` for the title gate's own three. That is done there rather than in
-  either loader because it is the one place both halves have already been
-  concatenated. `data.short_reason` is a **second** label table, not a truncation of
+  `skip_reason` for the jobs the cutoff and the YoE gate dropped, `gate_reason` for the
+  title gate's own three. That is done there rather than in either loader because it is
+  the one place both halves have already been concatenated. `data.short_reason` is a **second** label table, not a truncation of
   `REASON_LABELS`: the short form is a different phrase, and the two disagree about
   `""` on purpose — "scored by the LLM" to the long one, an em dash to the short one,
   since a judged job never reaches this section.
@@ -877,10 +919,13 @@ Five things about it that are easy to get wrong:
   `raw_json` — via `json_extract`, probed once at connect because JSON1 was opt-in
   before SQLite 3.38 and the interpreter is whatever the launcher found. Testing the
   reason instead dropped six judged jobs into the never-scored table on real data.
-  Note `jobs` has a `raw_json` column too, so the predicate takes a table alias.
+  Note it names `match_json` outright and **takes no alias**: it used to need one,
+  because `jobs` and `matches` each had a `raw_json` column and the predicate was
+  ambiguous in any query joining the two. Giving the two blobs their own names removed
+  the ambiguity rather than parameterising around it.
 - **`_judged_sql` is a SQL mirror of `data._never_scored` and the two must agree.**
-  The Python one cannot be used across runs (it needs `raw_json` parsed per row) and
-  the SQL one cannot be dropped (the lifetime page groups the whole `matches` table).
+  The Python one cannot be used at lifetime scope (it needs the blob parsed per row)
+  and the SQL one cannot be dropped (the lifetime page groups the whole table).
   `tests/test_overview.py` pins them together against a fixture holding both kinds of
   sibling.
 - **"Judged by proxy" is not the same as "has a verdict".** A sibling of a *failed*
@@ -903,8 +948,8 @@ orchestrated sweep. No table the rest of the page reads can give these numbers:
 
 - The scraper's company total exists only in memory.
 - A not-found slug writes no `run_companies` row.
-- Title-gate rejections and seen-store skips write no `matches` row.
-- An excluded company, a deferral or a location skip writes no `applied` row.
+- Title-gate rejections and retired-posting skips reach no scoring column.
+- An excluded company, a deferral or a location skip writes no application record.
 
 Counting rows instead leaves every bar short of its total. The row itself is created
 by `start_progress` in `run_pipeline`, and every write after that is an `UPDATE`.
@@ -918,15 +963,22 @@ Three rules to keep:
   sweeps' shortlists.
 - **The matcher bar counts what the sweep had work to do on**, not the whole batch, and
   its two halves are defined against each other. `matcher.py` bumps `jobs_processed`
-  with `unseen` — the batch minus the jobs an earlier sweep already retired into
-  `seen_jobs` — and the total is the `Jobs in scope` tile, which is the same
-  `Database._new_work_sql` call. That rule is *first sighting **or** a verdict this
-  scope reached*: a title-gate rejection writes no `matches` row but is work this sweep
-  did, while a cap drop is not retired and so legitimately returns as work later. Change
-  one half without the other and the bar reads a clamped 100% from the first batch of
-  every repeat sweep. It is **not** plain first-sighting for the same reason the tile is
-  not: a posting the cap deferred and a later sweep judged is real work that sweep did,
-  and it is listed in that sweep's Relevant and Jobs Filtered sections.
+  with `unseen` — the batch minus the postings an earlier sweep already retired — and
+  the total is the `Jobs in scope` tile, which is the same `Database._new_work_sql`
+  call. That rule is *first sighting **or** a verdict this scope reached*, and both are
+  columns now (`first_run_id`, `scored_run_id`): a title-gate rejection reaches no
+  scoring column but is work this sweep did, while a cap drop is not retired and so
+  legitimately returns as work later. Change one half without the other and the bar
+  reads a clamped 100% from the first batch of every repeat sweep. It is **not** plain
+  first-sighting for the same reason the tile is not: a posting the cap deferred and a
+  later sweep judged is real work that sweep did, and it is listed in that sweep's
+  Relevant and Jobs Filtered sections.
+
+  **The two halves must stay a top-level `OR`.** Under the old shape the scope filter
+  restricted the whole predicate, because the verdict half needed a `jobs` row in that
+  same run to hang off; written as a conjunct against one row it collapses to
+  `first_run_id = ?` and the second half disappears without a word, which puts the top
+  of the funnel *below* the lists beneath it.
 - **Both pages show their bars all the time, but the lifetime page's are different
   numbers.** The run page keeps that sweep's bars after it ends, as a record of where
   each stage stopped. The lifetime page shows install-wide bars
@@ -945,9 +997,9 @@ Three rules to keep:
     over every run. At *day* scope those scopes coincide and the two collapse to one
     number — which is the per-sweep double count going away, not a bug to pull apart.
   - The applier is **not** a sum. It is every distinct shortlisted representative
-    ever, against how many have an `applied` row. A sum of per-sweep counters reads
-    ~100% whenever no sweep is running; the backlog keeps meaning something, and it
-    covers sweeps made before tracking began.
+    ever, against how many have an application record. A sum of per-sweep counters
+    reads ~100% whenever no sweep is running; the backlog keeps meaning something, and
+    it covers sweeps made before tracking began.
 
   These queries group whole tables, so they ride `LIFETIME_INTERVAL_S` like the other
   lifetime reads.
@@ -959,21 +1011,28 @@ a different reason, and the difference matters: the day queries are
 therefore not a reason to move it onto the fast tick.
 
 The lifetime page carries its own throttle (`LIFETIME_INTERVAL_S`, 60 s) because its
-queries group a table that has no `run_id` filter to narrow them; everything else in
-`refresh` is indexed on `run_id` and stays cheap however long the user has been at it —
-including the `jobs` read behind `Total Jobs Seen`, which `idx_jobs_run` covers and
-whose two `NOT EXISTS` clauses ride `idx_matches_job` and `idx_jobs_job` — the latter
-`(job_id, run_id, gate_reason)`, so the first-sighting anti-join and the `gate_reason`
-lookup are both answered from the index alone. **That index is required, not an
-optimisation.** Without it the anti-join falls back to the primary key, which can only
-use its `run_id < ?` prefix and scans every earlier run's rows: measured on a real
-install (580,727 `jobs` rows over 135 sweeps) one run-scope read took **31.8 s**,
-against 7 ms with it — 13 ms for a day, 58 ms at lifetime, no table scan at any scope.
+queries group a whole table with no scope filter to narrow them; everything else in
+`refresh` is index-backed and stays cheap however long the user has been at it. The
+two that matter are `idx_postings_first_run` (the `Total Jobs Seen` section, and half
+of `_new_work_sql`) and `idx_postings_scored_run` (the verdict figures, and the other
+half).
 
-All three tables now fill continuously — `run_companies`, `jobs` and `matches` — because
-selection is a per-job cutoff and each employer's batch is judged as it arrives. Both
-pages' copy was rewritten for that; it used to explain that nothing could be scored
-until the sentinel, which was true under top-K and is now a lie the reader would catch.
+**The index that used to be mandatory is gone with the thing it served.**
+`idx_jobs_job(job_id, run_id, gate_reason)` existed because the first-sighting
+anti-join and the cross-run `gate_reason` lookup both had to be answered without
+touching 580,727 rows — and without it one run-scope read measured **31.8 s** against
+7 ms. Both are single-row lookups on a primary key now, so that hazard cannot return.
+The 39.6 s `COUNT(*) FROM jobs` behind the scraper note is gone too: `scrape_counts`
+sums `run_companies.job_count`, which is written per employer per sweep anyway.
+
+**`postings` grows only by new postings**, which is the user-visible shape of the
+collapse: the scraper upserts a posting it has seen before instead of writing a fresh
+copy of its description. On the install this was measured against that was 580,727 rows
+for 75,732 postings, 3.81 GB of it re-sightings. `run_companies` and `pipeline_results`
+still fill per sweep, and every one of them fills *continuously*, because selection is
+a per-job cutoff and each employer's batch is judged as it arrives. Both pages' copy was
+rewritten for that; it used to explain that nothing could be scored until the sentinel,
+which was true under top-K and is now a lie the reader would catch.
 
 The per-stage counts (`gated → reranked → above cutoff → judged`) exist for a failure
 mode the cutoff introduced: under a ranking, something was always scored, so an empty
@@ -984,8 +1043,74 @@ wrong for this resume, and the two are indistinguishable without the counts. A l
 ### Layer 2 — the engine
 
 Two phases, each independent: own entrypoint, own `hireshire/<phase>/` subpackage,
-own `config/<phase>.yaml`. All tabular data lives in one SQLite DB (WAL); every
-phase writes rows keyed by a shared `run_id`.
+own `config/<phase>.yaml`. All tabular data lives in one SQLite DB (WAL).
+
+**One posting is one row**, in `postings`, keyed `(board_token, job_id)`: the scraper
+upserts it, the matcher writes its scores and the judge's verdict into the same row,
+and the applier reads scored rows from it and writes the outcome back. It replaced four
+tables — `jobs`, `matches`, `applied` and `seen_jobs` — and the four things that are
+still per-run are per-run by nature: `runs` (phase spans and stats), `run_companies`
+(which employers a sweep reached), `run_progress` (the dashboards' three bars) and
+`pipeline_results` (a sweep's export rows). `meta` is per install.
+
+Six things about that table that are easy to break, each of which has its own note
+elsewhere in this file:
+
+- **No writer may be `INSERT OR REPLACE`.** `OR REPLACE` deletes the row and reinserts
+  it, so a column the statement does not name comes back as its default — and one row
+  now carries the scrape, the gates' verdicts, the scores and the application. Only
+  `insert_jobs` inserts; `upsert_match`, `record_applied`, `record_gate_reasons`,
+  `mark_seen` and the rest are `UPDATE`s against the row it made.
+- **`job_json` and `match_json` must never collapse into one name.** One is the scraped
+  `Job` dump, the other the `MatchResult`; they overlap on `job_id`, `board_token`,
+  `title` and `absolute_url`, and `location` has a different *shape* in each. A single
+  `raw_json` is what forced `_sibling_sql` to take a table alias, and merging them would
+  make every blob read silently ambiguous.
+- **Both key columns are declared `NOT NULL` explicitly.** In SQLite a composite
+  `PRIMARY KEY` on a rowid table does not imply it, and two NULLs compare distinct — so
+  without them the key admits the duplicate rows it exists to prevent.
+- **`board_token` leads the key**, for write locality: the scraper upserts one
+  employer's batch at a time across ~15,871 employers. The lookups that have only the
+  bare id — the overview's buttons, `applied_ids`, `mark_applied_by_hand` — take
+  `idx_postings_job`.
+- **The wide columns come last in the row.** SQLite reads columns in order and spills
+  long values to overflow pages, so a dashboard query that stops before `job_json`,
+  `match_json` and `content_text` never traverses them.
+- **`scored_at IS NOT NULL` (`Database._SCORED`) is what "this posting has a verdict"
+  means.** The existence of a `matches` row used to imply it; a posting always has a
+  row now, so every reader of the scoring columns has to say so or it counts the whole
+  scrape as judged.
+
+**The schema version is load-bearing for the first time.** `SCHEMA_VERSION = 2`, and a
+file stamped higher is *refused* rather than read with the wrong shape — a downgrade is
+the one case where carrying on is worse than stopping. The merge itself is gated on the
+shape it finds (`PRAGMA table_info(jobs)`) rather than on the version, which is what
+avoids having to answer "does an absent version mean v1, or a new file?". Three
+operational consequences:
+
+- **Stop a running sweep before updating.** A sweeper started on the old code is
+  executing old SQL against its file; migrating underneath it would fail every
+  statement it issues, loudly and repeatedly, mid-sweep. So `_migrate_to_postings`
+  asks `sweep_pid` + `process_liveness.is_alive` first and raises
+  `SchemaMigrationBlocked` with one actionable sentence. Deferring silently is not
+  available, because the new readers have no old SQL to fall back on. No ancestor walk
+  is needed: `run_orchestration._loop` proves no sweeper is alive, connects, and only
+  *then* records its own pid, so a new sweeper always migrates with the pid file empty
+  or stale.
+- **The merge is one transaction, driven by hand.** Python's `sqlite3` at the default
+  `isolation_level=""` opens a transaction for DML only, so `with self._conn:` would
+  leave every `CREATE`/`DROP`/`ALTER` in autocommit — non-atomic while *looking*
+  atomic. For the same reason it cannot use `executescript`, which issues an implicit
+  COMMIT when a transaction is pending; `_statements` splits the DDL instead, with
+  `sqlite3.complete_statement` rather than `str.split(";")`, because the comments in
+  `_POSTINGS_DDL` contain semicolons of their own.
+- **`VACUUM` is a separate, deliberate step.** `DROP TABLE` only frees pages to the
+  freelist, so the file keeps its old size — about 3.8 GB of a 5.3 GB file on the
+  install this was measured against. The merge sets `meta.vacuum_pending` and
+  `scripts/jobs_cli.py compact` reclaims it, because `VACUUM` wants another copy's
+  worth of temp space and minutes of work while `Database.__init__` is on the path of
+  every process, including the report refresh and `--stop`. That subcommand is also the
+  entry point `prune_runs` never had.
 
 Applying is **not** a third engine phase with a `main()`, but it is on the queue. The
 work is driving a browser, and that stays on the agent side of the line: forms differ
@@ -1017,11 +1142,11 @@ Four things about the applier that are easy to break:
   for the sweep.
 
   **That a job came off the backlog is stored, not derived.** `record_applied` takes a
-  keyword-only `from_backlog` and `applied.from_backlog` holds it, so the overview's
+  keyword-only `from_backlog` and `postings.from_backlog` holds it, so the overview's
   Jobs Applied row can add `reasons.FROM_BACKLOG` to its `submitted <time>` sub-line.
-  It has to be written at the moment it is known: `applied` has no `run_id`, so nothing
-  downstream can tell which sweep did the applying, and `applied_at` against `scored_at`
-  is a guess. Only the verdict writer passes it — the `excluded` row never reaches Jobs
+  It has to be written at the moment it is known: an application carries no `run_id`,
+  so nothing downstream can tell which sweep did the applying, and `applied_at` against
+  `scored_at` is a guess. Only the verdict writer passes it — the `excluded` row never reaches Jobs
   Applied and the expiry pass is backlog-only by definition — and Needs Attention rows
   deliberately do not show it, because that section's question is what the user must do
   now. Rows written before the column read `False`, which is the honest answer rather
@@ -1030,7 +1155,7 @@ Four things about the applier that are easy to break:
   count.** `backlog_hours` is measured against `scored_at`, which never advances — the
   matcher retires a judged job — so a job whose sessions keep failing to launch stops
   being retried after ~18 sweeps at a 4-hour poll. That used to happen silently: the
-  row kept `shortlisted = 1` with no `applied` row, so it sat under Jobs Shortlisted
+  row kept `shortlisted = 1` with no application record, so it sat under Jobs Shortlisted
   for good, reading as work the applier would still get to, and the link the user could
   have used by hand was buried among jobs that looked pending. `worker.EXPIRED_STATUS`
   is the terminal record that ends it, written by a pass after the queue drains.
@@ -1069,9 +1194,9 @@ Four things about the applier that are easy to break:
   was listed kept driving Amazon's login wall. So removing a portal from the YAML does
   not opt it back in, by design.
 - **A location skip is a verdict too, and is the one that retires a job with no
-  `applied` row.** The posting page states a location outside the user's list, which
-  reads the same on every future sweep, so `Database.mark_not_shortlisted` clears
-  `shortlisted` and writes `location_mismatch` — the backlog's `WHERE m.shortlisted = 1`
+  application record.** The posting page states a location outside the user's list,
+  which reads the same on every future sweep, so `Database.mark_not_shortlisted` clears
+  `shortlisted` and writes `location_mismatch` — the backlog's `WHERE shortlisted = 1`
   is what then stops seeing it. It had the `exclude_companies` bug and worse: with no
   retry counter anywhere, `poll_interval_hours: 2` and `backlog_hours: 72` re-drove one
   job ~36 times, a full `claude -p` and browser session each time to re-read a location
@@ -1079,10 +1204,11 @@ Four things about the applier that are easy to break:
 
   Three things about it that are easy to get wrong:
 
-  - **No `applied` row, and that is the difference from `exclude_companies`.** An
+  - **No application record, and that is the difference from `exclude_companies`.** An
     account-login portal is something the user can go and do by hand, so it belongs
     under Needs Attention; a job in the wrong country is not, so it is un-shortlisted
-    into Jobs Filtered instead. This also keeps the progress-bar rule below true as
+    into Jobs Filtered instead. `apply_status` stays NULL, which is the same thing a
+    declined job relies on. This also keeps the progress-bar rule below true as
     written.
   - **`skipped` must stay 0.** It is what `_judged_sql` and both copies of
     `_never_scored` read, and this job *was* judged — it carries a real LLM score.
@@ -1091,13 +1217,20 @@ Four things about the applier that are easy to break:
     `location_mismatch` in `_SCORED_REASONS` but **not** in `judged`: the two look
     interchangeable and drive different things — the score column and the reason label
     — and Jobs Filtered is the section whose entire question is why.
-  - **`mark_not_shortlisted` takes no `run_id`.** `matches` is keyed `(run_id, job_id)`
-    and a backlog job's row belongs to an earlier sweep, so every row for the job is
-    updated; leaving one shortlisted would put it straight back in the backlog and
-    render it twice on the lifetime page under contradicting labels. It therefore lowers
-    the `Jobs shortlisted` tile and the applier bar's denominator retroactively, at both
-    scopes — correct, since the job is no longer waiting on the applier, and not a
-    discrepancy to reconcile.
+  - **`mark_not_shortlisted` takes no `run_id`, and a backlog job is why.** The job
+    was judged by an *earlier* sweep, so a writer scoped to the current one would
+    retire nothing and the job would go straight back into the backlog — one browser
+    session per sweep, to re-read a location that cannot change. (It used to have to
+    update a row per sweep for the same reason, or the lifetime page rendered the job
+    twice under contradicting labels.) It therefore lowers the `Jobs shortlisted` tile
+    and the applier bar's denominator retroactively, at both scopes — correct, since the
+    job is no longer waiting on the applier, and not a discrepancy to reconcile.
+
+    It is keyed on the bare `job_id` rather than the posting's full key, because the
+    overview's decline button has nothing else. That is the conservative half of the
+    trade `mark_applied_by_hand` makes the other way: un-shortlisting a second posting
+    that happens to share an id keeps its score and its place in Jobs Filtered, while
+    marking it applied would claim an application that was never made.
 
   **There is one location list, and the scraper owns it.** `ApplierSettings.location_filter`
   is *derived*: `load_applier_config` overwrites it from `scraper.location_filter` on
@@ -1331,7 +1464,8 @@ suppresses Rich in favour of `logging` — required under the monitor.
     `meta.DOC_ID` is **checked in**: it is in neither the page nor its eager bundles.
     Meta rotates it, and a stale one answers 404, an error row rather than an empty
     board. The module docstring says how to refresh it. Its list has no date, so the
-    first sweep takes in Meta's whole backlog once and `seen_jobs` handles the rest.
+    first sweep takes in Meta's whole backlog once and `postings.retired_at` handles
+    the rest.
 - **Interpreter discovery lives in exactly one place: `scripts/hireshire.sh`.**
   Two traps make this worth centralising. macOS has no bare `python` — Apple
   removed `/usr/bin/python` in 12.3 and Homebrew installs `python3` only. And

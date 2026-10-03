@@ -165,10 +165,10 @@ def _load_rows(db_path: Path) -> list[dict]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT m.job_id, m.title, m.board_token, m.relevance_score, m.rerank_score,"
-        "       m.shortlisted, m.skip_reason, j.content_text "
-        "FROM matches m JOIN jobs j ON j.job_id = m.job_id "
-        "WHERE j.content_text IS NOT NULL AND LENGTH(j.content_text) > 200"
+        "SELECT job_id, title, board_token, relevance_score, rerank_score,"
+        "       shortlisted, skip_reason, content_text "
+        "FROM postings "
+        "WHERE scored_at IS NOT NULL AND content_text IS NOT NULL AND LENGTH(content_text) > 200"
     ).fetchall()
     conn.close()
     # One row per job_id; a job can appear under several run_ids.

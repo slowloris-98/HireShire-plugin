@@ -98,7 +98,7 @@ def _sort_key(record: dict) -> tuple:
     )
 
 
-def _row(record: dict, applied_ids: set[str]) -> dict:
+def _row(record: dict, applied_ids: set[tuple[str, str]]) -> dict:
     llm = _llm_score(record)
     return {
         "posted_at": record.get("posted_at") or "",
@@ -110,21 +110,27 @@ def _row(record: dict, applied_ids: set[str]) -> dict:
         "link": record.get("absolute_url") or "",
         "llm_score": "" if llm is None else llm,
         "cross_score": _num(record.get("rerank_score")),
-        # `applied` has no `run_id` — an application is a fact about a job, not
-        # about the sweep that surfaced it — so this is "have I ever applied to
-        # this", which is the only question the table can answer.
-        "applied": _yes(record.get("job_id") in applied_ids),
+        # An application is a fact about a job, not about the sweep that surfaced
+        # it — there is no run_id on it — so this is "have I ever applied to this",
+        # which is the only question the row can answer.
+        #
+        # `(board_token, job_id)` because that is the posting's key: a bare id is not
+        # unique across boards, so an id-keyed set would mark one employer's posting
+        # applied on the strength of another's.
+        "applied": _yes(
+            (record.get("board_token") or "", record.get("job_id")) in applied_ids
+        ),
         "shortlisted": _yes(record.get("shortlisted")),
     }
 
 
 def write_results_csv(records: list[dict], path: Path,
-                      applied_ids: set[str] | None = None) -> Path | None:
+                      applied_ids: set[tuple[str, str]] | None = None) -> Path | None:
     """Write the results CSV. Returns the path, or None if it could not be written.
 
-    `applied_ids` comes from `Database.applied_ids()`. The caller passes it because
-    no match record carries it: the `applied` table is keyed on the job alone and is
-    read once for the whole file rather than per row.
+    `applied_ids` is `Database.applied_ids()`, a set of `(board_token, job_id)` pairs.
+    The caller passes it because no match record carries the application's state, and
+    it is read once for the whole file rather than per row.
 
     Never raises: losing this file must not take down a run whose database rows are
     already safe — the same trade `hireshire.reporting.refresh` makes. It is also
