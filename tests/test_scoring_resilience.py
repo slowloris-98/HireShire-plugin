@@ -364,3 +364,130 @@ def test_the_scorer_flags_a_launch_failure_for_the_breaker():
     scorer._backend = _Backend(RuntimeError("claude CLI exited 1"))
     asyncio.run(scorer.score(job, "resume", "run-1"))
     assert not scorer.last_error_was_launch
+
+
+# --- the console the judge's child runs in ---------------------------------
+
+
+def test_every_judge_call_gets_its_own_console(monkeypatch):
+    """A judge child must not inherit the sweeper's console.
+
+    Once that console goes stale -- the Claude Code session that launched the
+    background shell task ended or restarted -- every inherited child dies at DLL init
+    with 0xC0000142 and the sweep scores nothing for hours while scraping happily.
+    `tests/test_child_console.py` carries the mechanism and the evidence.
+    """
+    monkeypatch.setattr(claude_cli.sys, "platform", "win32")
+    backend, _ = _scripted_backend(monkeypatch, [])
+    captured: dict = {}
+
+    inner = asyncio.create_subprocess_exec
+
+    async def recording(*argv, **kwargs):
+        captured.update(kwargs)
+        return await inner(*argv, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording)
+    asyncio.run(backend.call("prompt", "system"))
+    assert captured.get("creationflags") == 0x08000000
+
+
+# --- teardown: a judge child must not outlive the call that started it ------
+
+
+class _HangingProc:
+    """A CLI that never answers and records being killed."""
+
+    returncode = None
+
+    def __init__(self, drain_hangs: bool = False) -> None:
+        self.killed = False
+        self._drain_hangs = drain_hangs
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    async def communicate(self, input=None):
+        if self.killed and not self._drain_hangs:
+            return b"", b""
+        await asyncio.Event().wait()   # never returns
+
+
+def _hanging_backend(monkeypatch, proc):
+    async def fake_exec(*argv, **kwargs):
+        return proc
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    return ClaudeCodeBackend(MatcherSettings(request_interval_s=0), asyncio.Semaphore(1))
+
+
+def test_a_cancelled_scoring_call_kills_the_cli_it_started(monkeypatch):
+    """`run_pipeline` cancels every sibling stage as soon as one raises, so a sweep that
+    dies mid-scoring used to leave up to `matcher.concurrency` CLI processes running with
+    their pipes open and nobody to reap them. The cancellation must still propagate --
+    the teardown is not allowed to swallow it."""
+    proc = _HangingProc()
+    backend = _hanging_backend(monkeypatch, proc)
+
+    async def main():
+        task = asyncio.ensure_future(backend.call("prompt", "system"))
+        await asyncio.sleep(0)          # let it reach communicate()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert proc.killed, "a cancelled scoring call must kill the CLI it started"
+
+
+def test_a_timed_out_scoring_call_cannot_hang_on_its_own_teardown(monkeypatch):
+    """The timeout path used to `await proc.communicate()` with no bound, on a process
+    it had just killed and which might not die. The drain is bounded now, and the
+    timeout error it raises is unchanged."""
+    proc = _HangingProc(drain_hangs=True)
+    backend = _hanging_backend(monkeypatch, proc)
+    monkeypatch.setattr(scorer_mod, "_REAP_DRAIN_S", 0.01)
+    settings = MatcherSettings(request_interval_s=0, claude_cli_timeout_s=1)
+    backend._timeout = 0.01
+
+    with pytest.raises(RuntimeError, match="timed out after"):
+        asyncio.run(backend.call("prompt", "system"))
+    assert proc.killed
+    assert settings.claude_cli_timeout_s == 1   # the setting itself is untouched
+
+
+# --- what the breaker says when the host is the problem ---------------------
+
+
+def test_the_launch_failure_summary_names_the_stale_console_and_the_cure():
+    """It used to offer three possibilities, two of which are now ruled out: the 21:05
+    sweep ran almost entirely locked and made ~30 apply sessions and 166 codex calls
+    before failing, and there were no power events. Naming a cause the user cannot act
+    on sends them to their login instead of restarting the sweep."""
+    breaker = matcher_mod._ScoringBreaker()
+    breaker.last_error = "codex CLI exited 3221225794 (0xC0000142 STATUS_DLL_INIT_FAILED)"
+    breaker.launch_failed = True
+    for i in range(5):
+        breaker.record(_result(f"j{i}", "api_error"))
+
+    summary = breaker.summary()
+    for phrase in ("0xC0000142", "machine", "console", "restart", "No jobs were retired"):
+        assert phrase in summary, phrase
+    assert "asleep" not in summary and "locked" not in summary
+
+
+def test_a_breaker_tripped_by_a_launch_failure_logs_one_findable_line(caplog):
+    """A log search for the exit code has to land on the explanation, not only on the
+    per-call warnings that repeat it."""
+    breaker = matcher_mod._ScoringBreaker()
+    breaker.last_error = "codex CLI exited 3221225794 (0xC0000142 STATUS_DLL_INIT_FAILED)"
+    breaker.launch_failed = True
+    with caplog.at_level("ERROR"):
+        for i in range(5):
+            breaker.record(_result(f"j{i}", "api_error"))
+
+    explained = [r for r in caplog.records
+                 if "0xC0000142" in r.getMessage() and "restart" in r.getMessage()]
+    assert len(explained) == 1, "exactly one line should explain the stale console"

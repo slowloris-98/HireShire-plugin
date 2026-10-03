@@ -25,6 +25,8 @@ import shutil
 import subprocess
 from typing import Any
 
+from hireshire import claude_cli
+
 # Codex bills an API organisation instead of the ChatGPT plan when either is set —
 # `CODEX_API_KEY` is the one `codex exec` documents, `OPENAI_API_KEY` the one
 # `load_dotenv()` may have put here for the BYO-key `openai` provider.
@@ -161,7 +163,7 @@ def available_features(timeout: float = 30.0) -> set[str] | None:
     try:
         proc = subprocess.run(
             [exe, "features", "list"], capture_output=True, timeout=timeout,
-            env=subscription_env(),
+            env=subscription_env(), **claude_cli.own_console_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -193,7 +195,10 @@ def check(timeout: float = 60.0) -> dict:
 
     def _run(*args: str) -> subprocess.CompletedProcess | None:
         try:
-            return subprocess.run([exe, *args], capture_output=True, timeout=timeout, env=env)
+            return subprocess.run(
+                [exe, *args], capture_output=True, timeout=timeout, env=env,
+                **claude_cli.own_console_kwargs(),
+            )
         except (OSError, subprocess.SubprocessError):
             return None
 

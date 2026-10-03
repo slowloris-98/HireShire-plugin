@@ -148,7 +148,8 @@ Consequences already worked out, which should not be re-derived:
   rules survive from the old design: it reads `poll_interval_hours` from the user's
   config itself (`orchestrate.py --interval` defaults to 4 and never looks); every
   stdout line reaches the agent, so it emits one summary line per cycle and logs the
-  rest to a file; and nothing may detach the process.
+  rest to a file — which is also why the re-exec hop must keep inheriting stdio; see the
+  console bullet below; and nothing may detach the process.
 
   **Two attempts to tie it to a session both destroyed users' work, and the second is
   why the idea is abandoned rather than refined.** The first passed `$$`/`$PPID` from
@@ -1322,6 +1323,48 @@ suppresses Rich in favour of `logging` — required under the monitor.
 - Downstream of the launcher, `scripts/run_engine.py` re-execs into the venv and
   addresses its interpreter by absolute path — hook exec form cannot spawn the
   `.cmd`/`.bat` shims Windows installs.
+- **Every child the engine starts with fully piped stdio gets its own invisible console
+  on Windows; the two re-exec launchers must never get one.**
+  `claude_cli.own_console_kwargs()` is the single place that decides, and it returns
+  `creationflags` and nothing else — the moment it carries `stdout`, `env` or `cwd` the
+  exclusion below becomes unstateable. A Windows child inherits its parent's console by
+  default, and `USER32.dll`'s init attaches the process to that console's window station
+  and desktop *before any user code runs*, so when the console the sweeper inherited
+  goes stale (its Claude Code session ended or restarted, its terminal was closed) every
+  subsequent spawn dies with `0xC0000142` in ~20 ms with no stdout and no stderr — while
+  the parent, which only does HTTP, carries on scraping.
+
+  **It is per process and an event, not per sweep and not an accumulation**, and that is
+  what retired the old diagnosis. Measured: one sweeper scored cleanly at 23:25, 00:33
+  and 01:39, then failed every cycle from 02:46 to 09:26 and never recovered; a restart
+  cured it instantly. Onset was 3h20m into that process and ~74 min into another, and a
+  census found 344 processes with zero orphaned children — so desktop heap, leaked
+  processes, a locked screen and sleep are all ruled out, and `docs/known-issues.md` S2's
+  original suspects were wrong. `DETACHED_PROCESS` is the wrong flag: with no console at
+  all, `npx` and `cmd` grandchildren may allocate **visible** ones on the user's desktop.
+
+  **The exclusion is `run_orchestration._reexec_in_venv` and `run_engine.run`**, which
+  pass no `stdout`/`stderr` and must keep inheriting: the child's one-line-per-cycle
+  `print(..., flush=True)` is the only thing the background shell task surfaces to the
+  agent, so a new console there would silently sever the sweep's output from the user —
+  the same failure class as announcing a sweep that was never running. Getting it wrong
+  on a piped site costs a dead child that logs an exit code; getting it wrong there costs
+  silence, which is why the rule is "every piped site, mechanically" rather than "the
+  ones we think are at risk" — whose console is stale is not knowable at the call site.
+  `tests/test_child_console.py` pins both halves by AST over the shipped spawn sites, so
+  a new spawn site cannot be added without answering the question, and it asserts the two
+  exempt calls pipe *nothing*, so piping one of them fails the build rather than quietly
+  reclassifying it.
+
+  Note this is **spawn kwargs, not CLI flags.** `scorer.py` is right that `--safe-mode`
+  and `--tools ""` must never be shared through `claude_cli` — the applier needs tools
+  and an MCP server — and that rule is about argv, which decides what the model can do.
+  This decides whether Windows will start the process at all. The judge and the applier
+  want identical spawn kwargs and different argv, and the two policies do not touch;
+  `tests/test_apply_worker.py` asserts both halves in one body so they read as a pair.
+  For the same reason `scorer._reap` kills the **leaf** rather than the tree: a judge
+  session has no children by construction, and a tree-wide kill on Windows *means
+  spawning `taskkill`*, which is subject to the very failure this bullet is about.
 - **Plugin-bundled MCP tools are namespaced** `mcp__plugin_hireshire_playwright__*`,
   not `mcp__playwright__*`. A rule written against the bare server key never fires.
 - **A skill must not state runtime facts it has not asked for.** Three live failures of

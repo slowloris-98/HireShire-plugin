@@ -172,9 +172,11 @@ def bootstrap(monkeypatch, tmp_path):
     return bs
 
 
-def _fake_run(calls, finaliser_rc=0):
+def _fake_run(calls, finaliser_rc=0, kwargs_seen=None):
     def run(argv, **kwargs):
         calls.append(argv)
+        if kwargs_seen is not None:
+            kwargs_seen.append(kwargs)
         rc = finaliser_rc if str(argv[-1]).endswith("finalise_stopped.py") else 0
         return subprocess.CompletedProcess(argv, rc, stdout="", stderr="")
     return run
@@ -200,3 +202,22 @@ def test_stop_with_nothing_running_still_repairs_the_pages(bootstrap, monkeypatc
 
     assert bootstrap.stop() == 0
     assert [str(c[-1]) for c in calls][-1].endswith("finalise_stopped.py")
+
+
+def test_the_stop_kill_runs_in_its_own_console(bootstrap, monkeypatch):
+    """`--stop` spawns two children: the taskkill and the finaliser. Both are console
+    children, so on a stale console neither could launch -- which is the worst moment
+    for it, since restarting is the cure and `--stop` is how you restart. The platform
+    is forced so the Windows branch is reached on any host."""
+    monkeypatch.setattr(bootstrap.sys, "platform", "win32")
+    bootstrap.sweep_pid.write(4242, bootstrap.DATA)
+    calls: list = []
+    kwargs_seen: list = []
+    monkeypatch.setattr(bootstrap.subprocess, "run",
+                        _fake_run(calls, kwargs_seen=kwargs_seen))
+
+    assert bootstrap.stop() == 0
+    assert [c[0] for c in calls].count("taskkill") == 1
+    assert str(calls[-1][-1]).endswith("finalise_stopped.py")
+    for argv, kwargs in zip(calls, kwargs_seen):
+        assert kwargs.get("creationflags") == 0x08000000, argv

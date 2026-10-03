@@ -4,15 +4,17 @@ The scorer and the apply worker both shell out to the local CLI on the user's
 subscription. Two copies of these rules is how the one that matters most — stripping
 the API key — gets dropped from the second copy.
 
-The Codex backend shares what is not about `claude` itself: the exit-code readers and
-`exit_detail`. It is the same host starting the same kind of console child, and a
-failure has to read the same way in the log whichever CLI produced it.
+The Codex backend shares what is not about `claude` itself: the exit-code readers,
+`exit_detail`, and the spawn kwargs in `own_console_kwargs`. It is the same host
+starting the same kind of console child, and a failure has to read the same way in the
+log whichever CLI produced it.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any
 
 _API_AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
@@ -42,6 +44,73 @@ def describe_exit(returncode: int | None) -> str:
         return str(returncode)
     code = returncode & 0xFFFFFFFF
     return f"{returncode} (0x{code:08X} {LAUNCH_FAILURE_CODES[code]})"
+
+
+# Microsoft, Process Creation Flags. Spelled out rather than read off
+# `subprocess.CREATE_NO_WINDOW`, which exists only on Windows builds of CPython — the
+# same reason `process_liveness.py` names `_SYNCHRONIZE` itself.
+_CREATE_NO_WINDOW = 0x08000000
+
+#: One sentence naming the cause and the cure, for whichever breaker trips on a launch
+#: failure. Spelled once so the scoring breaker and the applier breaker cannot drift.
+STALE_CONSOLE_HELP = (
+    "Windows refused to start the CLI (0xC0000142): the console this sweep inherited "
+    "is gone — usually the Claude Code session that started it ended or restarted, or "
+    "its terminal was closed. The sweep itself is fine and keeps going; restarting the "
+    "sweep fixes it immediately."
+)
+
+
+def own_console_kwargs() -> dict[str, int]:
+    """Spawn kwargs giving a child its own invisible console, on Windows only.
+
+    A Windows child inherits its parent's console by default, and `USER32.dll`'s
+    initialisation attaches the process to that console's window station and desktop
+    *before any user code runs*. So when the console the sweeper inherited goes stale —
+    its Claude Code session ended or restarted, its terminal was closed — that attach
+    fails and **every** subsequent spawn dies with 0xC0000142 in ~20 ms, with no stdout
+    and no stderr, while the parent carries on perfectly because it only does HTTP.
+    (career-ops-hq/career-ops#3809 for the signature, openai/codex#46412 for the
+    window-station mechanism.)
+
+    What the log showed, and why the old diagnosis in `docs/known-issues.md` S2 was
+    wrong: it is **per sweeper process, and an event rather than an accumulation**. One
+    process scored cleanly at 23:25, 00:33 and 01:39, then failed every cycle from 02:46
+    to 09:26 and never recovered; the 10:10 restart cured it instantly, after which
+    scoring failed with a real `out of credits` error and the applier submitted two
+    applications. Onset was 3h20m into that process and ~74 min into another. A census
+    at the time found 344 processes, zero orphaned children, and both `--version`
+    commands launching cleanly from a fresh console — so desktop-heap exhaustion from
+    load, leaked processes, a locked screen and sleep are all ruled out.
+
+    `DETACHED_PROCESS` is the wrong flag. It gives the child no console at all, after
+    which `npx` and `cmd` grandchildren may allocate **visible** ones on the user's
+    desktop. `CREATE_NO_WINDOW` is an invisible console that grandchildren inherit,
+    which is what makes it the only correct choice here.
+
+    **Use this only where stdout and stderr are fully piped.** A child whose stdio is
+    inherited must never get it: `scripts/run_orchestration.py:_reexec_in_venv` and
+    `scripts/run_engine.py:run` pass no `stdout`/`stderr` on purpose, because the
+    child's one-line-per-cycle prints are the only thing the background shell task
+    surfaces to the agent. Getting it wrong on a piped site costs a dead child that logs
+    an exit code; getting it wrong there costs silence.
+
+    Note this is **spawn kwargs, not CLI flags**. `scorer.py` is right that
+    `--safe-mode` and `--tools ""` must not be shared through this module, because the
+    apply worker needs tools and an MCP server — but that rule is about argv, which
+    decides what the model can do. This decides whether Windows will start the process
+    at all. The judge and the applier want identical spawn kwargs and different argv,
+    and the two policies do not touch.
+
+    Returns a dict rather than an int so the platform test lives in one place and the
+    POSIX case is a literal no-op: `creationflags != 0` raises `ValueError` there, so
+    `{}` is the only shape that cannot surprise a POSIX caller. It must never grow a
+    second key — the moment it carries `stdout`, `env` or `cwd` the piped-only rule
+    above becomes unstateable.
+    """
+    if sys.platform == "win32":
+        return {"creationflags": _CREATE_NO_WINDOW}
+    return {}
 
 
 def exit_detail(out: str, stderr: bytes) -> str:

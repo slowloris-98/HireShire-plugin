@@ -627,6 +627,56 @@ class CLILaunchError(RuntimeError):
 _LAUNCH_RETRY_DELAYS_S = (5.0, 20.0, 60.0)
 
 
+#: How long a killed judge process gets to let go of its pipes before we stop waiting.
+_REAP_DRAIN_S = 5.0
+
+
+async def _reap(proc) -> None:
+    """Kill a judge process and drain its pipes, bounded, never raising.
+
+    Both CLI backends go through this on the two paths where the call does not finish:
+    a timeout, and a cancellation. The cancellation path is the one that was missing —
+    `orchestrate.run_pipeline` cancels every sibling stage as soon as one raises, so
+    without this a failed sweep left up to `matcher.concurrency` CLI processes running
+    with their pipes open and nobody to reap them. It also bounds the timeout path,
+    which used to `await proc.communicate()` with no limit on a process that had just
+    been killed and might not die.
+
+    It must never raise: one caller is already unwinding with a `CancelledError` it has
+    to re-raise, and the drain can itself be cancelled a second time while awaiting.
+
+    **Leaf kill, not the applier's tree-wide `taskkill /T`, and that asymmetry is
+    deliberate.** Neither judge session can have children — `claude` runs with
+    `--safe-mode --tools ""`, which strips MCP servers, tools, hooks and plugins, and
+    `codex` runs `-s read-only` with every entry of `JUDGE_DISABLED_FEATURES`
+    (`shell_tool`, `unified_exec`, `browser_use`, `computer_use`…), `--ignore-user-config`
+    and no MCP server. There is nothing under the leaf. And a tree-wide kill on Windows
+    *means spawning `taskkill`*, which is subject to the stale-console failure
+    `claude_cli.own_console_kwargs` exists to prevent — four synchronous spawns inside
+    four concurrent cancellations, at this install's concurrency. The apply worker is
+    tree-wide because it must be: its session starts the browser.
+
+    So the precondition is the argv, which `tests/test_apply_worker.py` pins: give the
+    judge a tool or an MCP server and this has to become tree-wide. Note this is *not*
+    the same reasoning as "killing the leaf is enough, because the chain unwinds
+    itself" — that is about the re-exec chain, where each parent blocks in
+    `subprocess.run`. Same conclusion, different mechanism; do not merge them.
+    """
+    try:
+        if proc.returncode is None:
+            proc.kill()
+    except (ProcessLookupError, OSError):  # already gone
+        pass
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.debug("Could not kill the judge process", exc_info=True)
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=_REAP_DRAIN_S)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.debug("Could not drain the judge process", exc_info=True)
+
+
 class ClaudeCodeBackend:
     """Score through the local `claude` CLI so the user's Pro/Max subscription
     pays for it instead of a metered API key.
@@ -736,6 +786,7 @@ class ClaudeCodeBackend:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._env(),
+                **claude_cli.own_console_kwargs(),
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -743,9 +794,12 @@ class ClaudeCodeBackend:
                     timeout=self._timeout,
                 )
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
+                await _reap(proc)
                 raise RuntimeError(f"claude CLI timed out after {self._timeout}s")
+            except asyncio.CancelledError:
+                # The sweep is being torn down. Without this the process outlives it.
+                await _reap(proc)
+                raise
             if claude_cli.is_launch_failure(proc.returncode):
                 raise CLILaunchError(
                     f"claude CLI exited {claude_cli.describe_exit(proc.returncode)}"
@@ -910,6 +964,7 @@ class CodexBackend:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=codex_cli.subscription_env(),
+                **claude_cli.own_console_kwargs(),
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -917,9 +972,12 @@ class CodexBackend:
                     timeout=self._timeout,
                 )
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
+                await _reap(proc)
                 raise RuntimeError(f"codex CLI timed out after {self._timeout}s")
+            except asyncio.CancelledError:
+                # The sweep is being torn down. Without this the process outlives it.
+                await _reap(proc)
+                raise
             if claude_cli.is_launch_failure(proc.returncode):
                 raise CLILaunchError(
                     f"codex CLI exited {claude_cli.describe_exit(proc.returncode)}"
