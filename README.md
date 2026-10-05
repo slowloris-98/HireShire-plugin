@@ -4,8 +4,8 @@ Automated job search on your own Claude subscription.
 
 ## 1. Prerequisites
 
-- A Claude subscription (to score jobs or fill in applications on a ChatGPT plan
-  instead, also install the Codex CLI and run `codex login`; setup offers it for each)
+- Claude / Codex / API for judging and matching the jobs (recommended but not necessary — HireShire can still
+  scrape thousands of jobs and rank without scoring and applying; see [section 5](#5-no-claude--codex--api-subscription))
 - An optimized, refined resume, in a new folder
 - ~3 GB of free disk space
 
@@ -57,3 +57,8 @@ Full details: [docs/SPECS.md](docs/SPECS.md)
 ## 4. System architecture
 
 ![HireShire system architecture](docs/HLD.png)
+
+## 5. No Claude / Codex / API subscription?
+
+HireShire can still scrape thousands of jobs and rank them locally — no auto-apply, no LLM
+job scoring. See [Readme_Manual_Setup.md](Readme_Manual_Setup.md).
