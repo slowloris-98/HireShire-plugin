@@ -4,8 +4,8 @@ Automated job search on your own Claude subscription.
 
 ## 1. Prerequisites
 
-- Claude / Codex / API for judging and matching the jobs (recommended — HireShire can
-  scrape and rank jobs without it; see [section 5](#5-no-claude--codex--api-subscription))
+- Claude / Codex / API for judging and matching the jobs (recommended but not necessary — HireShire can still
+  scrape thousands of jobs and rank without scoring and applying; see [section 5](#5-no-claude--codex--api-subscription))
 - An optimized, refined resume, in a new folder
 - ~3 GB of free disk space
 
