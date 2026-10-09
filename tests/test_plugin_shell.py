@@ -533,6 +533,47 @@ def test_every_provider_branch_writes_its_own_provider_key():
                 f"{phase}.provider = {provider} is written without a model"
 
 
+def test_every_scoring_branch_writes_skip_llm():
+    """Same rule as the provider key above, for the switch that turns scoring off.
+
+    Question 10 offers "no LLM scoring" as a fourth backend, so `skip_llm` is now a key
+    setup *sets* rather than one it leaves alone — and these files survive re-runs. A
+    branch that does not write it breaks switching **back**: a user who picked scraping
+    only and then re-runs setup to pick Claude is told scoring is on while the file
+    still says `skip_llm: true`, and every sweep keeps shortlisting unjudged jobs.
+
+    The none branch has to write a coherent `provider` and `model` too, so that
+    flipping the switch back by hand does not strand a Codex model under claude_code.
+    """
+    text = (ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+    blocks = _shell_blocks(text)
+
+    scoring_writes = [
+        line for line in blocks.splitlines()
+        if "set matcher --json" in line and '"provider"' in line
+    ]
+    assert scoring_writes, "question 10 writes no provider at all"
+    for line in scoring_writes:
+        assert '"skip_llm"' in line, \
+            f"a scoring branch writes provider without skip_llm: {line.strip()}"
+
+    off = [line for line in scoring_writes if '"skip_llm": true' in line]
+    assert off, "no branch turns scoring off; the scraper-only option is unreachable"
+    for line in off:
+        assert '"model"' in line, \
+            "the no-scoring branch must still pin a model for switching back"
+
+
+def test_the_no_scoring_branch_turns_auto_apply_off():
+    """Nothing has judged these jobs, so unattended applying to that shortlist is off —
+    and written, not left to the default, since a user may have had it on before."""
+    text = (ROOT / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "skip_llm" in text
+    assert '"enable_applier": false' in _shell_blocks(text), \
+        "the scraper-only branch never writes the applier gate off"
+
+
 def test_setup_says_an_unwritten_setting_keeps_its_old_value():
     """The reason those writes exist. Without it a later edit reads them as redundant —
     every value is already the default on a fresh install — and drops them again."""

@@ -487,6 +487,19 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
         sub = f"{reasons.COMPANY_LIMIT} · retries after {local_time(job['hold_until'])}"
         tip = ' title="{}"'.format(e(reasons.company_limit_detail(
             job.get("hold_count") or 0, company, job.get("hold_window_h") or 0)))
+    elif shortlisted and job.get("apply_deferred_at"):
+        # The last session had no browser tools, so it reached no verdict and wrote no
+        # status (`postings.apply_deferred_at`). Same problem as the hold above: without
+        # a line this reads as a job the applier has not got to, when in fact it is
+        # being retried every sweep.
+        #
+        # AFTER the hold branch on purpose. A held job is not being retried this sweep,
+        # so the hold is the more specific statement and has to win; a job can carry
+        # both, because the cap is re-read per launch while the note is left from last
+        # time.
+        when = local_time(job["apply_deferred_at"])
+        sub = f"{reasons.BROWSER_RETRYING} · retried each sweep (last tried {when})"
+        tip = ' title="{}"'.format(e(reasons.browser_retry_detail(when)))
     sub_cls = "job-sub warn" if attention else "job-sub"
     sub_html = f'<span class="{sub_cls}"{tip}>{e(sub)}</span>' if sub else ""
 

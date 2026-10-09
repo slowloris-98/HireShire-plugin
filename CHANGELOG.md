@@ -4,6 +4,25 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.25.2] — 2026-10-09
+
+### Added
+
+- **A job waiting on a browser now says so on the dashboard.** When an apply session
+  cannot get its browser tools, HireShire records nothing and retries the job on the
+  next sweep — which is right, but it meant the job sat under "Jobs Shortlisted"
+  looking exactly like one the applier simply had not reached yet. Those rows now carry
+  a line saying the browser was unavailable and when it was last tried, so a job being
+  retried is no longer indistinguishable from one that is merely queued.
+
+  The retrying itself is unchanged: still every sweep, still bounded by
+  `backlog_hours`, and still ending under "Needs Attention" when that window closes.
+
+### Fixed
+
+- Jobs retired by the 0.25.0 browser bug can be returned to the queue: their
+  application record is what blocked the retry, not the job itself.
+
 ## [0.25.1] — 2026-10-08
 
 ### Fixed

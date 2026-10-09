@@ -243,11 +243,29 @@ CREATE TABLE IF NOT EXISTS {table} (
     -- `from_backlog` says the application came off an earlier sweep's shortlist
     -- rather than the sweep that found the job. Stored because it cannot be derived:
     -- there is no run_id here, and `applied_at` against `scored_at` is a guess.
+    --
+    -- `apply_deferred_at` is when a session last gave up WITHOUT reaching a verdict,
+    -- for lack of its browser tools. It exists only so the overview can say a
+    -- shortlisted job is being retried rather than merely queued -- a deferral writes
+    -- no status, so unlike the per-company cap there is nothing to recompute from.
+    --
+    -- It is a TIMESTAMP, and that is deliberate rather than incidental: a COUNT here
+    -- would let something retire a job after N failures, which is the one thing the
+    -- deferral rule forbids. A launch failure is a fact about the host, not the job
+    -- (known issue S2: a machine where every launch failed at once), so counting them
+    -- would discard a whole sweep's shortlist for a transient fault. Holding only
+    -- "when" makes that rule unrepresentable instead of merely unused.
+    --
+    -- It must stay inert to every existing query: `apply_status` stays NULL, so both
+    -- backlog loaders (`_unapplied`) still see the job and the retrying is unchanged.
+    -- Cleared by `record_applied` and `decline_job` so the line cannot outlive its
+    -- cause.
     apply_status  TEXT,
     applied_at    TEXT,
     apply_error   TEXT,
     screenshot    TEXT,
     from_backlog  INTEGER NOT NULL DEFAULT 0,
+    apply_deferred_at TEXT,
 
     -- Wide columns LAST, deliberately. SQLite reads a row's columns in order and
     -- spills a long value to overflow pages, so a query that stops before these never
@@ -381,6 +399,12 @@ class Database:
         # NULL on rows written before it existed, which the overview renders as an
         # em dash: the reason was never stored and cannot be reconstructed.
         ("jobs", "gate_reason", "TEXT"),
+        # The FIRST entry here naming `postings` rather than a table the merge
+        # deleted. `CREATE TABLE IF NOT EXISTS` is a no-op on an already-migrated v2
+        # file, so a column added to `_POSTINGS_DDL` alone never reaches one. Nullable
+        # and additive, so `SCHEMA_VERSION` stays 2: bumping it would make every older
+        # install refuse the file, and nothing about the shape has changed.
+        ("postings", "apply_deferred_at", "TEXT"),
     )
 
     def _init_schema(self) -> None:
@@ -1158,7 +1182,7 @@ class Database:
     _MATCH_COLUMNS = (
         "match_json, relevance_score, encoder_score, rerank_score_wide, "
         "rerank_score, yoe_required, skipped, skip_reason, shortlisted, "
-        "scored_at, location, updated_at"
+        "scored_at, location, updated_at, apply_deferred_at"
     )
 
     #: "A verdict has been reached on this posting." The merge made this test necessary
@@ -1173,6 +1197,11 @@ class Database:
         record["location"] = row["location"] or record.get("location") or ""
         record["posted_at"] = row["updated_at"] or ""
         record["shortlisted"] = bool(row["shortlisted"])
+        # Carried as a column rather than out of the blob: the blob is the judge's
+        # verdict, written once, while this is set and cleared by the applier long
+        # after. Selecting it without copying it here would drop it silently, which is
+        # the one failure mode a sub-line cannot survive.
+        record["apply_deferred_at"] = row["apply_deferred_at"] or ""
         return record
 
     def load_lifetime_matches(self, limit: int,
@@ -2008,7 +2037,8 @@ class Database:
                 "SELECT match_json, relevance_score, encoder_score, "
                 "       rerank_score_wide, rerank_score, yoe_required, "
                 "       skipped, skip_reason, "
-                "       shortlisted, scored_at, location, updated_at "
+                "       shortlisted, scored_at, location, updated_at, "
+                "       apply_deferred_at "
                 "FROM postings "
                 f"WHERE scored_run_id=? AND {self._SCORED} "
                 "ORDER BY relevance_score IS NULL, relevance_score DESC, "
@@ -2023,6 +2053,10 @@ class Database:
             record["location"] = r["location"] or record.get("location") or ""
             record["posted_at"] = r["updated_at"] or ""
             record["shortlisted"] = bool(r["shortlisted"])
+            # Same reason as `_match_record`, which this loader deliberately does not
+            # share: a run page must show the retry line too, or the sub-line would
+            # appear at lifetime and day scope and silently vanish at run scope.
+            record["apply_deferred_at"] = r["apply_deferred_at"] or ""
             out.append(record)
         return out
 
@@ -2297,10 +2331,38 @@ class Database:
         with self._lock, self._conn:
             return self._conn.execute(
                 "UPDATE postings SET apply_status = ?, applied_at = ?, "
-                "  apply_error = ?, screenshot = ?, from_backlog = ? "
+                "  apply_error = ?, screenshot = ?, from_backlog = ?, "
+                # A verdict supersedes any deferral before it, so the overview's
+                # "being retried" line cannot outlive the retrying.
+                "  apply_deferred_at = NULL "
                 "WHERE board_token = ? AND job_id = ?",
                 (status, applied_at, error, screenshot, int(from_backlog),
                  board_token or "", job_id),
+            ).rowcount
+
+    def record_apply_deferral(self, job_id: str, board_token: str,
+                              when_iso: str) -> int:
+        """Note that a session gave up on this job without reaching a verdict.
+
+        An `UPDATE` that touches **one** column and never inserts, like every other
+        verdict writer here. It deliberately does **not** set `apply_status`: a
+        deferral is not an application, so the job must stay visible to both backlog
+        loaders (`_unapplied` keys on `apply_status IS NULL`) and keep being retried
+        exactly as before. The column exists only so the overview can say a shortlisted
+        job is mid-retry rather than merely queued.
+
+        A timestamp and not a count, for the reason the DDL gives: a count here could
+        be used to retire a job after N failures, which the deferral rule forbids.
+
+        Returns the rowcount, which is 0 for a `job_id` no board mints — the same
+        signal `record_applied` gives, and the same tolerance: a lost line on a page is
+        not worth failing a sweep over.
+        """
+        with self._lock, self._conn:
+            return self._conn.execute(
+                "UPDATE postings SET apply_deferred_at = ? "
+                "WHERE board_token = ? AND job_id = ?",
+                (when_iso, board_token or "", job_id),
             ).rowcount
 
     # -- outcomes the user records by hand -----------------------------------
@@ -2405,7 +2467,8 @@ class Database:
         with self._lock, self._conn:
             deleted = self._conn.execute(
                 "UPDATE postings SET apply_status = NULL, applied_at = NULL, "
-                "  apply_error = NULL, screenshot = NULL, from_backlog = 0 "
+                "  apply_error = NULL, screenshot = NULL, from_backlog = 0, "
+                "  apply_deferred_at = NULL "
                 "WHERE job_id = ? AND apply_status IS NOT NULL",
                 (job_id,),
             ).rowcount

@@ -139,6 +139,21 @@ class ApplyLaunchError(RuntimeError):
     """
 
 
+class BrowserUnavailable(ApplyLaunchError):
+    """The session ran, cleanly, but never had its browser tools.
+
+    A deferral like every other `ApplyLaunchError` — nothing is recorded, the job stays
+    shortlisted and the backlog retries it — and a subclass only so `handle` can note
+    *when* it happened without parsing a message. The note is what lets the overview
+    say a shortlisted job is being retried rather than merely queued; it changes
+    nothing about whether it is retried.
+
+    Still counted by the breaker, because three in a row means the host is not
+    producing browsers and the remaining jobs should not each pay for a session to find
+    that out again.
+    """
+
+
 class CLIStartFailure(ApplyLaunchError):
     """The host refused to start the CLI at all — the session never ran.
 
@@ -482,7 +497,7 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
     if outcome.status == "error" and reasons.short_label(
         outcome.status, outcome.error
     ) == reasons.BROWSER_UNAVAILABLE:
-        raise ApplyLaunchError(
+        raise BrowserUnavailable(
             f"the apply session reported no browser tools: {outcome.error}"
         )
     return outcome
@@ -620,6 +635,20 @@ async def run_apply_worker(
                 logger.warning(
                     "Apply session failed for %s — %s (will retry next sweep): %s",
                     company, title, exc)
+                if isinstance(exc, BrowserUnavailable):
+                    # Note WHEN, never how many times — see the column's comment in
+                    # `db.py`. Nothing else about this branch changes: no status is
+                    # written, so the job stays in the backlog and is retried exactly
+                    # as it was. A failed note costs a sub-line on a page, so it must
+                    # not cost the sweep.
+                    try:
+                        await asyncio.to_thread(
+                            db.record_apply_deferral, job_id, company,
+                            datetime.now(timezone.utc).isoformat(),
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("Could not note the deferral for %s", job_id,
+                                     exc_info=True)
                 if state["consecutive"] >= BREAKER_LIMIT:
                     state["tripped"] = True
                     # When the host would not start the CLI, say so and say what fixes
