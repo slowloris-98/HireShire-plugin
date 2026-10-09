@@ -82,6 +82,20 @@ def required(topic: str) -> str:
 #: is holding (`limits.py`). It is spelled here because this is where labels live.
 COMPANY_LIMIT = "Company limit reached"
 
+#: Not a Needs Attention label either: the sub-line on a *shortlisted* job whose last
+#: apply session gave up for lack of its browser tools (`postings.apply_deferred_at`).
+#: Deliberately **not** in `_RULES` — like `FROM_BACKLOG`, it is never stored text: the
+#: job has no `applied` row at all, which is the whole reason it needs a line of its own.
+#: Without it the job reads exactly like one the applier has not reached yet.
+BROWSER_RETRYING = "Browser unavailable"
+
+
+def browser_retry_detail(when_local: str) -> str:
+    """The tooltip behind `BROWSER_RETRYING`."""
+    return (f"The last apply session had no browser tools ({when_local}). Nothing was "
+            f"recorded, so HireShire retries this job on every sweep.")
+
+
 #: Not a Needs Attention label either: the extra clause on a *submitted* job that came
 #: off an earlier sweep's shortlist rather than the sweep that found it. Deliberately
 #: not in `_RULES` below — that table maps text already **stored** in `applied.error`

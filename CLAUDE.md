@@ -1372,6 +1372,27 @@ Four things about the applier that are easy to break:
     `--disable tool_search_always_defer_mcp_tools` is **not** the fix and must not be
     added: the name is accepted on 0.160.1 (the feature is `removed`, defaulting on) so
     it fails silently, and a probe carrying it still reported no browser tool.
+
+    **`postings.apply_deferred_at` is a timestamp, and it must never become a count.**
+    A deferral writes no status, so unlike the per-company cap there is nothing to
+    recompute at render time — the overview cannot otherwise tell a job being retried
+    every sweep from one the applier has not reached, which is the whole reason the
+    column exists. It is deliberately only *when*: a count here is what something would
+    use to retire a job after N failures, and that is the rule `EXPIRED_STATUS` exists
+    to state — the trigger is **the window closing, never a count of failures**, because
+    a launch failure is a fact about the host and counting them discards a whole sweep's
+    shortlist for a transient fault. Holding only a timestamp makes that unrepresentable
+    rather than merely unused.
+
+    Two things keep it honest. It is **inert to every existing query** — `apply_status`
+    stays NULL, so both halves of `_unapplied` still see the job and the retrying is
+    bit-for-bit unchanged; a status here would silently turn the deferral into the
+    verdict this path exists to avoid. And `record_applied` and `decline_job` both clear
+    it, so the line cannot outlive its cause. In `_job_entry` the hold branch stays
+    **ahead** of it: a job can carry both, and a hold says the applier will not try this
+    sweep, so promising a retry there would be a lie. It is also the first
+    `_ADDED_COLUMNS` entry naming `postings` — nullable and additive, so
+    `SCHEMA_VERSION` stays 2, and measured at 0.01 s on a 6 GB, 104,942-row file.
   - **A failed turn is `SUBMIT_UNCONFIRMED`, not a deferral**, and this is where the
     mapping deliberately differs from `CodexBackend`'s, which raises for the matcher to
     retry. A session that drove a form for ten minutes and then failed its turn may

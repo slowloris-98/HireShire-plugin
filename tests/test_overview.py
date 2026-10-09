@@ -359,6 +359,51 @@ def test_a_location_skip_is_filtered_not_shortlisted_or_seen(tmp_path):
     assert _section_of(snap, "j6") == ["filtered"]
 
 
+def test_a_job_being_retried_for_a_browser_says_so(tmp_path):
+    """Without this line the job reads exactly like one the applier has not reached.
+
+    A browser deferral writes no status, so the job sits under Jobs Shortlisted looking
+    queued while it is in fact retried every sweep. Same gap the per-company cap's line
+    closes, and the same shape.
+    """
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=88, shortlisted=True, rerank=7.5)
+    db.insert_jobs(RUN, [_job("j6")])
+    db.record_apply_deferral("j6", "acme", "2026-09-09T08:00:00+00:00")
+
+    snap = _snapshot(db)
+    assert _section_of(snap, "j6") == ["shortlisted"], "still waiting to be applied to"
+    block = _job_block(overview.build(snap, RUN), "j6")
+    assert reasons.BROWSER_RETRYING in block
+    assert "retried each sweep" in block
+    assert "retries this job on every sweep" in block, "the tooltip explains it"
+
+
+def test_a_held_job_reads_as_held_even_when_it_was_also_deferred(tmp_path):
+    """Branch order. A job can carry both: the cap is re-read before every launch while
+    the note is left over from a previous sweep.
+
+    The hold is the more specific truth — it says the applier will *not* try this sweep
+    — so it has to win. Reversing the two branches would promise a retry that the cap
+    is actively preventing.
+    """
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=88, shortlisted=True, rerank=7.5)
+    db.insert_jobs(RUN, [_job("j6")])
+    db.record_apply_deferral("j6", "acme", "2026-09-09T08:00:00+00:00")
+
+    snap = _snapshot(db)
+    # Stand in for `mark_holds` having marked it, which needs live submissions.
+    for row in snap["shortlisted"]:
+        if row.get("job_id") == "j6":
+            row["hold_until"] = "2026-09-12T08:00:00+00:00"
+            row["hold_count"], row["hold_window_h"] = 2, 72
+
+    block = _job_block(overview.build(snap, RUN), "j6")
+    assert reasons.COMPANY_LIMIT in block
+    assert reasons.BROWSER_RETRYING not in block
+
+
 def test_a_location_skip_keeps_its_score_and_its_reason(tmp_path):
     """The regression guard for the one trap in this change. `_job_entry` had a single
     `judged` tuple driving two different things — whether to print the score, and

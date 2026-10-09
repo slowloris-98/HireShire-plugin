@@ -232,6 +232,76 @@ def _attempt(db: Database, job_id: str, status: str = "error") -> None:
                       "Stuck on a required question — check whether it was submitted.")
 
 
+
+def test_the_deferral_column_reaches_an_already_migrated_file(tmp_path):
+    """The first `_ADDED_COLUMNS` entry naming `postings` rather than a legacy table.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op on a v2 file, so adding the column to
+    `_POSTINGS_DDL` alone would leave every existing install without it and the first
+    write would fail with "no such column". The mechanism was only ever exercised
+    against the four tables the merge deleted, so this is the case nothing covered.
+    """
+    path = tmp_path / "v2.db"
+    db = Database(path)
+    _shortlisted(db, "j1", "r1")
+    # Stand in for a file written before the column existed. The rest of the table is
+    # current, which is exactly the shape `_add_missing_columns` has to handle.
+    db._conn.execute("ALTER TABLE postings DROP COLUMN apply_deferred_at")
+    db._conn.commit()
+
+    reopened = Database(path)
+    columns = {r["name"]
+               for r in reopened._conn.execute("PRAGMA table_info(postings)")}
+    assert "apply_deferred_at" in columns
+    # And the write that would have failed now works.
+    assert reopened.record_apply_deferral("j1", "acme", "2026-10-09T12:00:00+00:00") == 1
+
+
+def test_a_deferral_is_noted_without_becoming_an_application(tmp_path):
+    """The whole invariant: the note must be inert to every existing reader.
+
+    A deferral is not an application, so `apply_status` stays NULL and the job stays in
+    `load_pending_applications` — the retrying is unchanged, which is the point. If
+    this ever wrote a status the backlog would stop seeing the job, and a deferral
+    would silently become a verdict.
+    """
+    db = Database(tmp_path / "t.db")
+    _shortlisted(db, "j1", "r1")
+
+    assert db.record_apply_deferral("j1", "acme", "2026-10-09T12:00:00+00:00") == 1
+
+    (row,) = db.load_all_matches("r1")
+    assert row["apply_deferred_at"] == "2026-10-09T12:00:00+00:00"
+    assert row["shortlisted"] is True
+    # Still pending, still retried, and not an application.
+    assert [r["job_id"] for r in
+            db.load_pending_applications("2026-01-01T00:00:00+00:00")] == ["j1"]
+    assert db.load_applied() == []
+    assert db.applied_ids() == set()
+
+
+def test_a_verdict_clears_the_deferral_note(tmp_path):
+    """The note must not outlive its cause, or the page says a job is being retried
+    when it has already been applied to or declined."""
+    def noted(db):
+        with db._lock:
+            return db._conn.execute(
+                "SELECT apply_deferred_at FROM postings WHERE job_id='j1'"
+            ).fetchone()["apply_deferred_at"]
+
+    db = Database(tmp_path / "t.db")
+    _shortlisted(db, "j1", "r1")
+    db.record_apply_deferral("j1", "acme", "2026-10-09T12:00:00+00:00")
+
+    db.record_applied("j1", "acme", "T", "u", "2026-10-09T13:00:00+00:00",
+                      "submitted", None, None)
+    assert noted(db) is None, "a recorded application left the retry line standing"
+
+    # And `decline_job`, the one writer that clears every apply column.
+    db.record_apply_deferral("j1", "acme", "2026-10-09T14:00:00+00:00")
+    db.decline_job("j1")
+    assert noted(db) is None
+
 def test_where_an_application_came_from_round_trips(tmp_path):
     """The backlog flag is stored because it cannot be derived: `applied` has no
     `run_id`, so after the fact nothing can tell which sweep did the applying."""

@@ -758,6 +758,45 @@ def test_a_session_with_no_browser_tools_is_deferred_not_recorded(
     assert "no browser tools" in caplog.text
 
 
+def test_a_browser_deferral_is_noted_but_still_retried(tmp_path, launcher):
+    """The note records WHEN, and changes nothing about the retrying.
+
+    Both halves matter. The timestamp is what lets the overview say a shortlisted job
+    is being retried rather than merely queued — a deferral writes no status, so there
+    is nothing else to tell them apart. And the job must still be pending afterwards:
+    if noting it ever set a status, the backlog would stop seeing it and the deferral
+    would become the verdict this whole path exists to avoid.
+    """
+    _, script, _ = launcher
+    script.append(_outcome(status="error", error="Browser tools unavailable"))
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    stats, _ = _run(tmp_path, [_job("j1")], db=db)
+
+    assert stats["deferred"] == 1 and _statuses(db) == {}
+    (row,) = db.load_all_matches("r0")
+    assert row["apply_deferred_at"], "nothing noted, so the page cannot say why"
+    assert row["shortlisted"] is True
+    # The backlog still has it, which is what "still retried" means.
+    assert [r["job_id"] for r in
+            db.load_pending_applications("2026-01-01T00:00:00+00:00")] == ["j1"]
+
+
+def test_an_ordinary_launch_failure_notes_nothing(tmp_path, launcher):
+    """Only the browser case is noted. A host that could not start the CLI at all says
+    nothing about the browser, and a line claiming otherwise would send the user
+    looking in the wrong place."""
+    _, script, _ = launcher
+    script.append(_Proc(rc=1))
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    stats, _ = _run(tmp_path, [_job("j1")], db=db)
+
+    assert stats["deferred"] == 1
+    (row,) = db.load_all_matches("r0")
+    assert not row["apply_deferred_at"]
+
+
 @pytest.mark.parametrize("stored", [
     # Every wording one real install stored for this one cause. Free text is why they
     # did not group on the page, which is what hid how often it was happening.
