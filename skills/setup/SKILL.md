@@ -171,7 +171,7 @@ rather than one call per question:
 | phase | keys |
 |---|---|
 | `scraper` | `location_filter`, `max_age_hours`, `enabled_platforms`, `poll_interval_hours`, `workspace_dir` |
-| `matcher` | `threshold`, `provider`, `model`, `effort`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
+| `matcher` | `threshold`, `provider`, `model`, `effort`, `skip_llm`, `resume_path`, `search_profile_path`, `include_keywords`, `exclude_keywords` |
 | `funnel` | `targets`, `top_k`, `rerank_min_score` |
 | `applier` | `enable_applier`, `provider`, `model`, `effort`, `resume_path`, `first_name`, `last_name`, `email`, `phone`, `linkedin_url`, `github_url`, `portfolio_url`, `postal_code`, `education`, `work_authorized`, `requires_sponsorship`, `willing_to_relocate`, `gender`, `race_ethnicity`, `disability`, `veteran_status`, `max_per_company`, `company_window_hours` |
 
@@ -606,7 +606,7 @@ Four things that trip people up:
      would fail every scoring call in the sweep:
 
      ```bash
-     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "claude_code", "model": "<model>", "effort": "low"}'
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "claude_code", "model": "<model>", "effort": "low", "skip_llm": false}'
      ```
 
      This model judges jobs during a sweep and nothing else. It has no bearing on the
@@ -632,18 +632,60 @@ Four things that trip people up:
      Claude name, the engine refuses it for this provider:
 
      ```bash
-     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "codex", "model": "<model>", "effort": "low"}'
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "codex", "model": "<model>", "effort": "low", "skip_llm": false}'
      ```
    - **An API key** (`openai` etc.) — tell them to put the key in their
      environment and install `requirements-byo-key.txt` into the plugin venv. Write the
      provider and a model for it, for the reason above:
 
      ```bash
-     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "openai", "model": "<model>"}'
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"provider": "openai", "model": "<model>", "skip_llm": false}'
      ```
+   - **No LLM scoring** (`skip_llm`) — offer this last, and only as itself: pick it
+     if they want the **scraping side only**. HireShire sweeps the boards and collects
+     the jobs that match, for them to read themselves; nothing judges them, and no
+     Claude allowance, ChatGPT plan or API key is used.
+
+     Write `skip_llm` along with a coherent `provider` and `model`, so the file is left
+     in a state where turning scoring back on by hand works:
+
+     ```bash
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set matcher --json '{"skip_llm": true, "provider": "claude_code", "model": "claude-sonnet-5", "effort": "low"}'
+     ```
+
+     Lead with what this mode **is**, not with what it lacks. Sweeps run as normal and
+     the results CSV and dashboard fill up as usual — only the judging step is skipped.
+     Jobs are chosen by the funnel on their own machine: the title keywords from
+     question 6, the encoder, and the cross-encoder reading each full description
+     against their profile.
+
+     Then tell them the three things that actually change:
+
+     - **Every job passing the funnel is shortlisted**, so `threshold` stops applying
+       and the shortlist will be longer than a judged sweep's.
+     - `funnel.rerank.min_score` becomes the only quality dial. Raising it is how they
+       tighten the shortlist; `scripts/calibrate_cutoffs.py` cannot help them pick a
+       value, because it derives one from scored postings.
+     - The dashboard shows an em dash in the LLM column and carries no rationales —
+       the judge's reasoning is the only prose on that page.
+
+     Say that scoring can be turned on later by re-running this setup.
 
 11. **Auto-apply?** → `applier.enable_applier`. Default to **no**, and only turn it
     on if they ask for it. If yes, gather two things before writing anything.
+
+    **If question 10 chose no LLM scoring, do not ask this.** Write the gate off and
+    say why in one line — they chose the scraping side only, and nothing has judged
+    these jobs, so submitting real applications to that shortlist unattended is off.
+    Tell them auto-apply becomes available again if they re-run setup with scoring on.
+
+    ```bash
+    sh "${CLAUDE_PLUGIN_ROOT}/scripts/hireshire.sh" scripts/setup_cli.py set applier --json '{"enable_applier": false}'
+    ```
+
+    Write the key rather than leaving it to the default: these files survive re-runs,
+    so a user who had auto-apply on and has now switched to scraping only must
+    actually have it turned off.
 
     **Contact details and links, read off the resume.** You already have its text
     from question 6. Pull out first name, last name, email, phone, a LinkedIn URL, a
