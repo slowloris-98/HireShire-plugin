@@ -4,6 +4,30 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.25.1] — 2026-10-08
+
+### Fixed
+
+- **Auto-apply on Codex was giving up on jobs without opening the browser, and then
+  throwing them away.** If you had `applier.provider: codex`, a session would sometimes
+  decide it had no browser tools and stop a few seconds in — on one install 8 of 10
+  applications in a day failed this way, against none at all on Claude Code. The
+  browser was attached and working the whole time; the model simply did not look for
+  its tools before concluding they were missing. It is now told they are there and to
+  check first, which fixed every attempt in repeated testing.
+
+  **The more expensive half: those jobs were being retired permanently.** A job that
+  failed this way was recorded as a finished, failed application, so HireShire never
+  tried it again — even though nothing had actually been attempted and the next sweep
+  would most likely have succeeded. It is now treated the same as any other session
+  that could not start: nothing is recorded, and the job goes back in the queue to be
+  retried. Jobs lost this way before updating are not recovered automatically; they
+  appear under Needs Attention, and you can use **I applied** / **Not pursuing** on the
+  dashboard, or re-shortlist them by letting a later sweep rescore them.
+
+  Related: the three different wordings this failure used to be stored under now read
+  as one line on the dashboard instead of looking like three unrelated problems.
+
 ## [0.25.0] — 2026-10-03
 
 ### Changed

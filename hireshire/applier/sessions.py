@@ -13,7 +13,8 @@ shortlisted for the backlog — a *deferral*. Retrying a job on the other CLI wo
 second browser session against a form the first may already have submitted, which is
 the one thing the applier must never risk.
 
-The two CLIs differ in four ways that each needed probing (codex-cli 0.157.0):
+The two CLIs differ in four ways that each needed probing (measured on codex-cli
+0.157.0, all four re-verified unchanged on 0.160.1):
 
 * **Codex exposes MCP tools under their bare names** (`browser_navigate`), with the
   server as a separate field on the event rather than part of the tool name. Claude
@@ -43,6 +44,29 @@ The two CLIs differ in four ways that each needed probing (codex-cli 0.157.0):
 `--output-schema` does survive with MCP tools active at this version with this
 `--disable` list, which openai/codex#15451 warns it may not; that was the gate this
 feature had to clear before any of it was written.
+
+**Whether the model USES the browser tools is nondeterministic, and that is a separate
+thing from whether they are there.** On 0.160.1, six identical runs of the shipped argv
+made a real `mcp_tool_call` three times; the other three concluded the browser was
+unavailable and gave up in 7-10 s, against 12-14 s for the ones that worked. In
+production that showed as 8 failed applications against 2 submitted in one day, each
+failing session ending in 4-12 s where a real one takes 2-4 minutes. The tools are
+present and callable throughout — what varies is whether the model looks for them.
+`apply_one.md` therefore tells it the server is attached and to search before
+concluding anything, which took the same probe to six of six, and `worker.apply_one`
+turns the answer into a *deferral* so the backstop cannot retire a job.
+
+Two fixes that look right and are not, both measured on 0.160.1. Do not apply either:
+
+* **`tool_prefix` is still `""` for codex.** A real call emits
+  `mcp_tool_call server='playwright' tool='browser_navigate'` — bare name, server in
+  its own field, exactly as the first bullet above says. Setting
+  `"mcp__playwright__"` here would name a tool that is not callable and break every
+  application. `tests/test_codex_applier.py` pins the empty prefix.
+* **`--disable tool_search_always_defer_mcp_tools` changes nothing.** The name is
+  accepted in 0.160.1 (the feature is `removed`, defaulting on) so it fails silently
+  rather than loudly, but a probe carrying it still reported no browser tool. The
+  deferral is not what is going wrong.
 """
 
 from __future__ import annotations

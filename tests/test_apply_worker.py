@@ -730,6 +730,64 @@ def test_a_windows_launch_failure_is_named_and_deferred(tmp_path, launcher, capl
     assert "0xC0000142 STATUS_DLL_INIT_FAILED" in caplog.text
 
 
+def test_a_session_with_no_browser_tools_is_deferred_not_recorded(
+        tmp_path, launcher, caplog):
+    """A session that never got its browser tools reached no verdict about the job.
+
+    It exits cleanly, which every other clean ending treats as a verdict — but with no
+    browser it cannot have opened the posting, let alone clicked submit, so there is no
+    second application to protect against. Recording it retired the job permanently on
+    a fact about the *session*: on one install 11 jobs were discarded this way while
+    the cause was still intermittent.
+
+    So: no `applied` row, the job stays shortlisted for the backlog, and it counts as a
+    deferral.
+    """
+    _, script, _ = launcher
+    script.append(_outcome(
+        status="error", error="Browser automation tools are unavailable in this session."))
+    db = Database(tmp_path / "test.db")
+    _match(db, "r0", "j1")
+    with caplog.at_level("WARNING", logger=worker.logger.name):
+        stats, _ = _run(tmp_path, [_job("j1")], db=db)
+
+    assert _statuses(db) == {}, "a job with no browser session was recorded as applied"
+    assert stats["deferred"] == 1 and stats["error"] == 0
+    (row,) = db.load_all_matches("r0")
+    assert row["shortlisted"] is True, "the backlog can no longer retry this job"
+    assert "no browser tools" in caplog.text
+
+
+@pytest.mark.parametrize("stored", [
+    # Every wording one real install stored for this one cause. Free text is why they
+    # did not group on the page, which is what hid how often it was happening.
+    "Browser automation tools are unavailable",
+    "Browser automation tools are unavailable in this session.",
+    "Browser automation tools unavailable",
+    "Browser tools unavailable",
+    "Retry with Playwright browser tools enabled",
+    reasons.BROWSER_UNAVAILABLE,
+])
+def test_every_wording_of_a_missing_browser_reads_as_one_label(stored):
+    """`short_label` collapses the free text already in the database onto one label, so
+    rows written before this existed read as one cause rather than five."""
+    assert reasons.short_label("error", stored) == reasons.BROWSER_UNAVAILABLE
+
+
+@pytest.mark.parametrize("stored, label", [
+    ("This job is no longer available", reasons.POSTING_CLOSED),
+    ("404 not found", reasons.POSTING_CLOSED),
+    ("Manual application required.", reasons.MANUAL_REQUIRED),
+    ("Submit not confirmed — check before reapplying", reasons.SUBMIT_UNCONFIRMED),
+    ("Not a job posting", reasons.NOT_A_JOB),
+])
+def test_the_browser_rule_does_not_swallow_the_causes_around_it(stored, label):
+    """The rule matches on "browser"/"automation", and sits ahead of `POSTING_CLOSED`
+    because "no longer available" would otherwise claim a browser message. Neither may
+    take the other's rows: one is a deferral and the rest are verdicts."""
+    assert reasons.short_label("error", stored) == label
+
+
 def test_a_failed_session_logs_the_reason_the_cli_gave(tmp_path, launcher, caplog):
     """Nine `exited 1` deferrals in one night logged their token counts and no reason:
     the envelope's bookkeeping outran the clip before `result`, which is the only part
