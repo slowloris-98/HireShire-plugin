@@ -35,6 +35,18 @@ MANUAL_REQUIRED = "Manual application required."
 #: the no-double-apply rule depends on.
 SUBMIT_UNCONFIRMED = "Submit not confirmed — check before reapplying"
 
+#: The session never got the browser tools it needs, so it reached no verdict about the
+#: job. A DEFERRAL, and the only label in this module that is one: a session with no
+#: browser cannot have submitted anything, so the no-double-apply rule that makes
+#: `SUBMIT_UNCONFIRMED` a verdict does not apply here. `worker.apply_one` turns it into
+#: an `ApplyLaunchError`, so nothing is recorded and the backlog retries the job.
+#:
+#: It is still spelled here, and still matched by `short_label`, because rows written
+#: before the deferral existed hold this cause as free text — one real install stored it
+#: in three wordings, which is why nothing grouped them and the scale of the fault was
+#: invisible.
+BROWSER_UNAVAILABLE = "Browser tools unavailable — will retry"
+
 POSTING_CLOSED = "Posting closed"
 REJECTED = "Rejected by employer"
 NOT_A_JOB = "Not a job posting"
@@ -105,6 +117,10 @@ _RULES: tuple[tuple[str, str], ...] = (
     (HUMAN_VERIFICATION, r"verification code|one-time (pass)?code|\botp\b|captcha"
                          r"|sign[- ]?in (is )?required|sign in to apply|account login"),
     (NOT_A_JOB, r"^not a job"),
+    # Before POSTING_CLOSED, whose "no longer available" would also match a message
+    # about browser tools being unavailable.
+    (BROWSER_UNAVAILABLE, r"browser.{0,20}(tool|automation)|(tool|automation).{0,20}browser"
+                          r"|playwright.{0,30}(unavailable|not available|enabled)"),
     (SUBMIT_UNCONFIRMED, r"not confirmed|unconfirmed|timed out|without a result"),
     (POSTING_CLOSED, r"\b404\b|no longer (open|available|accepting)|posting (is )?closed"
                      r"|job (looks|is|likely) closed|redirected to the .*job board"),

@@ -10,6 +10,13 @@ The browser tools you need are `browser_navigate`, `browser_snapshot`, `browser_
 `browser_take_screenshot`, named `{{TOOL_PREFIX}}browser_navigate` and so on: the
 sweep that started you loads the plugin's browser server directly.
 
+**A browser server named `playwright` IS attached to this session.** Its tools may not
+appear in the tool list you were given up front — they can be held back until you look
+for them. If you do not see `{{TOOL_PREFIX}}browser_navigate`, search your available
+tools for it and call it anyway. Never conclude the browser is unavailable without
+searching first, and never answer that it is missing as your first move: that answer is
+almost always wrong, and it costs the user the application.
+
 The resume is the ground truth for every question about the applicant, followed by the
 screening answers in the applicant's details. The job description may shape how an
 answer is *framed* — which experience to lead with, which of the employer's words to
@@ -164,6 +171,7 @@ Exactly one of:
   | The employer refused the application (e.g. too many recent applications) | `Rejected by employer` |
   | The page is not a job (an event, a workshop registration) | `Not a job posting` |
   | A cover letter is required and `generate_cover_letter` is false | `Cover letter required (generation is off)` |
+  | The browser tools are genuinely absent and a tool search did not find them | `Browser tools unavailable — will retry` |
   | A required question these rules cannot answer | `Required question: <topic>` |
 
   `<topic>` is one of `work authorization`, `citizenship / clearance`, `GPA`,

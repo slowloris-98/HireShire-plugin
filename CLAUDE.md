@@ -1336,6 +1336,42 @@ Four things about the applier that are easy to break:
     `build_prompt` substitutes, and is **never forked** — the no-fabrication rules, the
     bot-question rule, the location rule and the Needs Attention labels stay in one
     place. A test asserts no prompt reaches a model with the token still in it.
+
+    Still true on 0.160.1, where it was re-checked because it looked like the cause of
+    a live failure and is the one change here that would break everything: a real call
+    emits `mcp_tool_call server='playwright' tool='browser_navigate'`. **Do not set
+    `tool_prefix = "mcp__playwright__"` for codex** — that name is not callable, and
+    `tests/test_codex_applier.py` pins the empty prefix against exactly that edit.
+  - **Whether the model USES the browser tools is nondeterministic, and that is not the
+    same question as whether they are attached.** Measured on 0.160.1: six identical
+    runs of the shipped argv, three made a real `mcp_tool_call` and three declared the
+    browser unavailable and gave up in 7-10 s, against 12-14 s for the ones that
+    worked. Live, that was 8 failed applications against 2 submitted in a day, each
+    failure ending in 4-12 s where a real application takes 2-4 minutes — and **zero**
+    in 199 applications on `claude_code`, which is what made it look provider-related
+    rather than a coin flip.
+
+    Two things follow, and the second is the one that cost real applications:
+
+    - `apply_one.md` says the server **is** attached and to search for the tools before
+      concluding anything, which took the same probe to **six of six**. That paragraph
+      is load-bearing, not reassurance.
+    - **A session with no browser tools is a DEFERRAL**, raised as `ApplyLaunchError`
+      by `worker.apply_one` — the one clean ending that is not a verdict. With no
+      browser it cannot have opened the posting, let alone clicked submit, so the
+      no-double-apply rule that makes every other clean ending a verdict has nothing to
+      protect. Recorded, it retired the job permanently on a fact about the *session*;
+      11 jobs went that way on one install. Because the model writes the cause as free
+      text — three wordings for one cause — the rows did not group either, so a query
+      for one wording found 3 of the 11. `reasons.BROWSER_UNAVAILABLE` and its
+      `short_label` rule collapse the stored text; the rule sits ahead of
+      `POSTING_CLOSED`, whose "no longer available" would otherwise claim it. **No
+      retry counter** — `backlog_hours` already bounds it, and counting a host-level
+      fault would retire a whole sweep's shortlist.
+
+    `--disable tool_search_always_defer_mcp_tools` is **not** the fix and must not be
+    added: the name is accepted on 0.160.1 (the feature is `removed`, defaulting on) so
+    it fails silently, and a probe carrying it still reported no browser tool.
   - **A failed turn is `SUBMIT_UNCONFIRMED`, not a deferral**, and this is where the
     mapping deliberately differs from `CodexBackend`'s, which raises for the matcher to
     retry. A session that drove a form for ten minutes and then failed its turn may

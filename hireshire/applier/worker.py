@@ -451,7 +451,7 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
         raise ApplyLaunchError(detail)
 
     try:
-        return session.parse(stdout)
+        outcome = session.parse(stdout)
     except UnreadableResult as exc:
         # A VERDICT, not a deferral: the session exited cleanly, so it may already have
         # clicked submit. Recorded as an `error` telling the user to check, because the
@@ -461,6 +461,31 @@ async def apply_one(job: dict, settings: ApplierSettings, dirs: SessionDirs,
             status="error",
             error=reasons.SUBMIT_UNCONFIRMED,
         )
+
+    # A session that never got its browser tools is a DEFERRAL, not a verdict, and this
+    # is the one clean exit that is. It reached no verdict about the job: with no
+    # browser it cannot have opened the posting, let alone clicked submit, so the
+    # no-double-apply rule that makes every other clean ending a verdict has nothing to
+    # protect here. Recording it was expensive in both directions — the job was retired
+    # permanently on a fact about the *session*, and because the model writes the cause
+    # as free text (three wordings on one install) the rows did not group, so the scale
+    # of it was invisible on the page. Raising re-uses the launch-failure path exactly:
+    # nothing is recorded, `stats["deferred"]` counts it, the breaker counts it, and
+    # `load_pending_applications` hands the job back next sweep.
+    #
+    # Measured on codex-cli 0.160.1: the MCP tools are present and callable, but the
+    # model sometimes concludes they are absent without looking (3 of 6 identical runs).
+    # `apply_one.md` tells it to search first, which took that to 6 of 6; this is the
+    # backstop for when it does not, and it must stay a deferral however the prompt
+    # performs. No retry counter: `backlog_hours` bounds it, and counting a host-level
+    # fault would retire a whole sweep's shortlist.
+    if outcome.status == "error" and reasons.short_label(
+        outcome.status, outcome.error
+    ) == reasons.BROWSER_UNAVAILABLE:
+        raise ApplyLaunchError(
+            f"the apply session reported no browser tools: {outcome.error}"
+        )
+    return outcome
 
 
 async def run_apply_worker(
