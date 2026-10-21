@@ -125,7 +125,7 @@ BambooHR are off by default because they are slow: Workday is POST-based and Bam
 needs two requests per company. Turning them on is one answer during setup, and it
 makes each run considerably longer.
 
-That 41,907 is the shipped list, not a promise of 41,907 live boards. A fair number
+That 42,267 is the shipped list, not a promise of 42,267 live boards. A fair number
 of them answer "no board here" on any given day — a company that moved platforms,
 or one that has taken its board down. Every slug is tried on every run anyway: a
 slug with no board is recorded against that run and tried again on the next one.

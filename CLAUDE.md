@@ -1447,9 +1447,9 @@ suppresses Rich in favour of `logging` — required under the monitor.
 ## Things that are easy to get wrong
 
 - **Board defaults.** Workday and BambooHR default **off**, and they are the two
-  biggest lists: 24,200 companies held back against 17,707 swept (greenhouse 9,071,
-  lever 4,370, ashby 4,260, direct 6), out of 41,907 shipped. `docs/SPECS.md` leads with
-  40,000+ but must state plainly that the default sweep is ~17,707. Setup presents it
+  biggest lists: 24,200 companies held back against 18,067 swept (greenhouse 9,293,
+  lever 4,393, ashby 4,375, direct 6), out of 42,267 shipped. `docs/SPECS.md` leads with
+  40,000+ but must state plainly that the default sweep is ~18,067. Setup presents it
   as a time trade-off — and **no specific multiplier has been measured yet**, so say
   "considerably longer", not "3x". These counts come from `config/*_companies.json`
   and grow between releases; re-derive them rather than copying this paragraph.
