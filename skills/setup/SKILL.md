@@ -571,12 +571,12 @@ Four things that trip people up:
 8. **Which job boards** → `enabled_platforms` (phase `scraper`), a list. Present as
    a time trade-off, not a list of vendor names:
 
-   > The default sweep covers about 16,000 employers. Turning on the two slower
+   > The default sweep covers about 18,000 employers. Turning on the two slower
    > board types adds roughly 24,000 more, but each run takes considerably
    > longer.
 
-   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~17,707 companies. Adding
-   `workday` and `bamboohr` takes it to 41,907. Do not quote a specific
+   Default (`greenhouse`, `ashby`, `lever`, `direct`) is ~18,067 companies. Adding
+   `workday` and `bamboohr` takes it to 42,267. Do not quote a specific
    multiplier for the extra time — nobody has timed it yet. Say "considerably
    longer" until a real timed run exists.
 

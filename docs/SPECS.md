@@ -112,20 +112,20 @@ engineering.
 |---|---:|:--:|
 | Workday | 12,884 | |
 | BambooHR | 11,316 | |
-| Greenhouse | 9,071 | ✓ |
-| Lever | 4,370 | ✓ |
-| Ashby | 4,260 | ✓ |
+| Greenhouse | 9,293 | ✓ |
+| Lever | 4,393 | ✓ |
+| Ashby | 4,375 | ✓ |
 | Direct portals | 6 | ✓ |
-| **Total** | **41,907** | **17,707** |
+| **Total** | **42,267** | **18,067** |
 
-**The default sweep is 17,707 of these** — Greenhouse, Ashby, Lever and the direct
+**The default sweep is 18,067 of these** — Greenhouse, Ashby, Lever and the direct
 portals (Amazon, Apple, Google, Intuit, Meta, Microsoft, which post outside the big
 platforms). Workday and
 BambooHR are off by default because they are slow: Workday is POST-based and BambooHR
 needs two requests per company. Turning them on is one answer during setup, and it
 makes each run considerably longer.
 
-That 41,907 is the shipped list, not a promise of 41,907 live boards. A fair number
+That 42,267 is the shipped list, not a promise of 42,267 live boards. A fair number
 of them answer "no board here" on any given day — a company that moved platforms,
 or one that has taken its board down. Every slug is tried on every run anyway: a
 slug with no board is recorded against that run and tried again on the next one.
