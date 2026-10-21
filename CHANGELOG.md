@@ -4,6 +4,22 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.26.0] — 2026-10-21
+
+### Added
+
+- **360 more employers are now swept.** Greenhouse goes from 9,071 boards to 9,293,
+  Ashby from 4,260 to 4,375 and Lever from 4,370 to 4,393 — so a default sweep now
+  covers 18,067 employers instead of 17,707, and those new boards had 14,782 openings
+  between them on the day they were added.
+
+  Every one was checked against the board's own API before being added, and was only
+  admitted if it answered with at least one live posting. Nothing was removed: a board
+  that is quiet today is still worth asking tomorrow, so these lists only ever grow.
+
+  Lever is the surprise here, with 23 new boards. That host is normally almost invisible
+  to the crawler these candidates come from, and past passes have found nearly nothing.
+
 ## [0.25.2] — 2026-10-09
 
 ### Added

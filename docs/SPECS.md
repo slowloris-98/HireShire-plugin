@@ -112,13 +112,13 @@ engineering.
 |---|---:|:--:|
 | Workday | 12,884 | |
 | BambooHR | 11,316 | |
-| Greenhouse | 9,071 | ✓ |
-| Lever | 4,370 | ✓ |
-| Ashby | 4,260 | ✓ |
+| Greenhouse | 9,293 | ✓ |
+| Lever | 4,393 | ✓ |
+| Ashby | 4,375 | ✓ |
 | Direct portals | 6 | ✓ |
-| **Total** | **41,907** | **17,707** |
+| **Total** | **42,267** | **18,067** |
 
-**The default sweep is 17,707 of these** — Greenhouse, Ashby, Lever and the direct
+**The default sweep is 18,067 of these** — Greenhouse, Ashby, Lever and the direct
 portals (Amazon, Apple, Google, Intuit, Meta, Microsoft, which post outside the big
 platforms). Workday and
 BambooHR are off by default because they are slow: Workday is POST-based and BambooHR
