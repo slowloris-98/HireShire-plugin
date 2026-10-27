@@ -1324,6 +1324,50 @@ class Database:
             for r in rows
         ]
 
+    def count_seen(self, run_id: str | None, verdicts: Sequence[str],
+                   run_ids: Sequence[str] | None = None) -> int:
+        """How many jobs the overview's `Total Jobs Seen` section holds, uncapped.
+
+        The section lists at most `MAX_TAIL_ROWS`, so its length is not its size. This
+        counts the same two halves it is built from: postings nothing scored, filed
+        under the sweep that first saw them (`load_unmatched_jobs`), and scored postings
+        a free gate retired — `verdicts`, which the caller passes from
+        `data._FREE_GATE_VERDICTS` so the list is spelled once — filed under the sweep
+        that reached the verdict. A job with an application record is in neither,
+        because the page puts it under Jobs Applied or Needs Attention.
+
+        Index-backed at run and day scope. Lifetime has no scope filter and scans
+        `postings`, so it rides the lifetime throttle like the other lifetime reads.
+
+        **"Never scored" is `scored_at IS NULL` here, not `match_json IS NULL`.** They
+        are the same fact — `upsert_match` is the only writer of a verdict and sets
+        both in one statement — but `match_json` sits behind `job_json` in the row, so
+        testing it walks every posting's overflow chain: 14.2 s against 0.55 s on a
+        199,433-row install, every minute of a sweep. The loaders can afford the wide
+        test because they stop at a LIMIT; a count cannot.
+        """
+        if run_ids is not None and not run_ids:
+            return 0
+        ids = tuple(run_ids or ())
+        if run_id:
+            first, scored, scope = "first_run_id = ?", "scored_run_id = ?", (run_id,)
+        elif ids:
+            first = self._in_clause(ids, "first_run_id")
+            scored = self._in_clause(ids, "scored_run_id")
+            scope = ids
+        else:
+            first = scored = "1"
+            scope = ()
+        marks = ",".join("?" * len(verdicts)) or "NULL"
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM postings WHERE apply_status IS NULL AND ("
+                f"(scored_at IS NULL AND {first})"
+                f" OR ({self._SCORED} AND skip_reason IN ({marks}) AND {scored}))",
+                (*scope, *verdicts, *scope),
+            ).fetchone()
+        return int(row[0])
+
     def load_applied_matches(self, run_id: str | None = None,
                              run_ids: Sequence[str] | None = None) -> list[dict]:
         """Every application, carrying the posting's verdict where it has one.
