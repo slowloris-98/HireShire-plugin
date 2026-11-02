@@ -337,6 +337,9 @@ class _ReportDB:
                  "absolute_url": "https://example.com/j99",
                  "gate_reason": "title_excluded"}]
 
+    def count_seen(self, run_id, verdicts, run_ids=None):
+        return 1
+
     def run_progress(self, run_id):
         return {"run_id": run_id, "companies_total": 9641, "companies_done": 9641,
                 "jobs_processed": 8504, "apply_enabled": 0, "apply_queued": 0,

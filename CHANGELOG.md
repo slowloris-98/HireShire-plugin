@@ -4,6 +4,16 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.26.1] — 2026-11-02
+
+### Fixed
+
+- **"Total Jobs Seen" now shows the real number.** The section only lists the first
+  5,000 jobs, to keep the page small enough to reload every few seconds, and its header
+  was counting that list rather than the jobs behind it — so on the lifetime dashboard it
+  read exactly 5,000 however many there were. The header now counts every job in the
+  section (one real install had over 184,000), while the list below it stays capped.
+
 ## [0.26.0] — 2026-10-21
 
 ### Added

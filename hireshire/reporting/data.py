@@ -579,7 +579,8 @@ def day_summary(db: Database, run_ids: list[str]) -> dict[str, Any]:
 # Caps on what the overview page renders. A closed `<details>` still costs its full
 # DOM, so an uncapped lifetime page on a mature install would be tens of megabytes
 # reloading itself every fifteen seconds. The summaries print the true count either
-# way, so a capped list says how much it is not showing.
+# way, so a capped list says how much it is not showing — for the last section that
+# takes `Database.count_seen`, because its rows are loaded with a LIMIT.
 MAX_JOB_ROWS = 300
 MAX_TAIL_ROWS = 5000
 
@@ -684,7 +685,9 @@ def overview_snapshot(
         "filtered": filtered[:MAX_JOB_ROWS],
         "filtered_total": len(filtered),
         "seen": seen[:MAX_TAIL_ROWS],
-        "seen_total": len(seen),
+        # Counted, not `len(seen)`: the list stops at MAX_TAIL_ROWS and on a lifetime
+        # page the section is routinely larger than that.
+        "seen_total": db.count_seen(run_id, _FREE_GATE_VERDICTS, run_ids=run_ids),
         "started_at": None,
         "finished_at": None,
         "usage": None,

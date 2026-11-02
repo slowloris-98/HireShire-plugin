@@ -484,6 +484,23 @@ def test_a_re_sighted_title_gate_job_leaves_the_section_but_not_the_tile(tmp_pat
     assert older["seen"][0]["gate_reason"] == "title_excluded"
 
 
+def test_the_last_section_prints_its_true_size_past_the_row_cap(tmp_path, monkeypatch):
+    """The list stops at `MAX_TAIL_ROWS`; the count in its summary must not. It used to
+    be `len()` of the capped list, so every lifetime page read exactly 5,000."""
+    monkeypatch.setattr(data, "MAX_TAIL_ROWS", 1)
+    db = _populated(tmp_path)
+    db.insert_jobs(RUN, [_job("j8", title="Barista"), _job("j9", title="Barista")])
+    _apply(db, "j10", status="excluded")   # an application is never in this section
+
+    for run_id in (RUN, None):
+        snap = _snapshot(db, run_id)
+        assert len(snap["seen"]) == 1
+        assert snap["seen_total"] == 3   # j3, the cutoff drop, plus j8 and j9
+        assert '<span class="n">3</span>' in overview.build(snap, run_id)
+
+    assert db.count_seen(None, data._FREE_GATE_VERDICTS, run_ids=[]) == 0
+
+
 def test_the_sql_judged_predicate_matches_never_scored(tmp_path):
     """`db._judged_sql` has to reach inside `match_json` for `cluster_representative`,
     because no column carries it. Keying off `skip_reason` instead looks equivalent
