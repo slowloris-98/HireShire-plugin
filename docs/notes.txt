@@ -15,6 +15,7 @@ New companies:
 Qualcomm
 RV tech
 applied materials
+Lumen
 
 
 Debug:

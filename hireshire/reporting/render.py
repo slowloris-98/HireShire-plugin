@@ -168,6 +168,11 @@ h1 {
   background: var(--panel); color: var(--ink);
   border: 1px solid var(--rule); border-radius: 3px;
 }
+.toolbar select {
+  padding: .5rem .6rem; font-size: .85rem;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 3px;
+}
 .filter-note { font-size: .78rem; color: var(--ink-faint); }
 .blank { color: var(--ink-faint); }
 

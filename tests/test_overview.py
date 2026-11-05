@@ -1201,6 +1201,47 @@ def test_a_row_carries_a_lowercased_filter_haystack(tmp_path):
         assert part in hay
 
 
+def _attr(block: str, name: str) -> str:
+    return block.split(f'{name}="')[1].split('"')[0]
+
+
+def test_a_row_carries_its_sort_keys(tmp_path):
+    """Posting date as epoch seconds and the LLM score the row displays, read by the
+    section's sort control."""
+    db = _populated(tmp_path)
+    posted = db.get_jobs(["j2"])["j2"].updated_at
+    block = _job_block(overview.build(_snapshot(db), RUN), "j2")
+    assert _attr(block, "data-llm") == "71"
+    assert _attr(block, "data-posted") == str(int(posted.timestamp()))
+
+
+def test_a_placeholder_zero_is_not_a_sort_key(tmp_path):
+    """j5's representative failed: the row shows an em dash, so it must sort as blank
+    rather than rank as a genuine score of 0."""
+    block = _job_block(overview.build(_snapshot(_populated(tmp_path)), RUN), "j5")
+    assert _attr(block, "data-llm") == ""
+
+
+def test_a_bad_posting_date_is_blank_and_does_not_raise():
+    assert overview._epoch(None) == ""
+    assert overview._epoch("") == ""
+    assert overview._epoch("not a date") == ""
+    assert overview._epoch("2026-09-09T07:00:00+00:00") == str(
+        int(datetime(2026, 9, 9, 7, tzinfo=timezone.utc).timestamp()))
+    # Naive reads as UTC.
+    assert overview._epoch("2026-09-09T07:00:00") == overview._epoch(
+        "2026-09-09T07:00:00+00:00")
+
+
+def test_every_server_rendered_section_has_one_sort_control(tmp_path):
+    """One per section that lists jobs as markup; the script-built tail has none."""
+    html = overview.build(_snapshot(_populated(tmp_path)), RUN)
+    assert html.count('class="f-sort"') == html.count('class="f-box"')
+    assert html.count('class="f-sort"') >= 1
+    tail = html.split('id="acc:seen"')[1]
+    assert 'class="f-sort"' not in tail
+
+
 def test_the_rank_is_stamped_server_side(tmp_path):
     """The same rule the paginated section follows: row 214 stays row 214 rather
     than becoming "the third result for nurse"."""
