@@ -26,6 +26,7 @@ from hireshire.config import load_config
 from hireshire.http_client import build_client
 from hireshire.scrapers.ashby import AshbyScraper
 from hireshire.scrapers.bamboohr import BambooHRScraper
+from hireshire.scrapers.gem import GemScraper
 from hireshire.direct.locations import filter_haystack, infer_country
 from hireshire.direct.scope import resolve_scope
 from hireshire.scrapers.direct import DirectScraper
@@ -119,11 +120,12 @@ async def main(
     ashby_companies = list(config.ashby_companies)
     greenhouse_companies = list(config.greenhouse_companies)
     lever_companies = list(config.lever_companies)
+    gem_companies = list(config.gem_companies)
     bamboohr_companies = list(config.bamboohr_companies)
     workday_companies = list(config.workday_companies)
     direct_companies = list(config.direct_companies)
 
-    if not (greenhouse_companies or lever_companies or ashby_companies
+    if not (greenhouse_companies or lever_companies or ashby_companies or gem_companies
             or bamboohr_companies or workday_companies or direct_companies):
         if not quiet:
             console.print("[yellow]No companies to scrape. Check `enabled_platforms` in scraper.yaml.[/yellow]")
@@ -158,6 +160,8 @@ async def main(
             sources.append(f"[bold]{len(lever_companies)}[/bold] via Lever")
         if ashby_companies:
             sources.append(f"[bold]{len(ashby_companies)}[/bold] via Ashby")
+        if gem_companies:
+            sources.append(f"[bold]{len(gem_companies)}[/bold] via Gem")
         if bamboohr_companies:
             sources.append(f"[bold]{len(bamboohr_companies)}[/bold] via BambooHR")
         if workday_companies:
@@ -182,6 +186,7 @@ async def main(
             )
             lever_scraper = LeverScraper(client, settings.make_limiter("lever"), settings.retry_attempts, cutoff=cutoff)
             ashby_scraper = AshbyScraper(client, settings.make_limiter("ashby"), settings.retry_attempts)
+            gem_scraper = GemScraper(client, settings.make_limiter("gem"), settings.retry_attempts)
             bamboohr_scraper = BambooHRScraper(
                 client, settings.make_limiter("bamboohr"), settings.retry_attempts,
                 detail_concurrency=settings.detail_concurrency, detail_jitter_s=settings.detail_jitter_s,
@@ -202,6 +207,7 @@ async def main(
                 len(greenhouse_companies)
                 + len(lever_companies)
                 + len(ashby_companies)
+                + len(gem_companies)
                 + len(bamboohr_companies)
                 + len(workday_companies)
                 + len(direct_companies)
@@ -332,6 +338,7 @@ async def main(
                     run_board(greenhouse_companies, greenhouse_scraper, "greenhouse_token", "greenhouse"),
                     run_board(lever_companies, lever_scraper, "lever_token", "lever"),
                     run_board(ashby_companies, ashby_scraper, "ashby_token", "ashby"),
+                    run_board(gem_companies, gem_scraper, "gem_token", "gem"),
                     run_board(bamboohr_companies, bamboohr_scraper, "bamboohr_token", "bamboohr"),
                     run_board(workday_companies, workday_scraper, "workday_token", "workday"),
                     run_board(direct_companies, direct_scraper, "direct_token", "direct"),

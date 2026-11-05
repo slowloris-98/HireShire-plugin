@@ -16,6 +16,7 @@ class CompanyConfig(BaseModel):
     greenhouse_token: Optional[str] = None
     lever_token: Optional[str] = None
     ashby_token: Optional[str] = None
+    gem_token: Optional[str] = None
     bamboohr_token: Optional[str] = None
     workday_token: Optional[str] = None
     # Single-tenant career portals (Amazon/Apple/Google/Intuit/Meta/Microsoft). The
@@ -38,6 +39,8 @@ _DEFAULT_RATE_LIMITS = {
     "greenhouse": RateLimitConfig(concurrency=20, min_interval_s=0.0),
     "lever": RateLimitConfig(concurrency=8, min_interval_s=0.0),
     "ashby": RateLimitConfig(concurrency=4, min_interval_s=0.5),
+    # No published limit; 1,070 slug checks at 8-way concurrency drew no 429.
+    "gem": RateLimitConfig(concurrency=8, min_interval_s=0.0),
     "bamboohr": RateLimitConfig(concurrency=6, min_interval_s=0.0),
     "workday": RateLimitConfig(concurrency=8, min_interval_s=0.0),
     # Only 3 companies, all big-tech portals with no published limits — stay polite.
@@ -52,6 +55,7 @@ _DEFAULT_COMPANY_CONCURRENCY = {
     "greenhouse": 12,
     "lever": 8,
     "ashby": 4,
+    "gem": 6,
     "bamboohr": 5,
     "workday": 5,
     "direct": 6,
@@ -93,7 +97,7 @@ class ScraperSettings(BaseModel):
     # two requests per company) dominate run time — 14,798 more companies between
     # them — so they are opt-in. A disabled board's slug file is never even read.
     enabled_platforms: list[str] = Field(
-        default_factory=lambda: ["greenhouse", "ashby", "lever", "direct"]
+        default_factory=lambda: ["greenhouse", "ashby", "lever", "gem", "direct"]
     )
 
     # Per-source throttling. Overridable via `settings.rate_limits` in config/scraper.yaml
@@ -169,6 +173,10 @@ class AppConfig(BaseModel):
         return [c for c in self.companies if c.ashby_token]
 
     @property
+    def gem_companies(self) -> list[CompanyConfig]:
+        return [c for c in self.companies if c.gem_token]
+
+    @property
     def bamboohr_companies(self) -> list[CompanyConfig]:
         return [c for c in self.companies if c.bamboohr_token]
 
@@ -196,6 +204,7 @@ def _load_companies_from_jsons(
     bamboohr_path: Path | None,
     workday_path: Path | None,
     direct_path: Path | None,
+    gem_path: Path | None = None,
 ) -> list[CompanyConfig]:
     companies: list[CompanyConfig] = []
     for slug in _read_slugs(ashby_path):
@@ -204,6 +213,8 @@ def _load_companies_from_jsons(
         companies.append(CompanyConfig(name=slug, greenhouse_token=slug))
     for slug in _read_slugs(lever_path):
         companies.append(CompanyConfig(name=slug, lever_token=slug))
+    for slug in _read_slugs(gem_path):
+        companies.append(CompanyConfig(name=slug, gem_token=slug))
     for slug in _read_slugs(bamboohr_path):
         companies.append(CompanyConfig(name=slug, bamboohr_token=slug))
     for slug in _read_slugs(workday_path):
@@ -215,10 +226,26 @@ def _load_companies_from_jsons(
     return companies
 
 
+# The default board set before Gem was added (0.29.0). The user's scraper.yaml lives
+# in DATA and survives updates, so a new shipped default never reaches an install that
+# was already set up -- the same problem `load_applier_config` solves for the direct
+# portals. An install still sweeping every one of these never chose to trim the
+# defaults, so it gets Gem too; one that dropped any of them made a choice, and keeps
+# it. The price: with all four on, Gem cannot be switched off alone.
+_PRE_GEM_DEFAULTS = frozenset({"greenhouse", "ashby", "lever", "direct"})
+
+
+def _with_new_defaults(platforms: list[str]) -> list[str]:
+    if "gem" not in platforms and _PRE_GEM_DEFAULTS <= set(platforms):
+        return [*platforms, "gem"]
+    return platforms
+
+
 def load_config(path: str | Path | None = None) -> AppConfig:
     path = Path(path) if path is not None else paths.config_file("scraper.yaml")
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     settings = ScraperSettings(**raw.get("settings", {}))
+    settings.enabled_platforms = _with_new_defaults(settings.enabled_platforms)
     # Company lists are shipped, read-only assets and always live in ROOT — they do
     # NOT sit beside the YAML, which may be the user's copy in DATA.
     base = paths.SHIPPED_CONFIG
@@ -236,5 +263,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         bamboohr_path=_p("bamboohr", "bamboohr_companies.json"),
         workday_path=_p("workday", "workday_companies.json"),
         direct_path=_p("direct", "direct_companies.json"),
+        gem_path=_p("gem", "gem_companies.json"),
     )
     return AppConfig(settings=settings, companies=companies)

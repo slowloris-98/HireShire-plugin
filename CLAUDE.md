@@ -117,7 +117,7 @@ Consequences already worked out, which should not be re-derived:
   ~6,066 of those requests get a 404. It is paid in a phase that is already I/O-bound
   and rate-limited per board. `docs/SPECS.md`'s default-sweep figure was always the
   unfiltered one, so it needed no correction — it is simply true now.
-- **The Greenhouse, Lever and Ashby lists grow only through
+- **The Greenhouse, Lever, Ashby and Gem lists grow only through
   `scripts/discover_slugs.py`, and it only ever adds.** With no skip list every
   shipped slug is a request on every sweep for every user, so a slug is admitted only
   when the board's own API (the scraper's `BASE_URL`) answers with at least one
@@ -139,6 +139,24 @@ Consequences already worked out, which should not be re-derived:
   502/504 often and the occasional transient 400, so a failed page is reported and
   skipped, and a rerun fetches only that page. Do not "simplify" the completeness
   check away because the status code looks fine.
+
+  **Gem's posting gate is not enough on its own.** Gem (`jobs.gem.com`, API
+  `api.gem.com/job_board/v0/<slug>/job_posts/`) publishes no sitemap, so the crawl is
+  its only source, and its customers' sandbox and test boards are public and carry fake
+  postings — `oats-testing` had 133 — so they pass the "at least one posting" check.
+  `Board.reject` drops them *before* the check, and only from candidates not yet
+  shipped, so it is admission, never removal. The rule in `_GEM_JUNK` was read off a
+  real crawl and is narrower than it looks on purpose: `test` matches only where a word
+  starts, because `turbotest-ai` is a real QA company, and bare `gem` (Gem's own
+  careers page) is kept while Gem's `gem-*` staff boards are not.
+
+  **Gem reached existing installs by a load-time rule, not by the default.** The
+  user's `scraper.yaml` is in DATA, so `enabled_platforms` never receives a shipped
+  default. `config._with_new_defaults` appends `gem` when the list still holds all four
+  pre-Gem defaults, and leaves a trimmed list alone because trimming was a choice. The
+  accepted cost: with those four on, Gem cannot be switched off by itself. A future
+  board that should reach existing installs needs the same treatment, with its own
+  pre-board baseline.
 - **The recurring sweep is NOT session-scoped, and nothing may make it so again.**
   `scripts/run_orchestration.py` is an ordinary sleep/sweep loop. `--monitor` runs it
   recurring, `--sweep` runs one cycle (`--once`) and is what the OS scheduler entry
@@ -1447,9 +1465,9 @@ suppresses Rich in favour of `logging` — required under the monitor.
 ## Things that are easy to get wrong
 
 - **Board defaults.** Workday and BambooHR default **off**, and they are the two
-  biggest lists: 24,200 companies held back against 18,070 swept (greenhouse 9,293,
-  lever 4,393, ashby 4,375, direct 9), out of 42,270 shipped. `docs/SPECS.md` leads with
-  40,000+ but must state plainly that the default sweep is ~18,070. Setup presents it
+  biggest lists: 24,200 companies held back against 18,824 swept (greenhouse 9,293,
+  lever 4,393, ashby 4,375, gem 754, direct 9), out of 43,024 shipped. `docs/SPECS.md` leads with
+  40,000+ but must state plainly that the default sweep is ~18,824. Setup presents it
   as a time trade-off — and **no specific multiplier has been measured yet**, so say
   "considerably longer", not "3x". These counts come from `config/*_companies.json`
   and grow between releases; re-derive them rather than copying this paragraph.

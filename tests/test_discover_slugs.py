@@ -23,6 +23,7 @@ sys.path.insert(0, str(paths.ROOT / "scripts"))
 import discover_slugs as ds  # noqa: E402
 
 GH, LEVER, ASHBY = ds.BOARDS["greenhouse"], ds.BOARDS["lever"], ds.BOARDS["ashby"]
+GEM = ds.BOARDS["gem"]
 
 # The real retry policy backs off for seconds; this one gives up at once.
 FAST_RETRY = retry(
@@ -80,6 +81,51 @@ def test_the_eu_hosts_are_ignored_because_the_scraper_cannot_read_them():
     assert ds.slug_from_url(LEVER, "https://jobs.eu.lever.co/euco") is None
 
 
+def test_a_gem_slug_is_the_first_path_segment():
+    lines = _cdx(
+        "https://jobs.gem.com/cip/am9icG9zdDqhkGa9b2kAyABX5vKQFuuJ",
+        "https://jobs.gem.com/bohler-",
+        "https://jobs.gem.com/the-boring-company/",
+        "https://jobs.ashbyhq.com/notgem",
+    )
+    assert ds.slugs_from_cdx(GEM, lines) == {"cip", "bohler-", "the-boring-company"}
+
+
+def test_gem_sandbox_and_test_boards_are_rejected_and_real_ones_are_not():
+    # Each of these was admitted by the posting gate on a real crawl: they carry
+    # fake postings (`oats-testing` had 133).
+    for junk in ("oats-testing", "checkr-sandbox", "atssandboxyello-co", "testbox",
+                 "belli-test1", "ncc-2024---test-1", "microsoft-demo-gem-com",
+                 "emil-ibrishimovgmail-com", "gem-ben", "gem-test-board", "interviewplanner"):
+        assert GEM.reject(junk), junk
+    # `turbotest-ai` is a real QA company; bare `gem` is Gem's own careers page.
+    for real in ("turbotest-ai", "gem", "the-boring-company", "contest-co", "latest"):
+        assert not GEM.reject(real), real
+    # The other boards reject nothing.
+    assert not ASHBY.reject("checkr-sandbox")
+
+
+def test_a_rejected_gem_slug_never_reaches_the_live_check(tmp_path, monkeypatch, capsys):
+    shipped = tmp_path / "gem_companies.json"
+    shipped.write_text("[]", encoding="utf-8")
+    extra = tmp_path / "extra.json"
+    extra.write_text(json.dumps(["oats-testing", "cip"]), encoding="utf-8")
+    monkeypatch.setattr(ds.paths, "SHIPPED_CONFIG", tmp_path)
+    checked = []
+
+    async def fake_check_all(client, board, slugs, retry, concurrency):
+        checked.extend(slugs)
+        return {s: ("admitted", 1) for s in slugs}
+
+    monkeypatch.setattr(ds, "check_all", fake_check_all)
+    args = ds.argparse.Namespace(boards=["gem"], extra=[f"gem={extra}"], cache_dir=str(tmp_path),
+                                 cdx_attempts=1, crawls=0, concurrency=1, write=True)
+    assert asyncio.run(ds.run(args)) == 0
+    assert checked == ["cip"]
+    assert json.loads(shipped.read_text(encoding="utf-8")) == ["cip"]
+    assert "rejected    1: oats-testing" in capsys.readouterr().out
+
+
 def test_a_malformed_index_line_is_skipped_not_fatal():
     lines = ["<html>504</html>", "", json.dumps(["not", "a", "dict"])] + _cdx("jobs.ashbyhq.com/ok")
     assert ds.slugs_from_cdx(ASHBY, lines) == {"ok"}
@@ -99,6 +145,7 @@ def test_a_board_with_postings_is_admitted_on_every_response_shape():
     assert _check(GH, lambda r: httpx.Response(200, json={"jobs": [{}, {}], "meta": {}})) == ("admitted", 2)
     assert _check(ASHBY, lambda r: httpx.Response(200, json={"jobs": [{}]})) == ("admitted", 1)
     assert _check(LEVER, lambda r: httpx.Response(200, json=[{}])) == ("admitted", 1)
+    assert _check(GEM, lambda r: httpx.Response(200, json=[{}, {}, {}])) == ("admitted", 3)
 
 
 def test_a_live_board_with_no_postings_is_not_admitted():
@@ -127,6 +174,9 @@ def test_the_check_hits_the_scrapers_own_endpoint():
     seen = []
     _check(LEVER, lambda r: seen.append(str(r.url)) or httpx.Response(200, json=[]), slug="zippi")
     assert seen[0].startswith(f"{ds.lever.BASE_URL}/zippi")
+    seen.clear()
+    _check(GEM, lambda r: seen.append(str(r.url)) or httpx.Response(200, json=[]), slug="cip")
+    assert seen == [ds.gem.board_url("cip")]
 
 
 # --- Index pages ------------------------------------------------------------------
