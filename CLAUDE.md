@@ -117,7 +117,7 @@ Consequences already worked out, which should not be re-derived:
   ~6,066 of those requests get a 404. It is paid in a phase that is already I/O-bound
   and rate-limited per board. `docs/SPECS.md`'s default-sweep figure was always the
   unfiltered one, so it needed no correction — it is simply true now.
-- **The Greenhouse, Lever and Ashby lists grow only through
+- **The Greenhouse, Lever, Ashby and Gem lists grow only through
   `scripts/discover_slugs.py`, and it only ever adds.** With no skip list every
   shipped slug is a request on every sweep for every user, so a slug is admitted only
   when the board's own API (the scraper's `BASE_URL`) answers with at least one
@@ -139,6 +139,24 @@ Consequences already worked out, which should not be re-derived:
   502/504 often and the occasional transient 400, so a failed page is reported and
   skipped, and a rerun fetches only that page. Do not "simplify" the completeness
   check away because the status code looks fine.
+
+  **Gem's posting gate is not enough on its own.** Gem (`jobs.gem.com`, API
+  `api.gem.com/job_board/v0/<slug>/job_posts/`) publishes no sitemap, so the crawl is
+  its only source, and its customers' sandbox and test boards are public and carry fake
+  postings — `oats-testing` had 133 — so they pass the "at least one posting" check.
+  `Board.reject` drops them *before* the check, and only from candidates not yet
+  shipped, so it is admission, never removal. The rule in `_GEM_JUNK` was read off a
+  real crawl and is narrower than it looks on purpose: `test` matches only where a word
+  starts, because `turbotest-ai` is a real QA company, and bare `gem` (Gem's own
+  careers page) is kept while Gem's `gem-*` staff boards are not.
+
+  **Gem reached existing installs by a load-time rule, not by the default.** The
+  user's `scraper.yaml` is in DATA, so `enabled_platforms` never receives a shipped
+  default. `config._with_new_defaults` appends `gem` when the list still holds all four
+  pre-Gem defaults, and leaves a trimmed list alone because trimming was a choice. The
+  accepted cost: with those four on, Gem cannot be switched off by itself. A future
+  board that should reach existing installs needs the same treatment, with its own
+  pre-board baseline.
 - **The recurring sweep is NOT session-scoped, and nothing may make it so again.**
   `scripts/run_orchestration.py` is an ordinary sleep/sweep loop. `--monitor` runs it
   recurring, `--sweep` runs one cycle (`--once`) and is what the OS scheduler entry
@@ -1447,9 +1465,9 @@ suppresses Rich in favour of `logging` — required under the monitor.
 ## Things that are easy to get wrong
 
 - **Board defaults.** Workday and BambooHR default **off**, and they are the two
-  biggest lists: 24,200 companies held back against 18,067 swept (greenhouse 9,293,
-  lever 4,393, ashby 4,375, direct 6), out of 42,267 shipped. `docs/SPECS.md` leads with
-  40,000+ but must state plainly that the default sweep is ~18,067. Setup presents it
+  biggest lists: 24,200 companies held back against 18,824 swept (greenhouse 9,293,
+  lever 4,393, ashby 4,375, gem 754, direct 9), out of 43,024 shipped. `docs/SPECS.md` leads with
+  40,000+ but must state plainly that the default sweep is ~18,824. Setup presents it
   as a time trade-off — and **no specific multiplier has been measured yet**, so say
   "considerably longer", not "3x". These counts come from `config/*_companies.json`
   and grow between releases; re-derive them rather than copying this paragraph.
@@ -1514,6 +1532,19 @@ suppresses Rich in favour of `logging` — required under the monitor.
   - **Microsoft** is `/api/pcsx/search`. The 403 "Not authorized for PCSX" comes from
     `/api/apply/v2/jobs` only. Its page is fixed at 10 and `location=` takes one
     country (a second is silently ignored), so it walks one series per country.
+  - **Lumen and Qualcomm are Eightfold tenants, like Microsoft**, and share its walk in
+    `handlers/eightfold.py` and one scope column (`Country.eightfold`): `location=` is
+    free text geocoded by the platform, not the tenant. Their own search pages put
+    `India OR United States` in the URL, and the API **silently reduces that to one
+    country** (Lumen: US 113, India 14, the `OR` form 113) — so do not "simplify" the
+    per-country walk into one request. Read `locations`, never `standardizedLocations`:
+    on Lumen the short form renders "Remote, United States" as `Remote, OR, US`, Oregon.
+  - **Rivian** is a Jibe board (`/api/jobs`, 100 a page, description in the list) with
+    **no scope column**: its `country=` answers an unknown value with 0 jobs and a 200,
+    and the facet exists only where Rivian has openings. The board is ~1,000 jobs, so it
+    is read newest-first to the cutoff and the location gate narrows it, like Meta. Its
+    location is built from `city`/`state`/`country`, never `full_location`, which drops
+    the country.
   - **Meta** answers 400 until a request carries browser fetch metadata (`Sec-Fetch-*`,
     `Origin`, `Referer`). With it, one GraphQL POST returns the whole board (~1,000
     jobs), so Meta has **no scope column** and `scraper.py` filters afterwards. Its

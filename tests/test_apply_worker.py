@@ -314,7 +314,8 @@ def test_a_location_list_in_applier_yaml_loses_to_the_scraper(tmp_path, monkeypa
     assert applier_config.load_applier_config(applier).settings.location_filter == ["india"]
 
 
-_PORTALS = ["amazon", "apple", "google", "intuit", "meta", "microsoft"]
+_PORTALS = ["amazon", "apple", "google", "intuit", "lumen", "meta", "microsoft",
+            "qualcomm", "rivian"]
 
 
 def _exclusions(tmp_path, monkeypatch, user_list: str, portals: str | None) -> list[str]:

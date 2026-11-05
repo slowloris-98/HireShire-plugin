@@ -34,7 +34,9 @@ class Country:
     google: str | None = None          # google careers `location=` value
     intuit: str | None = None          # jobs.intuit.com country facet id (GeoNames)
     amazon: str | None = None          # amazon.jobs `normalized_country_code[]` (ISO3)
-    microsoft: str | None = None       # careers.microsoft.com `location=` (free text)
+    # Eightfold `location=` (free text, geocoded by the platform), shared by every
+    # Eightfold tenant: Microsoft, Lumen, Qualcomm.
+    eightfold: str | None = None
 
 
 # One table for the states, so the abbreviation->name map and the two tuples below
@@ -112,7 +114,7 @@ COUNTRIES: tuple[Country, ...] = (
             "garden grove", "suitland", "fort meade", "annapolis junction",
         ),
         apple="united-states-USA", google="United States", intuit="6252001",
-        amazon="USA", microsoft="United States",
+        amazon="USA", eightfold="United States",
     ),
     Country(
         name="India",
@@ -121,14 +123,14 @@ COUNTRIES: tuple[Country, ...] = (
                  "west bengal", "haryana", "uttar pradesh", "gujarat"),
         cities=INDIA_CITIES,
         apple="india-INDC", google="India", intuit="1269750",
-        amazon="IND", microsoft="India",
+        amazon="IND", eightfold="India",
     ),
     Country(
         name="Canada",
         aliases=("canada",),
         regions=("ontario", "quebec", "british columbia", "alberta"),
         cities=("toronto", "vancouver", "montreal", "ottawa", "calgary", "waterloo"),
-        apple="canada-CANC", google="Canada", amazon="CAN", microsoft="Canada", intuit="6251999",
+        apple="canada-CANC", google="Canada", amazon="CAN", eightfold="Canada", intuit="6251999",
     ),
     Country(
         name="United Kingdom",
@@ -136,45 +138,45 @@ COUNTRIES: tuple[Country, ...] = (
                  "england", "scotland"),
         cities=("london", "manchester", "edinburgh", "cambridge, uk"),
         apple="united-kingdom-GBR", google="United Kingdom", intuit="2635167",
-        amazon="GBR", microsoft="United Kingdom",
+        amazon="GBR", eightfold="United Kingdom",
     ),
     Country(name="Ireland", aliases=("ireland",), cities=("dublin", "cork"),
-            apple="ireland-IRL", google="Ireland", amazon="IRL", microsoft="Ireland"),
+            apple="ireland-IRL", google="Ireland", amazon="IRL", eightfold="Ireland"),
     Country(name="Germany", aliases=("germany", "deutschland"),
             cities=("berlin", "munich", "hamburg", "frankfurt"),
-            apple="germany-DEU", google="Germany", amazon="DEU", microsoft="Germany"),
+            apple="germany-DEU", google="Germany", amazon="DEU", eightfold="Germany"),
     Country(name="France", aliases=("france",), cities=("paris",),
-            apple="france-FRAC", google="France", amazon="FRA", microsoft="France"),
+            apple="france-FRAC", google="France", amazon="FRA", eightfold="France"),
     Country(name="Netherlands", aliases=("netherlands", "the netherlands", "holland"),
             cities=("amsterdam",), apple="netherlands-NLD", google="Netherlands",
-            amazon="NLD", microsoft="Netherlands"),
+            amazon="NLD", eightfold="Netherlands"),
     Country(name="Switzerland", aliases=("switzerland",), cities=("zurich", "zürich"),
-            apple="switzerland-CHEC", google="Switzerland", amazon="CHE", microsoft="Switzerland"),
+            apple="switzerland-CHEC", google="Switzerland", amazon="CHE", eightfold="Switzerland"),
     Country(name="Spain", aliases=("spain",), cities=("madrid", "barcelona"),
-            apple="spain-ESPC", google="Spain", amazon="ESP", microsoft="Spain"),
+            apple="spain-ESPC", google="Spain", amazon="ESP", eightfold="Spain"),
     Country(name="Poland", aliases=("poland",), cities=("warsaw", "krakow"),
-            apple="poland-POL", google="Poland", amazon="POL", microsoft="Poland"),
+            apple="poland-POL", google="Poland", amazon="POL", eightfold="Poland"),
     Country(name="Israel", aliases=("israel",), cities=("tel aviv", "haifa"),
             apple="israel-ISR", google="Israel", intuit="294640",
-            amazon="ISR", microsoft="Israel"),
+            amazon="ISR", eightfold="Israel"),
     Country(name="Singapore", aliases=("singapore",),
-            apple="singapore-SGP", google="Singapore", amazon="SGP", microsoft="Singapore"),
+            apple="singapore-SGP", google="Singapore", amazon="SGP", eightfold="Singapore"),
     Country(name="Australia", aliases=("australia",), cities=("sydney", "melbourne"),
-            apple="australia-AUSC", google="Australia", amazon="AUS", microsoft="Australia"),
+            apple="australia-AUSC", google="Australia", amazon="AUS", eightfold="Australia"),
     Country(name="Japan", aliases=("japan",), cities=("tokyo",),
-            apple="japan-JPNC", google="Japan", amazon="JPN", microsoft="Japan"),
+            apple="japan-JPNC", google="Japan", amazon="JPN", eightfold="Japan"),
     Country(name="China", aliases=("china",), cities=("shanghai", "beijing"),
-            apple="china-CHNC", google="China", amazon="CHN", microsoft="China"),
+            apple="china-CHNC", google="China", amazon="CHN", eightfold="China"),
     # Apple's own name is "Korea (Republic of)"; its search keys on the code.
     Country(name="South Korea", aliases=("south korea", "korea"), cities=("seoul",),
             apple="korea-republic-of-KOR", google="South Korea",
-            amazon="KOR", microsoft="South Korea"),
+            amazon="KOR", eightfold="South Korea"),
     Country(name="Taiwan", aliases=("taiwan",), cities=("taipei",),
-            apple="taiwan-TWN", google="Taiwan", amazon="TWN", microsoft="Taiwan"),
+            apple="taiwan-TWN", google="Taiwan", amazon="TWN", eightfold="Taiwan"),
     Country(name="Mexico", aliases=("mexico",), cities=("mexico city",),
-            apple="mexico-MEXC", google="Mexico", amazon="MEX", microsoft="Mexico"),
+            apple="mexico-MEXC", google="Mexico", amazon="MEX", eightfold="Mexico"),
     Country(name="Brazil", aliases=("brazil", "brasil"), cities=("sao paulo", "são paulo"),
-            apple="brazil-BRAC", google="Brazil", amazon="BRA", microsoft="Brazil"),
+            apple="brazil-BRAC", google="Brazil", amazon="BRA", eightfold="Brazil"),
 )
 
 BY_NAME: dict[str, Country] = {c.name: c for c in COUNTRIES}

@@ -4,6 +4,29 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.29.0] — 2026-11-05
+
+### Added
+
+- **Gem job boards are now searched**, adding 754 employers (`jobs.gem.com`) to the
+  default sweep, which now covers about 18,800. Each board's whole list and full job
+  descriptions come back in a single request, so this adds little to a sweep's run time.
+  If you kept the default boards during setup, Gem is switched on for you with this
+  update; if you chose a narrower set, nothing changes until you turn it on.
+- `scripts/discover_slugs.py --boards gem` finds new Gem boards from Common Crawl and
+  skips Gem customers' sandbox and test boards, which carry fake postings.
+
+## [0.28.0] — 2026-11-05
+
+### Added
+
+- **Lumen, Qualcomm and Rivian are now searched directly**, alongside Amazon, Apple,
+  Google, Intuit, Meta and Microsoft. Like the others they follow the locations you gave
+  during setup: Lumen and Qualcomm are searched for each of your countries in turn, and
+  Rivian's jobs are checked against your locations after they are fetched. As with the
+  other direct sites, applying to these needs your own account on the employer's site,
+  so their shortlisted jobs appear under Needs Attention for you to apply by hand.
+
 ## [0.27.0] — 2026-11-05
 
 ### Added

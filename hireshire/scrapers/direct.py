@@ -1,18 +1,20 @@
 """Direct career portals — one scraper, one handler per company.
 
-Amazon, Apple, Google, Intuit, Meta and Microsoft run their own portals rather
-than a multi-tenant ATS, so there is no slug list: `config/direct_companies.json`
+Amazon, Apple, Google, Intuit, Lumen, Meta, Microsoft, Qualcomm and Rivian run
+their own portals rather than a multi-tenant ATS, so there is no slug list: `config/direct_companies.json`
 holds the fixed set of company names, and each maps to a handler module in
 `handlers/`.
 
 Modelling them as ONE platform (`source="direct"`, `board_token=<company>`)
-rather than six keeps the DB rows identical to those the old `/scrape-direct`
+rather than nine keeps the DB rows identical to those the old `/scrape-direct`
 skill wrote, so `seen_jobs` dedupe carries across the migration.
 
 Every one of them is plain HTTP — no browser, no Claude session. Microsoft and
 Meta were once thought to need a browser, and neither does: Microsoft's 403
 ("Not authorized for PCSX") comes from `/api/apply/v2/jobs` only, and Meta's
-400 goes away once a request carries browser fetch metadata. See each handler.
+400 goes away once a request carries browser fetch metadata. Lumen and Qualcomm
+are Eightfold tenants like Microsoft and share its walk (`handlers/eightfold.py`);
+Rivian is a Jibe board. See each handler.
 """
 
 from __future__ import annotations
@@ -28,7 +30,9 @@ from hireshire.http_client import make_retry_decorator
 from hireshire.models.job import Job
 from hireshire.rate_limit import RateLimiter
 from hireshire.scrapers.base import AbstractScraper
-from hireshire.scrapers.handlers import amazon, apple, google, intuit, meta, microsoft
+from hireshire.scrapers.handlers import (
+    amazon, apple, google, intuit, lumen, meta, microsoft, qualcomm, rivian,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,9 @@ _HANDLERS = {
     intuit.TOKEN: intuit,
     meta.TOKEN: meta,
     microsoft.TOKEN: microsoft,
+    lumen.TOKEN: lumen,
+    qualcomm.TOKEN: qualcomm,
+    rivian.TOKEN: rivian,
 }
 
 # These portals soft-block non-browser user agents, so present a browser one
@@ -87,8 +94,9 @@ class DirectScraper(AbstractScraper):
             )
         for token, handler in _HANDLERS.items():
             if handler.SCOPE_COLUMN is None:
-                # The portal returns its whole board in one response (Meta), so
-                # the scraper's location filter does the narrowing afterwards.
+                # The portal is read unscoped (Meta returns its whole board in one
+                # response; Rivian's country facet answers 0 for an unknown
+                # value), so the scraper's location filter narrows afterwards.
                 logger.info("Direct portal %s searches: everywhere (filtered after fetch)",
                             token)
                 continue

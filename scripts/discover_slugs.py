@@ -1,4 +1,4 @@
-"""Add new Greenhouse, Lever and Ashby slugs to the shipped lists, from Common Crawl.
+"""Add new Greenhouse, Lever, Ashby and Gem slugs to the shipped lists, from Common Crawl.
 
 A maintenance tool, never run by the engine. The `config/*_companies.json` lists
 only grow when someone runs this before a release; users receive the result with
@@ -10,7 +10,8 @@ every URL its crawler fetched, sorted host-first, so a prefix query such as
 The first path segment is the slug. Coverage is therefore whatever the crawler
 reached: good for Ashby and Greenhouse, nearly nothing for Lever, whose host the
 crawler barely visits. `--extra` checks slugs from any other list (the aggregator's,
-say) through the same gate, and is Lever's main source.
+say) through the same gate, and is Lever's main source. Gem (jobs.gem.com) publishes
+no sitemap, so the crawl is its only source too; three crawls gave ~1,070 candidates.
 
 Two rules, both forced by there being no skip list (see `scraper.py`): every
 shipped slug is requested on every sweep by every user, and a 404 is a deferral,
@@ -23,6 +24,12 @@ never a verdict.
   one-letter path) would otherwise become a permanent request per sweep. A board
   that fails for any other reason is reported as unverified and tried again on
   the next run.
+
+A board can also name slugs it never admits, checked before the live request. Gem
+needs this: its customers' sandbox and test boards (`oats-testing`, `checkr-sandbox`,
+`microsoft-demo-gem-com`) are public, carry fake postings -- 133 on one -- and so pass
+the posting gate. Rejecting a candidate is not removing a slug: it applies only to
+slugs not yet shipped.
 
 The index server is unreliable in two ways. It often answers 502/504, and it can
 cut a page off mid-response while still answering 200. So pages are small (one
@@ -54,7 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hireshire import paths  # noqa: E402
 from hireshire.http_client import build_client, make_retry_decorator  # noqa: E402
-from hireshire.scrapers import ashby, greenhouse, lever  # noqa: E402
+from hireshire.scrapers import ashby, gem, greenhouse, lever  # noqa: E402
 
 INDEX = "https://index.commoncrawl.org"
 DEFAULT_CACHE = Path(__file__).resolve().parent.parent / "analysis" / "cache" / "commoncrawl"
@@ -78,6 +85,24 @@ class Board:
     # scraper's BASE_URL is the US API, so an EU board would never answer it.
     hosts: tuple[str, ...]
     check_url: Callable[[str], str]
+    # A candidate this answers True for is never checked or admitted.
+    reject: Callable[[str], bool] = lambda slug: False
+
+
+# Gem's customers' sandbox, test and demo boards, read off a real crawl:
+# - `sandbox` and `demo` anywhere -- they write `atssandboxyello-co`;
+# - `test` only where a word starts (`testbox`, `belli-test1`, `ncc-2024---test-1`),
+#   because `turbotest-ai` is a real QA company hiring real engineers;
+# - a vanity path spelled from a personal address (`emil-ibrishimovgmail-com`);
+# - `gem-*`, which are Gem's own staff boards (`gem-ben` posts "Test"). Bare `gem`
+#   is Gem's real careers board and is kept.
+# `interviewplanner` is named outright: its postings are "Robin's Test Job".
+_GEM_JUNK = re.compile(r"sandbox|demo|gmail-com|^gem-|(?:^|[-\d])test")
+_GEM_NAMED_JUNK = frozenset({"interviewplanner"})
+
+
+def _gem_reject(slug: str) -> bool:
+    return slug in _GEM_NAMED_JUNK or bool(_GEM_JUNK.search(slug))
 
 
 BOARDS: dict[str, Board] = {
@@ -95,6 +120,12 @@ BOARDS: dict[str, Board] = {
         "ashby", "ashby_companies.json",
         ("jobs.ashbyhq.com",),
         lambda s: f"{ashby.BASE_URL}/{s}",
+    ),
+    "gem": Board(
+        "gem", "gem_companies.json",
+        ("jobs.gem.com",),
+        gem.board_url,
+        reject=_gem_reject,
     ),
 }
 
@@ -339,7 +370,9 @@ async def run(args: argparse.Namespace) -> int:
         for board in boards:
             path = paths.SHIPPED_CONFIG / board.filename
             shipped = set(read_list(path))
-            new = sorted(candidates[board.name] - shipped)
+            unshipped = candidates[board.name] - shipped
+            rejected = sorted(s for s in unshipped if board.reject(s))
+            new = sorted(unshipped - set(rejected))
             results = await check_all(client, board, new, check_retry, args.concurrency)
             by_kind: dict[str, list[tuple[str, int]]] = {}
             for slug, (kind, n) in results.items():
@@ -348,6 +381,8 @@ async def run(args: argparse.Namespace) -> int:
 
             print(f"\n{board.name}: {len(candidates[board.name])} candidates, "
                   f"{len(candidates[board.name] & shipped)} already shipped, {len(new)} new")
+            if rejected:
+                print(f"  rejected    {len(rejected)}: {', '.join(rejected)}")
             for kind in ("admitted", "empty", "not_found", "unverified"):
                 print(f"  {kind:<11} {len(by_kind.get(kind, []))}")
             if admitted:
