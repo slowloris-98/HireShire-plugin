@@ -96,7 +96,7 @@ def amazon_accepts(client: httpx.Client, code: str | None) -> bool:
     return bool(payload.get("hits"))
 
 
-def microsoft_accepts(client: httpx.Client, name: str) -> bool:
+def eightfold_accepts(client: httpx.Client, name: str) -> bool:
     payload = client.get(microsoft.list_url(name, 1)).json()
     return bool((payload.get("data") or {}).get("count"))
 
@@ -112,13 +112,13 @@ def main(argv: list[str]) -> int:
             google = c.name if google_accepts(client, c.name) else None
             intuit_id = facets.get(c.name.lower())
             amazon_code = c.amazon if amazon_accepts(client, c.amazon) else None
-            ms_name = c.name if microsoft_accepts(client, c.name) else None
+            ms_name = c.name if eightfold_accepts(client, c.name) else None
             cells = []
             for label, live, shipped in (("apple", apple, c.apple),
                                          ("google", google, c.google),
                                          ("intuit", intuit_id, c.intuit),
                                          ("amazon", amazon_code, c.amazon),
-                                         ("microsoft", ms_name, c.microsoft)):
+                                         ("eightfold", ms_name, c.eightfold)):
                 mark = "" if live == shipped else "   <-- table has %r" % (shipped,)
                 cells.append(f"{label}={live!r}{mark}")
             print(f"{c.name:<16} " + "  ".join(cells))

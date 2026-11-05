@@ -1447,9 +1447,9 @@ suppresses Rich in favour of `logging` — required under the monitor.
 ## Things that are easy to get wrong
 
 - **Board defaults.** Workday and BambooHR default **off**, and they are the two
-  biggest lists: 24,200 companies held back against 18,067 swept (greenhouse 9,293,
-  lever 4,393, ashby 4,375, direct 6), out of 42,267 shipped. `docs/SPECS.md` leads with
-  40,000+ but must state plainly that the default sweep is ~18,067. Setup presents it
+  biggest lists: 24,200 companies held back against 18,070 swept (greenhouse 9,293,
+  lever 4,393, ashby 4,375, direct 9), out of 42,270 shipped. `docs/SPECS.md` leads with
+  40,000+ but must state plainly that the default sweep is ~18,070. Setup presents it
   as a time trade-off — and **no specific multiplier has been measured yet**, so say
   "considerably longer", not "3x". These counts come from `config/*_companies.json`
   and grow between releases; re-derive them rather than copying this paragraph.
@@ -1514,6 +1514,19 @@ suppresses Rich in favour of `logging` — required under the monitor.
   - **Microsoft** is `/api/pcsx/search`. The 403 "Not authorized for PCSX" comes from
     `/api/apply/v2/jobs` only. Its page is fixed at 10 and `location=` takes one
     country (a second is silently ignored), so it walks one series per country.
+  - **Lumen and Qualcomm are Eightfold tenants, like Microsoft**, and share its walk in
+    `handlers/eightfold.py` and one scope column (`Country.eightfold`): `location=` is
+    free text geocoded by the platform, not the tenant. Their own search pages put
+    `India OR United States` in the URL, and the API **silently reduces that to one
+    country** (Lumen: US 113, India 14, the `OR` form 113) — so do not "simplify" the
+    per-country walk into one request. Read `locations`, never `standardizedLocations`:
+    on Lumen the short form renders "Remote, United States" as `Remote, OR, US`, Oregon.
+  - **Rivian** is a Jibe board (`/api/jobs`, 100 a page, description in the list) with
+    **no scope column**: its `country=` answers an unknown value with 0 jobs and a 200,
+    and the facet exists only where Rivian has openings. The board is ~1,000 jobs, so it
+    is read newest-first to the cutoff and the location gate narrows it, like Meta. Its
+    location is built from `city`/`state`/`country`, never `full_location`, which drops
+    the country.
   - **Meta** answers 400 until a request carries browser fetch metadata (`Sec-Fetch-*`,
     `Origin`, `Referer`). With it, one GraphQL POST returns the whole board (~1,000
     jobs), so Meta has **no scope column** and `scraper.py` filters afterwards. Its

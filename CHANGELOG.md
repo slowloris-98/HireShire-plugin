@@ -4,6 +4,17 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.28.0] — 2026-11-05
+
+### Added
+
+- **Lumen, Qualcomm and Rivian are now searched directly**, alongside Amazon, Apple,
+  Google, Intuit, Meta and Microsoft. Like the others they follow the locations you gave
+  during setup: Lumen and Qualcomm are searched for each of your countries in turn, and
+  Rivian's jobs are checked against your locations after they are fetched. As with the
+  other direct sites, applying to these needs your own account on the employer's site,
+  so their shortlisted jobs appear under Needs Attention for you to apply by hand.
+
 ## [0.27.0] — 2026-11-05
 
 ### Added

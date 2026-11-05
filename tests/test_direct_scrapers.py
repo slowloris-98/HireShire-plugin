@@ -24,7 +24,9 @@ from hireshire.direct.portal_locations import (
     US_STATE_ABBREVS, US_STATE_BY_ABBREV, US_STATES,
 )
 from hireshire.direct.staging import make_job_id
-from hireshire.scrapers.handlers import amazon, apple, google, intuit, meta, microsoft
+from hireshire.scrapers.handlers import (
+    amazon, apple, eightfold, google, intuit, lumen, meta, microsoft, qualcomm, rivian,
+)
 
 NOW = datetime(2026, 8, 7, 2, 0, tzinfo=timezone.utc)
 
@@ -349,6 +351,142 @@ def test_microsoft_detail_fills_the_description():
     out = asyncio.run(microsoft.fetch_detail(ctx, job))
     assert not out.detail_fetch_failed and out.content_text.startswith("Overview")
     assert "position_id=1970393557002687" in ctx.calls[0][1]
+
+
+# Trimmed from careers.lumen.com/api/pcsx/search. The short form turns
+# "Remote, United States" into Oregon; only the long form may be read.
+LUMEN_REMOTE = {
+    "id": 1133916257216,
+    "displayJobId": "343990",
+    "name": "SR SOFTWARE ENGINEER",
+    "locations": ["Remote, United States"],
+    "standardizedLocations": ["Remote, OR, US"],
+    "postedTs": 1793903625,
+    "department": None,
+}
+LUMEN_INDIA = {
+    "id": 1133916327843,
+    "displayJobId": "344087",
+    "name": "SR SOFTWARE DEV CONSULTANT I-INDIA",
+    "locations": ["BANGALORE, IND", "NOIDA, IND"],
+    "standardizedLocations": ["Bengaluru, KA, IN", "Noida, UP, IN"],
+    "postedTs": 1793867814,
+}
+QUALCOMM_ENTRY = {
+    "id": 446716096811,
+    "displayJobId": "3083718",
+    "name": "SAIL Platform - Lead",
+    "locations": ["San Diego, California, United States of America"],
+    "standardizedLocations": ["San Diego, CA, US"],
+    "postedTs": 1793836800,
+    "department": "Software Engineering",
+}
+
+
+def test_lumen_reads_the_long_location_not_the_oregon_misreading():
+    job = eightfold.parse_job(lumen.TENANT, LUMEN_REMOTE, NOW)
+    assert job.board_token == "lumen"
+    assert job.job_id == make_job_id("lumen", "1133916257216")
+    assert "United States" in job.location.name
+    assert "OR" not in job.location.name.split(", ")
+    assert str(job.absolute_url) == "https://careers.lumen.com/careers/job/1133916257216"
+
+    india = eightfold.parse_job(lumen.TENANT, LUMEN_INDIA, NOW)
+    assert infer_country(india.location.name) == "India"
+
+
+def test_qualcomm_job_names_its_country_and_defers_the_description():
+    job = eightfold.parse_job(qualcomm.TENANT, QUALCOMM_ENTRY, NOW)
+    assert job.job_id == make_job_id("qualcomm", "446716096811")
+    assert infer_country(job.location.name) == "United States"
+    assert job.departments[0].name == "Software Engineering"
+    assert job.content_text is None
+    assert str(job.absolute_url).startswith("https://careers.qualcomm.com/careers/job/")
+
+
+@pytest.mark.parametrize("handler,entry", [(lumen, LUMEN_INDIA), (qualcomm, QUALCOMM_ENTRY)])
+def test_eightfold_tenants_walk_each_country_on_their_own_host(handler, entry):
+    from hireshire.direct.scope import resolve_scope
+    page = _Response(payload={"data": {"positions": [entry]}})
+    empty = _Response(payload={"data": {"positions": []}})
+    ctx = _Ctx(page, empty, page, empty, scope=resolve_scope(["united states", "india"]))
+    jobs = asyncio.run(handler.fetch_list(ctx, handler.TOKEN))
+    assert len(jobs) == 1 and jobs[0].board_token == handler.TOKEN
+    assert [u for _, u, _ in ctx.calls if "start=0" in u] == [
+        handler.list_url("United States", 1), handler.list_url("India", 1)]
+
+
+def test_eightfold_detail_asks_the_tenants_own_domain():
+    job = eightfold.parse_job(qualcomm.TENANT, QUALCOMM_ENTRY, NOW)
+    html = "<p>" + "Design GPU physical blocks. " * 20 + "</p>"
+    ctx = _Ctx(_Response(payload={"data": {"jobDescription": html}}))
+    out = asyncio.run(qualcomm.fetch_detail(ctx, job))
+    assert not out.detail_fetch_failed and "GPU" in out.content_text
+    url = ctx.calls[0][1]
+    assert url.startswith("https://careers.qualcomm.com/api/pcsx/position_details?")
+    assert "domain=qualcomm.com" in url and "position_id=446716096811" in url
+
+
+# Trimmed from careers.rivian.com/api/jobs.
+RIVIAN_ENTRY = {
+    "slug": "35853",
+    "req_id": "35853",
+    "title": "Field Service Technician - Seattle, WA",
+    "description": "About Rivian ... Responsibilities ... Qualifications ...",
+    "city": "Seattle", "state": "Washington", "country": "United States",
+    "full_location": "Seattle, Washington",
+    "categories": [{"name": " Service"}],
+    "posted_date": "2026-08-06T20:05:00+0000",
+    "meta_data": {"canonical_url": "https://careers.rivian.com/jobs/35853?lang=en-us"},
+    "multipleLocations": False,
+}
+RIVIAN_MULTI = {
+    **RIVIAN_ENTRY, "slug": "40001", "req_id": "40001",
+    "city": "Atlanta", "state": "Georgia",
+    "full_location": "Atlanta, Georgia; Irvine, California",
+    "multipleLocations": True,
+    "additional_locations": [
+        {"city": "Irvine", "state": "California", "country": "United States"},
+    ],
+}
+
+
+def test_rivian_builds_the_location_from_its_structured_fields():
+    job = rivian._parse_job(RIVIAN_ENTRY, NOW)
+    assert job.job_id == make_job_id("rivian", "35853")
+    # `full_location` alone names no country; the structured fields do.
+    assert job.location.name == "Seattle, Washington, United States"
+    assert job.content_text.startswith("About Rivian"), "the list carries the description"
+    assert job.updated_at == datetime(2026, 8, 6, 20, 5, tzinfo=timezone.utc)
+    assert job.departments[0].name == "Service"
+    assert str(job.absolute_url) == "https://careers.rivian.com/jobs/35853?lang=en-us"
+
+    multi = rivian._parse_job(RIVIAN_MULTI, NOW)
+    # Georgia the state, because the country is spelled out beside it.
+    assert multi.location.name == (
+        "Atlanta, Georgia, United States | Irvine, California, United States")
+    assert infer_country(multi.location.name) == "United States"
+
+
+def test_rivian_walks_unscoped_and_stops_at_a_short_page():
+    full = _Response(payload={"jobs": [
+        {"data": {**RIVIAN_ENTRY, "req_id": str(i), "slug": str(i)}}
+        for i in range(rivian.PAGE_SIZE)]})
+    short = _Response(payload={"jobs": [{"data": RIVIAN_MULTI}]})
+    ctx = _Ctx(full, short, scope=None)
+    jobs = asyncio.run(rivian.fetch_list(ctx, "rivian"))
+    assert len(jobs) == rivian.PAGE_SIZE + 1
+    assert [u for _, u, _ in ctx.calls] == [rivian.list_url(1), rivian.list_url(2)]
+    assert "country" not in ctx.calls[0][1] and "location" not in ctx.calls[0][1]
+
+
+def test_rivian_stops_on_a_whole_page_past_the_cutoff():
+    old = _Response(payload={"jobs": [
+        {"data": {**RIVIAN_ENTRY, "req_id": str(i), "posted_date": "2025-01-02T08:32:00+0000"}}
+        for i in range(rivian.PAGE_SIZE)]})
+    ctx = _Ctx(old, old, cutoff=NOW - timedelta(hours=24))
+    asyncio.run(rivian.fetch_list(ctx, "rivian"))
+    assert len(ctx.calls) == 1
 
 
 META_PAGE = '<script>...["LSD",[],{"token":"AdS4sleY88c6e6f"},323]...</script>'

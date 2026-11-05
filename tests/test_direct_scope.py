@@ -17,7 +17,9 @@ from bs4 import BeautifulSoup
 from hireshire.direct.portal_locations import COUNTRIES
 from hireshire.models.job import Job, Location, Office
 from hireshire.direct.scope import EVERYWHERE, WORLDWIDE, Scope, resolve_scope
-from hireshire.scrapers.handlers import amazon, apple, google, intuit, meta, microsoft
+from hireshire.scrapers.handlers import (
+    amazon, apple, google, intuit, lumen, meta, microsoft, qualcomm, rivian,
+)
 from scraper import _matches_location
 
 NOW = datetime(2026, 9, 23, tzinfo=timezone.utc)
@@ -143,6 +145,23 @@ def test_microsoft_walks_one_series_per_country():
     assert "location=India" in url and "start=20" in url
 
 
+@pytest.mark.parametrize("handler,host,domain", [
+    (microsoft, "apply.careers.microsoft.com", "microsoft.com"),
+    (lumen, "careers.lumen.com", "lumen.com"),
+    (qualcomm, "careers.qualcomm.com", "qualcomm.com"),
+])
+def test_every_eightfold_tenant_is_scoped_one_country_at_a_time(handler, host, domain):
+    """The tenants share one platform and one column. Their own search pages put
+    `India OR United States` in the URL, and the API silently reduces that to one
+    country — so the scope is walked as one plain country name per request."""
+    assert handler.SCOPE_COLUMN == "eightfold"
+    assert US_IN.for_portal(handler.SCOPE_COLUMN) == ["United States", "India"]
+    url = handler.list_url("United States", 1)
+    assert url.startswith(f"https://{host}/api/pcsx/search?")
+    assert f"domain={domain}" in url and "location=United+States" in url
+    assert "OR" not in url
+
+
 @pytest.mark.parametrize("scope", [None, EVERYWHERE])
 def test_unscoped_urls_carry_no_location(scope):
     assert "location=" not in apple.list_url(scope, 1)
@@ -158,6 +177,9 @@ def test_a_portal_with_no_column_is_never_scoped():
     """Meta returns its whole board in one response; there is nothing to scope,
     and `scraper.py`'s location filter narrows it afterwards."""
     assert meta.SCOPE_COLUMN is None
+    # Rivian's country facet answers an unknown value with 0 jobs and a 200, so
+    # it is read unscoped and filtered afterwards, like Meta.
+    assert rivian.SCOPE_COLUMN is None
     assert US_IN.for_portal(None) is None
     assert US_IN.describe(None) == "everywhere"
     assert US_IN.placeholder(None) == WORLDWIDE
@@ -298,12 +320,12 @@ def test_every_country_has_apple_and_google_values():
         assert c.apple and c.google, c.name
 
 
-def test_amazon_codes_are_iso3_and_microsoft_names_are_the_country():
+def test_amazon_codes_are_iso3_and_eightfold_names_are_the_country():
     """Both verified live by scripts/refresh_direct_locations.py. Amazon answers a
     bad code with 0 hits and a 200, so the shape is the least a row must meet."""
     for c in COUNTRIES:
         assert c.amazon and re.fullmatch(r"[A-Z]{3}", c.amazon), c.name
-        assert c.microsoft == c.name
+        assert c.eightfold == c.name
 
 
 def test_apple_slugs_have_the_shape_the_portal_accepts():
