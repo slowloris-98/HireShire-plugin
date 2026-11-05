@@ -4,6 +4,16 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.27.0] — 2026-11-05
+
+### Added
+
+- **The dashboard's job lists can be sorted.** Needs Attention, Jobs Applied, Jobs
+  Shortlisted and Jobs Filtered each have a sort menu beside the filter box: the default
+  order, newest posted first, or highest LLM score first. Jobs with no posting date or no
+  score go to the bottom. Your choice is remembered while the tab is open, so a page
+  that refreshes itself during a sweep stays sorted, and rows you have opened stay open.
+
 ## [0.26.1] — 2026-11-02
 
 ### Fixed

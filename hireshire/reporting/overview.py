@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -343,6 +344,24 @@ def _cross(job: dict) -> str:
         return "—"
 
 
+def _epoch(value: Any) -> str:
+    """A posting date as epoch seconds for the sort key, or `""` when there is none.
+
+    Epoch rather than the stored ISO string because those strings carry mixed offsets
+    and would not sort lexically. A naive timestamp is read as UTC. Never raises — a
+    bad date costs the row its place in a date sort, not the page.
+    """
+    if not value:
+        return ""
+    try:
+        when = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return str(int(when.timestamp()))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
 #: Where a Needs Attention reason is cut. Long enough for "Required question: <the
 #: question's own wording> (not on resume)", short enough to stay one line on a laptop.
 _REASON_CHARS = 140
@@ -529,8 +548,13 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
     if actions:
         body += f'<div class="job-act">{actions}</div>'
 
+    # The two sort keys `_FILTER_SCRIPT` reads. `data-llm` is the score this row
+    # *displays*, so a placeholder 0 behind an em dash is blank and sorts last rather
+    # than ranking as a real verdict of zero.
+    llm_key = "" if score is None else e(str(score))
     return (
-        f'<details class="job" id="j:{e(job.get("job_id"))}" data-hay="{e(hay)}">'
+        f'<details class="job" id="j:{e(job.get("job_id"))}" data-hay="{e(hay)}" '
+        f'data-posted="{_epoch(job.get("posted_at"))}" data-llm="{llm_key}">'
         "<summary>"
         f'<span class="job-i">{rank}</span>'
         f'<span class="job-t">{e(title)}{sub_html}</span>'
@@ -579,6 +603,12 @@ def _accordion(key: str, label: str, jobs: list[dict], total: int,
         '<input class="f-box" type="search" placeholder="Filter" '
         f'aria-label="Filter {e(label.split(" (")[0].lower())}" '
         f'aria-controls="rows:{e(key)}">'
+        f'<select class="f-sort" aria-label="Sort {e(label.split(" (")[0].lower())}" '
+        f'aria-controls="rows:{e(key)}">'
+        '<option value="rank">Default order</option>'
+        '<option value="posted">Newest posted</option>'
+        '<option value="llm">Highest LLM score</option>'
+        "</select>"
         '<span class="filter-note f-note"></span>'
         "</div>"
         f'<div class="scroll-y" id="rows:{e(key)}" tabindex="0" data-keep-scroll="1">'
@@ -725,9 +755,28 @@ _SCRIPT = _SCRIPT.replace("__MARK_LABEL__", _TAIL_MARK_LABEL)
 # stamped, and the only thing it needs per section is a container to scope its
 # lookups to. `.filterable` is that container — so a fourth filterable list is
 # markup and no script at all.
+#
+# It also sorts. The stored sort is re-applied on load, and that has to happen BEFORE
+# `_STATE_SCRIPT` restores each box's `scrollTop` — otherwise the restored offset
+# lands on the default order's rows. The emission order in `build` (this script ahead
+# of `_STATE_SCRIPT`) is what guarantees it, so that order is now load-bearing.
+# Sorting moves the existing nodes, so open rows stay open and their ids still resolve.
 _FILTER_SCRIPT = """
 <script>
 (function () {
+  var SORT_KEY = "hs-overview-sort";
+  function readSorts() {
+    try { return JSON.parse(window.sessionStorage.getItem(SORT_KEY) || "{}") || {}; }
+    catch (e) { return {}; }
+  }
+  function saveSort(id, value) {
+    try {
+      var all = readSorts();
+      all[id] = value;
+      window.sessionStorage.setItem(SORT_KEY, JSON.stringify(all));
+    } catch (e) {}
+  }
+
   var boxes = document.querySelectorAll(".filterable");
   for (var i = 0; i < boxes.length; i++) wire(boxes[i]);
 
@@ -735,9 +784,43 @@ _FILTER_SCRIPT = """
     var input = root.querySelector(".f-box");
     var note = root.querySelector(".f-note");
     var scroller = root.querySelector(".scroll-y");
+    var picker = root.querySelector(".f-sort");
     if (!input || !scroller) return;
     var rows = scroller.querySelectorAll("details.job");
     var total = rows.length;
+    var original = Array.prototype.slice.call(rows);
+
+    // Descending on the row's numeric key, blanks last, ties in the server's order.
+    // `rows` keeps document order from load, which the filter loop below does not
+    // depend on, so it never needs refreshing after a sort.
+    function sortBy(key) {
+      var order = original;
+      if (key === "posted" || key === "llm") {
+        var attr = "data-" + key;
+        order = original.map(function (row, idx) {
+          var v = parseFloat(row.getAttribute(attr));
+          return { row: row, idx: idx, v: isNaN(v) ? null : v };
+        }).sort(function (a, b) {
+          if (a.v === null && b.v === null) return a.idx - b.idx;
+          if (a.v === null) return 1;
+          if (b.v === null) return -1;
+          return b.v - a.v || a.idx - b.idx;
+        }).map(function (x) { return x.row; });
+      }
+      for (var k = 0; k < order.length; k++) scroller.appendChild(order[k]);
+    }
+    if (picker && scroller.id) {
+      var stored = readSorts()[scroller.id];
+      if (stored === "posted" || stored === "llm") {
+        picker.value = stored;
+        sortBy(stored);
+      }
+      picker.addEventListener("change", function () {
+        sortBy(picker.value);
+        scroller.scrollTop = 0;
+        saveSort(scroller.id, picker.value);
+      });
+    }
 
     function paint(n) {
       if (!note) return;
