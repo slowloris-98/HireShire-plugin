@@ -113,7 +113,7 @@ OVERVIEW_CSS = """
    template, the gap and the horizontal padding match in both. Edit one, edit both. */
 .job-head, .job > summary {
   display: grid;
-  grid-template-columns: 3rem minmax(12rem, 1fr) 8rem minmax(6rem, 11rem) 4rem 4.5rem;
+  grid-template-columns: 3rem minmax(12rem, 1fr) 8rem 7.5rem minmax(6rem, 11rem) 4rem 4.5rem;
   gap: 1rem; align-items: baseline;
 }
 /* BASE_CSS's sticky rule is `.scroll-y thead th`, which is table-only, so a grid
@@ -129,8 +129,8 @@ OVERVIEW_CSS = """
   letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint);
 }
 .job-head span:nth-child(1),
-.job-head span:nth-child(5),
-.job-head span:nth-child(6) { text-align: right; }
+.job-head span:nth-child(6),
+.job-head span:nth-child(7) { text-align: right; }
 
 .job { border-top: 1px solid var(--rule); }
 /* The header already draws that rule; two of them read as a gap. */
@@ -154,7 +154,7 @@ OVERVIEW_CSS = """
 .job-t { font-size: 1.02rem; line-height: 1.35; min-width: 0; }
 /* The type the old single `.job-m` blob carried, now shared by the three cells and
    the sub-line that took over what it used to concatenate. */
-.job-c, .job-l, .job-x, .job-sub {
+.job-c, .job-p, .job-l, .job-x, .job-sub {
   font-family: "IBM Plex Mono", monospace; font-size: .68rem; letter-spacing: .07em;
   text-transform: uppercase; color: var(--ink-faint); white-space: nowrap;
 }
@@ -231,7 +231,7 @@ OVERVIEW_CSS = """
      and six column labels would line up with nothing. */
   .job-head { display: none; }
   .job > summary { grid-template-columns: 2.5rem 1fr 3.5rem; }
-  .job-c, .job-l { grid-column: 2; white-space: normal; overflow: visible; }
+  .job-c, .job-p, .job-l { grid-column: 2; white-space: normal; overflow: visible; }
   /* The one number that only means anything beside other rows. A phone-width
      reader is not comparing cross-encoder logits. */
   .job-x { display: none; }
@@ -323,7 +323,7 @@ def day_overview_name(day: str) -> str:
 # `nth-child` does it and a renamed data class cannot silently unalign the header.
 _JOB_HEAD = (
     '<div class="job-head">'
-    "<span>#</span><span>Title</span><span>Company</span>"
+    "<span>#</span><span>Title</span><span>Company</span><span>Posted</span>"
     "<span>Location</span><span>LLM</span><span>Cross</span>"
     "</div>"
 )
@@ -559,6 +559,7 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
         f'<span class="job-i">{rank}</span>'
         f'<span class="job-t">{e(title)}{sub_html}</span>'
         f'<span class="job-c">{e(company)}</span>'
+        f'<span class="job-p">{e(local_time(job.get("posted_at")))}</span>'
         f'<span class="job-l">{e(where)}</span>'
         f'<span class="job-s{" hit" if shortlisted else ""}">{num(score)}</span>'
         f'<span class="job-x">{_cross(job)}</span>'

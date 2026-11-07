@@ -18,7 +18,7 @@ from hireshire.applier import reasons, worker
 from hireshire.models.job import Job, Location
 from hireshire import run_ids
 from hireshire.reporting import data, overview
-from hireshire.reporting.render import duration, e
+from hireshire.reporting.render import duration, e, local_time
 from hireshire.storage.db import DECLINED_BY_USER, PHASE_PIPELINE, Database
 
 RUN = "2026-09-09T06-51-12Z"
@@ -1213,6 +1213,17 @@ def test_a_row_carries_its_sort_keys(tmp_path):
     block = _job_block(overview.build(_snapshot(db), RUN), "j2")
     assert _attr(block, "data-llm") == "71"
     assert _attr(block, "data-posted") == str(int(posted.timestamp()))
+
+
+def test_a_row_shows_its_posting_date_between_company_and_location(tmp_path):
+    db = _populated(tmp_path)
+    posted = db.get_jobs(["j2"])["j2"].updated_at.isoformat()
+    html = overview.build(_snapshot(db), RUN)
+    block = _job_block(html, "j2")
+    cell = f'<span class="job-p">{e(local_time(posted))}</span>'
+    assert cell in block
+    assert block.index('class="job-c"') < block.index(cell) < block.index('class="job-l"')
+    assert html.count(">Posted<") == html.count('class="job-head"')
 
 
 def test_a_placeholder_zero_is_not_a_sort_key(tmp_path):
