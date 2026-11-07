@@ -4,6 +4,13 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.30.0] — 2026-11-07
+
+### Added
+
+- **The dashboard's job lists now show when each job was posted**, in a Posted column
+  between Company and Location, in your local time.
+
 ## [0.29.0] — 2026-11-05
 
 ### Added
