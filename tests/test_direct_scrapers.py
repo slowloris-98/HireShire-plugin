@@ -25,7 +25,8 @@ from hireshire.direct.portal_locations import (
 )
 from hireshire.direct.staging import make_job_id
 from hireshire.scrapers.handlers import (
-    amazon, apple, eightfold, google, intuit, lumen, meta, microsoft, qualcomm, rivian,
+    amazon, apple, appliedmaterials, eightfold, google, intuit, lumen, meta, microsoft,
+    qualcomm, rivian,
 )
 
 NOW = datetime(2026, 8, 7, 2, 0, tzinfo=timezone.utc)
@@ -404,7 +405,20 @@ def test_qualcomm_job_names_its_country_and_defers_the_description():
     assert str(job.absolute_url).startswith("https://careers.qualcomm.com/careers/job/")
 
 
-@pytest.mark.parametrize("handler,entry", [(lumen, LUMEN_INDIA), (qualcomm, QUALCOMM_ENTRY)])
+# Trimmed from careers.appliedmaterials.com/api/pcsx/search: the long form is terse,
+# with no space after the comma and no country.
+AMAT_ENTRY = {
+    "id": 790318649414,
+    "displayJobId": "R2531234",
+    "name": "Process Engineer",
+    "locations": ["Santa Clara,CA"],
+    "standardizedLocations": ["Santa Clara, CA, US"],
+    "postedTs": 1794100000,
+}
+
+
+@pytest.mark.parametrize("handler,entry", [
+    (lumen, LUMEN_INDIA), (qualcomm, QUALCOMM_ENTRY), (appliedmaterials, AMAT_ENTRY)])
 def test_eightfold_tenants_walk_each_country_on_their_own_host(handler, entry):
     from hireshire.direct.scope import resolve_scope
     page = _Response(payload={"data": {"positions": [entry]}})
@@ -414,6 +428,7 @@ def test_eightfold_tenants_walk_each_country_on_their_own_host(handler, entry):
     assert len(jobs) == 1 and jobs[0].board_token == handler.TOKEN
     assert [u for _, u, _ in ctx.calls if "start=0" in u] == [
         handler.list_url("United States", 1), handler.list_url("India", 1)]
+    assert infer_country(jobs[0].location.name) is not None
 
 
 def test_eightfold_detail_asks_the_tenants_own_domain():

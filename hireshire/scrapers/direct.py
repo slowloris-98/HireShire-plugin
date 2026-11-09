@@ -1,19 +1,19 @@
 """Direct career portals — one scraper, one handler per company.
 
-Amazon, Apple, Google, Intuit, Lumen, Meta, Microsoft, Qualcomm and Rivian run
-their own portals rather than a multi-tenant ATS, so there is no slug list: `config/direct_companies.json`
+Amazon, Apple, Applied Materials, Google, Intuit, Lumen, Meta, Microsoft, Qualcomm
+and Rivian run their own portals rather than a multi-tenant ATS, so there is no slug list: `config/direct_companies.json`
 holds the fixed set of company names, and each maps to a handler module in
 `handlers/`.
 
 Modelling them as ONE platform (`source="direct"`, `board_token=<company>`)
-rather than nine keeps the DB rows identical to those the old `/scrape-direct`
+rather than ten keeps the DB rows identical to those the old `/scrape-direct`
 skill wrote, so `seen_jobs` dedupe carries across the migration.
 
 Every one of them is plain HTTP — no browser, no Claude session. Microsoft and
 Meta were once thought to need a browser, and neither does: Microsoft's 403
 ("Not authorized for PCSX") comes from `/api/apply/v2/jobs` only, and Meta's
-400 goes away once a request carries browser fetch metadata. Lumen and Qualcomm
-are Eightfold tenants like Microsoft and share its walk (`handlers/eightfold.py`);
+400 goes away once a request carries browser fetch metadata. Lumen, Qualcomm and
+Applied Materials are Eightfold tenants like Microsoft and share its walk (`handlers/eightfold.py`);
 Rivian is a Jibe board. See each handler.
 """
 
@@ -31,7 +31,8 @@ from hireshire.models.job import Job
 from hireshire.rate_limit import RateLimiter
 from hireshire.scrapers.base import AbstractScraper
 from hireshire.scrapers.handlers import (
-    amazon, apple, google, intuit, lumen, meta, microsoft, qualcomm, rivian,
+    amazon, apple, appliedmaterials, google, intuit, lumen, meta, microsoft, qualcomm,
+    rivian,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ _HANDLERS = {
     lumen.TOKEN: lumen,
     qualcomm.TOKEN: qualcomm,
     rivian.TOKEN: rivian,
+    appliedmaterials.TOKEN: appliedmaterials,
 }
 
 # These portals soft-block non-browser user agents, so present a browser one
