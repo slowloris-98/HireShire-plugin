@@ -94,8 +94,8 @@ class ScraperSettings(BaseModel):
     workspace_dir: str = ""
 
     # Which job boards to sweep. Workday (POST-based) and BambooHR (list->detail,
-    # two requests per company) dominate run time — 14,798 more companies between
-    # them — so they are opt-in. A disabled board's slug file is never even read.
+    # two requests per company) are the two biggest lists and dominate run time,
+    # so they are opt-in. A disabled board's slug file is never even read.
     enabled_platforms: list[str] = Field(
         default_factory=lambda: ["greenhouse", "ashby", "lever", "gem", "direct"]
     )

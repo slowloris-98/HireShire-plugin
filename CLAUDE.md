@@ -1465,12 +1465,16 @@ suppresses Rich in favour of `logging` — required under the monitor.
 ## Things that are easy to get wrong
 
 - **Board defaults.** Workday and BambooHR default **off**, and they are the two
-  biggest lists: 24,200 companies held back against 18,824 swept (greenhouse 9,293,
-  lever 4,393, ashby 4,375, gem 754, direct 9), out of 43,024 shipped. `docs/SPECS.md` leads with
-  40,000+ but must state plainly that the default sweep is ~18,824. Setup presents it
-  as a time trade-off — and **no specific multiplier has been measured yet**, so say
-  "considerably longer", not "3x". These counts come from `config/*_companies.json`
-  and grow between releases; re-derive them rather than copying this paragraph.
+  biggest lists, so the default sweep is well under half of what ships. Setup presents
+  it as a time trade-off — and **no specific multiplier has been measured yet**, so say
+  "considerably longer", not "3x".
+
+  **Company counts live in exactly two places**: `README.md`'s first line (rounded
+  down, e.g. "N,000+") and the Scale table in `docs/SPECS.md` (exact per board, plus the default
+  sweep). Re-derive both from `config/*_companies.json` when a board or slug batch is
+  added. Do not copy totals into skills, manifests, config comments or other docs — they
+  grow every release, and every copy went stale (the shipped `scraper.yaml` comment was
+  off by nearly half).
 - **The direct portals are searched for the user's countries, derived from
   `scraper.location_filter`.** `hireshire/direct/scope.py` resolves each term (country,
   state, city, `remote - us`) against `portal_locations.COUNTRIES`, and each handler
@@ -1532,7 +1536,7 @@ suppresses Rich in favour of `logging` — required under the monitor.
   - **Microsoft** is `/api/pcsx/search`. The 403 "Not authorized for PCSX" comes from
     `/api/apply/v2/jobs` only. Its page is fixed at 10 and `location=` takes one
     country (a second is silently ignored), so it walks one series per country.
-  - **Lumen and Qualcomm are Eightfold tenants, like Microsoft**, and share its walk in
+  - **Lumen, Qualcomm and Applied Materials are Eightfold tenants, like Microsoft**, and share its walk in
     `handlers/eightfold.py` and one scope column (`Country.eightfold`): `location=` is
     free text geocoded by the platform, not the tenant. Their own search pages put
     `India OR United States` in the URL, and the API **silently reduces that to one

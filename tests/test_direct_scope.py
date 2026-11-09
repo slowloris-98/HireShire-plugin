@@ -18,7 +18,8 @@ from hireshire.direct.portal_locations import COUNTRIES
 from hireshire.models.job import Job, Location, Office
 from hireshire.direct.scope import EVERYWHERE, WORLDWIDE, Scope, resolve_scope
 from hireshire.scrapers.handlers import (
-    amazon, apple, google, intuit, lumen, meta, microsoft, qualcomm, rivian,
+    amazon, apple, appliedmaterials, google, intuit, lumen, meta, microsoft, qualcomm,
+    rivian,
 )
 from scraper import _matches_location
 
@@ -149,6 +150,7 @@ def test_microsoft_walks_one_series_per_country():
     (microsoft, "apply.careers.microsoft.com", "microsoft.com"),
     (lumen, "careers.lumen.com", "lumen.com"),
     (qualcomm, "careers.qualcomm.com", "qualcomm.com"),
+    (appliedmaterials, "careers.appliedmaterials.com", "appliedmaterials.com"),
 ])
 def test_every_eightfold_tenant_is_scoped_one_country_at_a_time(handler, host, domain):
     """The tenants share one platform and one column. Their own search pages put

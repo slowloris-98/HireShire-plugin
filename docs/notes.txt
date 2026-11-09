@@ -1,4 +1,8 @@
-Can we add this plugin in codex?
+1. Cover letter only where it is a required field
+2. Humanization of the application answers, remove hyphens, semi colans, etc.
+3. When writting cover letters / answers take a look at current date and the dates in the resume, 
+    so that the answer says if finished masters already or still pursuing instead of assuming
+4. Add a new phase, linkedin reach out - contact and message composed. User can apply and then reach out.
 
 Reduce the cost for applier. maybe start the session in different view (maybe large moniter size) 
     so that a single ss can fetch all fields
@@ -12,11 +16,7 @@ smart applier:
 
 
 New companies:
-Qualcomm
-RV tech
-applied materials
-Lumen
-
+eightfold slugs
 
 Debug:
 monitor dies after 2 hours. we need a system that can run for long sessions like 24 hrs - git bash

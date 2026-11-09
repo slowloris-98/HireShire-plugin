@@ -1,6 +1,6 @@
 # HireShire Plugin
 
-Automated job search on your own Claude subscription.
+Automated job search on your own Claude subscription for 43,000+ companies.
 
 ## 1. Prerequisites
 
