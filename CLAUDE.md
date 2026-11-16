@@ -37,6 +37,7 @@ python matcher.py                     # gate → rerank → cutoff → score
 python orchestrate.py --once          # both, writing a results CSV
 python scripts/calibrate_cutoffs.py   # what rerank.min_score should be, from real runs
 python scripts/discover_slugs.py      # new ATS slugs from Common Crawl; dry run, --write merges
+python scripts/discover_all.py        # slugs + Eightfold + Oracle in turn; dry run, --write merges
 
 # Engine, as the plugin runs it (re-execs into the venv in the data dir)
 python scripts/run_engine.py orchestrate.py --once

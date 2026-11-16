@@ -108,10 +108,22 @@
     "domain": "haleon.com"
   },
   {
+    "token": "hp",
+    "label": "HP",
+    "base": "https://hp.eightfold.ai",
+    "domain": "hp.com"
+  },
+  {
     "token": "infineon",
     "label": "Infineon",
     "base": "https://infineon.eightfold.ai",
     "domain": "infineon.com"
+  },
+  {
+    "token": "jhu",
+    "label": "Johns Hopkins University",
+    "base": "https://jhu.eightfold.ai",
+    "domain": "jhu.edu"
   },
   {
     "token": "johndeere",
@@ -124,6 +136,18 @@
     "label": "lamresearch",
     "base": "https://lamresearch.eightfold.ai",
     "domain": "lamresearch.com"
+  },
+  {
+    "token": "lockheedmartin",
+    "label": "Lockheed Martin",
+    "base": "https://lockheedmartin.eightfold.ai",
+    "domain": "lockheedmartin.com"
+  },
+  {
+    "token": "mc",
+    "label": "Mayo Clinic Job Opportunities",
+    "base": "https://mc.eightfold.ai",
+    "domain": "mc.org"
   },
   {
     "token": "mercadolibre",
