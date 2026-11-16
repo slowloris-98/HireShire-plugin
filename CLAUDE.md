@@ -1543,6 +1543,27 @@ suppresses Rich in favour of `logging` — required under the monitor.
     country** (Lumen: US 113, India 14, the `OR` form 113) — so do not "simplify" the
     per-country walk into one request. Read `locations`, never `standardizedLocations`:
     on Lumen the short form renders "Remote, United States" as `Remote, OR, US`, Oregon.
+
+    **Every other Eightfold tenant is a row in `config/eightfold_tenants.json`, not a
+    module.** `hireshire/direct/tenants.py` is its only reader, so the company loader,
+    `direct._HANDLERS` and the applier's exclusions cannot disagree; a module wins a
+    token clash. Rows come only from `scripts/discover_eightfold.py`, which is add-only
+    like `discover_slugs.py` and reuses its index plumbing. Four things it learned:
+    - **A tenant is a host, so the candidate is the subdomain of `*.eightfold.ai`** and
+      `domain=` is read off the crawled URLs' own query strings, then the careers page's
+      escaped config. It is **never guessed**: a wrong one answers zero positions, which
+      reads as an empty board. `volkscience.com` (Eightfold's legal name) is the
+      placeholder an unconfigured host reports, and is never a tenant's domain.
+    - **`base` is the tenant's own host and is never shared.** `app.eightfold.ai`
+      answers Lumen by `domain=` but gives Boston Scientific zero, and a moved tenant's
+      careers page redirects to its own domain, which becomes `base`.
+    - **A token that is another board's slug gets `-eightfold`.** The applier excludes
+      by company token, so a bare `deloitte` tenant would have switched auto-apply off
+      for Lever's `deloitte` board. `tests/test_discover_eightfold.py` fails on a clash.
+    - **Not every tenant serves PCSX.** Netflix answers 403 on `/api/pcsx/search` and
+      426 jobs on the older `/api/apply/v2/jobs`, a different shape the walk does not
+      read; such tenants stay `unverified`, as do BNY and American Express, which have
+      moved off `eightfold.ai` (404) to vanity domains `--extra` can add.
   - **Rivian** is a Jibe board (`/api/jobs`, 100 a page, description in the list) with
     **no scope column**: its `country=` answers an unknown value with 0 jobs and a 200,
     and the facet exists only where Rivian has openings. The board is ~1,000 jobs, so it

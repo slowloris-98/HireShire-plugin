@@ -17,6 +17,8 @@ smart applier:
 
 New companies:
 eightfold slugs
+naukri api
+
 
 Debug:
 monitor dies after 2 hours. we need a system that can run for long sessions like 24 hrs - git bash

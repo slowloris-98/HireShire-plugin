@@ -8,6 +8,7 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 
 from hireshire import paths
+from hireshire.direct import tenants
 from hireshire.rate_limit import RateLimiter
 
 
@@ -220,9 +221,17 @@ def _load_companies_from_jsons(
     for slug in _read_slugs(workday_path):
         # Workday slug is a compound 'company|wd#|site_id'; display the company part.
         companies.append(CompanyConfig(name=slug.split("|")[0], workday_token=slug))
-    for slug in _read_slugs(direct_path):
+    direct = _read_slugs(direct_path)
+    for slug in direct:
         # Not a slug at all — the company name keys a handler module.
         companies.append(CompanyConfig(name=slug, direct_token=slug))
+    if direct_path is not None:
+        # The data-file Eightfold tenants ride the direct board: on when it is on.
+        named = set(direct)
+        for entry in tenants.entries(direct_path.parent / tenants.FILENAME):
+            if entry["token"] not in named:
+                named.add(entry["token"])
+                companies.append(CompanyConfig(name=entry["token"], direct_token=entry["token"]))
     return companies
 
 

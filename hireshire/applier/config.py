@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from hireshire import paths
 from hireshire.applier import limits
+from hireshire.direct import tenants
 
 logger = logging.getLogger(__name__)
 
@@ -212,10 +213,12 @@ def _direct_portals() -> list[str]:
             (paths.SHIPPED_CONFIG / "direct_companies.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         logger.debug("Could not read direct_companies.json for the exclusions: %s", exc)
-        return []
-    if not isinstance(value, list):
-        return []
-    return [str(v).strip() for v in value if str(v).strip()]
+        value = []
+    portals = [str(v).strip() for v in value if str(v).strip()] if isinstance(value, list) else []
+    # The data-file Eightfold tenants are direct portals too, excluded the same way
+    # as the four tenants that have modules. Read on their own, so one unreadable
+    # file does not drop the other's names.
+    return portals + tenants.tokens()
 
 
 def _with_direct_portals(companies: list[str]) -> list[str]:

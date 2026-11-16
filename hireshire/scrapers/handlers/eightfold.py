@@ -26,6 +26,15 @@ tenant shares one scope column (`Country.eightfold`).
 
 The list carries the posting time but not the description; `fetch_detail` reads
 it from `position_details` when the matcher funnel asks.
+
+Tenants with no module of their own come from `config/eightfold_tenants.json`
+(`hireshire/direct/tenants.py`), one row each: `handlers_from_file` binds every
+row to a `TenantHandler`, which is the same three-function interface a tenant
+module exposes. The walk does not care which host it is on — measured, a
+`<tenant>.eightfold.ai` host answers search, `position_details` and the long
+`locations` form exactly as the vanity hosts do. It does care that the host is
+the tenant's own: `app.eightfold.ai?domain=lumen.com` answers, but the same call
+for Boston Scientific answers zero positions, so `base` is never shared.
 """
 
 from __future__ import annotations
@@ -33,12 +42,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
 from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
+from hireshire.direct import tenants
 from hireshire.direct.locations import normalize_location
 from hireshire.direct.scope import Scope
 from hireshire.direct.staging import SOURCE, make_job_id
@@ -184,3 +195,28 @@ async def fetch_detail(tenant: Tenant, ctx, job: Job) -> Job:
         "content_text": html,
         "detail_fetch_failed": False,
     })
+
+
+class TenantHandler:
+    """One data-file tenant, exposing what `scrapers/direct.py` calls on a module."""
+
+    SCOPE_COLUMN = SCOPE_COLUMN
+
+    def __init__(self, tenant: Tenant):
+        self.tenant = tenant
+        self.TOKEN = tenant.token
+
+    async def fetch_list(self, ctx, token: str) -> list[Job]:
+        return await fetch_list(self.tenant, ctx)
+
+    async def fetch_detail(self, ctx, job: Job) -> Job:
+        return await fetch_detail(self.tenant, ctx, job)
+
+
+def handlers_from_file(path: Optional[Path] = None) -> dict[str, TenantHandler]:
+    """A handler per row of the tenant file, keyed by token. Never raises."""
+    return {
+        e["token"]: TenantHandler(Tenant(token=e["token"], label=e["label"],
+                                         base=e["base"], domain=e["domain"]))
+        for e in tenants.entries(path)
+    }

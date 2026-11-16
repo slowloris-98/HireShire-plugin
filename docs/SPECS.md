@@ -116,17 +116,17 @@ engineering.
 | Lever | 4,393 | ✓ |
 | Ashby | 4,375 | ✓ |
 | Gem | 754 | ✓ |
-| Direct portals | 10 | ✓ |
-| **Total** | **43,025** | **18,825** |
+| Direct portals | 48 | ✓ |
+| **Total** | **43,063** | **18,863** |
 
-**The default sweep is 18,825 of these** — Greenhouse, Ashby, Lever, Gem and the direct
+**The default sweep is 18,863 of these** — Greenhouse, Ashby, Lever, Gem and the direct
 portals (Amazon, Apple, Applied Materials, Google, Intuit, Lumen, Meta, Microsoft, Qualcomm, Rivian, which post outside the big
-platforms). Workday and
+platforms, plus 38 more Eightfold career sites listed in `config/eightfold_tenants.json`). Workday and
 BambooHR are off by default because they are slow: Workday is POST-based and BambooHR
 needs two requests per company. Turning them on is one answer during setup, and it
 makes each run considerably longer.
 
-That 43,025 is the shipped list, not a promise of 43,025 live boards. A fair number
+That 43,063 is the shipped list, not a promise of 43,063 live boards. A fair number
 of them answer "no board here" on any given day — a company that moved platforms,
 or one that has taken its board down. Every slug is tried on every run anyway: a
 slug with no board is recorded against that run and tried again on the next one.

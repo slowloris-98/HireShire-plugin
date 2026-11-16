@@ -4,6 +4,18 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.32.0] — 2026-11-16
+
+### Added
+
+- **38 more employers' own career sites are now searched**, all run on Eightfold like
+  Microsoft and Qualcomm: among them Starbucks, Citi, Micron, NVIDIA, Morgan Stanley,
+  Ford, PayPal, Vodafone, AstraZeneca and Boston Scientific — about 49,000 open jobs
+  between them. They follow the locations you gave during setup, and they are on for
+  every install with the direct sites, so there is nothing to switch on. As with the
+  other direct sites, applying needs your own account on the employer's site, so their
+  shortlisted jobs appear under Needs Attention for you to apply by hand.
+
 ## [0.31.0] — 2026-11-09
 
 ### Added

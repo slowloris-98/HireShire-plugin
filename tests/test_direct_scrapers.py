@@ -442,6 +442,100 @@ def test_eightfold_detail_asks_the_tenants_own_domain():
     assert "domain=qualcomm.com" in url and "position_id=446716096811" in url
 
 
+# Trimmed from bostonscientific.eightfold.ai/api/pcsx/search: a data-file tenant,
+# on Eightfold's own host rather than a vanity one.
+BSCI_ENTRY = {
+    "id": 563602813965056,
+    "displayJobId": "637964",
+    "name": "Regional Clinical Specialist",
+    "locations": ["Boston US-MA, United States | US-MA-Burlington", "Peabody, MA, USA"],
+    "postedTs": 1794100000,
+}
+BSCI_ROW = {"token": "BostonScientific", "label": "Boston Scientific",
+            "base": "https://bostonscientific.eightfold.ai/", "domain": "bostonscientific.com"}
+
+
+def _tenant_file(tmp_path, rows):
+    path = tmp_path / "eightfold_tenants.json"
+    path.write_text(json.dumps(rows), encoding="utf-8")
+    return path
+
+
+def test_a_data_file_tenant_walks_on_its_own_host_with_its_own_domain(tmp_path):
+    handlers = eightfold.handlers_from_file(_tenant_file(tmp_path, [BSCI_ROW]))
+    assert list(handlers) == ["bostonscientific"]          # token lowercased
+    handler = handlers["bostonscientific"]
+    ctx = _Ctx(_Response(payload={"data": {"positions": [BSCI_ENTRY]}}),
+               _Response(payload={"data": {"positions": []}}))
+    jobs = asyncio.run(handler.fetch_list(ctx, handler.TOKEN))
+    assert len(jobs) == 1 and jobs[0].board_token == "bostonscientific"
+    assert jobs[0].job_id == make_job_id("bostonscientific", "563602813965056")
+    assert str(jobs[0].absolute_url) == (
+        "https://bostonscientific.eightfold.ai/careers/job/563602813965056")
+    first = ctx.calls[0][1]
+    assert first.startswith("https://bostonscientific.eightfold.ai/api/pcsx/search?")
+    assert "domain=bostonscientific.com" in first
+    assert handler.SCOPE_COLUMN == eightfold.SCOPE_COLUMN
+    assert infer_country(jobs[0].location.name) == "United States"
+
+
+def test_a_data_file_tenant_hydrates_through_the_shared_detail_call(tmp_path):
+    handler = eightfold.handlers_from_file(_tenant_file(tmp_path, [BSCI_ROW]))["bostonscientific"]
+    job = eightfold.parse_job(handler.tenant, BSCI_ENTRY, NOW)
+    html = "<p>" + "Support cardiac rhythm procedures. " * 20 + "</p>"
+    out = asyncio.run(handler.fetch_detail(_Ctx(_Response(payload={"data": {"jobDescription": html}})), job))
+    assert not out.detail_fetch_failed and "cardiac" in out.content_text
+
+
+@pytest.mark.parametrize("content", [None, "not json", '{"a": 1}'])
+def test_a_missing_or_unreadable_tenant_file_adds_nothing(tmp_path, content):
+    path = tmp_path / "eightfold_tenants.json"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    assert eightfold.handlers_from_file(path) == {}
+
+
+def test_a_malformed_tenant_row_is_skipped_and_the_rest_load(tmp_path):
+    rows = [{"token": "broken", "base": "https://x.eightfold.ai"}, "nonsense", BSCI_ROW,
+            {**BSCI_ROW, "label": "duplicate"}]
+    handlers = eightfold.handlers_from_file(_tenant_file(tmp_path, rows))
+    assert list(handlers) == ["bostonscientific"]
+    assert handlers["bostonscientific"].tenant.label == "Boston Scientific"
+    assert handlers["bostonscientific"].tenant.base == "https://bostonscientific.eightfold.ai"
+
+
+def test_a_tenant_module_wins_over_a_data_file_row_with_its_token():
+    """The four tenants with modules carry notes about themselves; a data-file row
+    naming one of them must not replace it in the scraper's handler table."""
+    from hireshire.scrapers import direct
+    for module in (microsoft, lumen, qualcomm, appliedmaterials):
+        assert direct._HANDLERS[module.TOKEN] is module
+
+
+def test_the_data_file_tenants_ride_the_direct_board(tmp_path):
+    from hireshire import config
+    (tmp_path / "direct_companies.json").write_text('["lumen"]', encoding="utf-8")
+    _tenant_file(tmp_path, [BSCI_ROW, {**BSCI_ROW, "token": "lumen"}])
+    tokens = [c.direct_token for c in config._load_companies_from_jsons(
+        None, None, None, None, None, tmp_path / "direct_companies.json")]
+    assert tokens == ["lumen", "bostonscientific"]
+    # Off with the direct board: the tenant file is never read.
+    assert config._load_companies_from_jsons(None, None, None, None, None, None) == []
+
+
+def test_the_shipped_tenant_file_is_well_formed_and_clashes_with_no_module():
+    from hireshire import paths
+    from hireshire.direct import tenants
+    from hireshire.scrapers import direct
+    raw = json.loads((paths.SHIPPED_CONFIG / tenants.FILENAME).read_text(encoding="utf-8"))
+    assert len(tenants.entries()) == len(raw), "every shipped row must load"
+    toks = [r["token"] for r in raw]
+    assert toks == sorted(set(toks)) and all(t == t.lower() for t in toks)
+    modules = {microsoft.TOKEN, lumen.TOKEN, qualcomm.TOKEN, appliedmaterials.TOKEN}
+    assert not modules & set(toks)
+    assert all(direct._HANDLERS[t].tenant.domain for t in toks)
+
+
 # Trimmed from careers.rivian.com/api/jobs.
 RIVIAN_ENTRY = {
     "slug": "35853",

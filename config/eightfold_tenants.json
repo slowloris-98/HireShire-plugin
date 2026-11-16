@@ -1,0 +1,230 @@
+[
+  {
+    "token": "amdocs",
+    "label": "Amdocs",
+    "base": "https://amdocs.eightfold.ai",
+    "domain": "amdocs.com"
+  },
+  {
+    "token": "ascendion",
+    "label": "Ascendion",
+    "base": "https://ascendion.eightfold.ai",
+    "domain": "ascendion.com"
+  },
+  {
+    "token": "astrazeneca",
+    "label": "AstraZeneca",
+    "base": "https://astrazeneca.eightfold.ai",
+    "domain": "astrazeneca.com"
+  },
+  {
+    "token": "atb",
+    "label": "ATB",
+    "base": "https://atb.eightfold.ai",
+    "domain": "atb.com"
+  },
+  {
+    "token": "bms",
+    "label": "Bristol Myers Squibb",
+    "base": "https://bms.eightfold.ai",
+    "domain": "bms.com"
+  },
+  {
+    "token": "bostonscientific",
+    "label": "Boston Scientific",
+    "base": "https://bostonscientific.eightfold.ai",
+    "domain": "bostonscientific.com"
+  },
+  {
+    "token": "ccep",
+    "label": "Coca-Cola Europacific Partners",
+    "base": "https://ccep.eightfold.ai",
+    "domain": "ccep.com"
+  },
+  {
+    "token": "citi",
+    "label": "Citi",
+    "base": "https://citi.eightfold.ai",
+    "domain": "citi.com"
+  },
+  {
+    "token": "corteva",
+    "label": "Corteva Agriscience",
+    "base": "https://corteva.eightfold.ai",
+    "domain": "corteva.com"
+  },
+  {
+    "token": "curriculumassociates",
+    "label": "Curriculum Associates",
+    "base": "https://curriculumassociates.eightfold.ai",
+    "domain": "curriculumassociates.com"
+  },
+  {
+    "token": "deloitte-eightfold",
+    "label": "Deloitte",
+    "base": "https://deloitte.eightfold.ai",
+    "domain": "deloitte.de"
+  },
+  {
+    "token": "eaton",
+    "label": "Eaton",
+    "base": "https://eaton.eightfold.ai",
+    "domain": "eaton.com"
+  },
+  {
+    "token": "elcompanies",
+    "label": "Est\u00e9e Lauder Companies",
+    "base": "https://elcompanies.eightfold.ai",
+    "domain": "elcompanies.com"
+  },
+  {
+    "token": "ericsson",
+    "label": "Ericsson",
+    "base": "https://ericsson.eightfold.ai",
+    "domain": "ericsson.com"
+  },
+  {
+    "token": "ford",
+    "label": "Ford",
+    "base": "https://ford.eightfold.ai",
+    "domain": "ford.com"
+  },
+  {
+    "token": "fortive",
+    "label": "fortive",
+    "base": "https://fortive.eightfold.ai",
+    "domain": "fortive.com"
+  },
+  {
+    "token": "globalfoundries",
+    "label": "GlobalFoundries",
+    "base": "https://globalfoundries.eightfold.ai",
+    "domain": "globalfoundries.com"
+  },
+  {
+    "token": "haleon",
+    "label": "Haleon",
+    "base": "https://haleon.eightfold.ai",
+    "domain": "haleon.com"
+  },
+  {
+    "token": "infineon",
+    "label": "Infineon",
+    "base": "https://infineon.eightfold.ai",
+    "domain": "infineon.com"
+  },
+  {
+    "token": "johndeere",
+    "label": "johndeere",
+    "base": "https://johndeere.eightfold.ai",
+    "domain": "johndeere.com"
+  },
+  {
+    "token": "lamresearch",
+    "label": "lamresearch",
+    "base": "https://lamresearch.eightfold.ai",
+    "domain": "lamresearch.com"
+  },
+  {
+    "token": "mercadolibre",
+    "label": "mercadolibre",
+    "base": "https://mercadolibre.eightfold.ai",
+    "domain": "mercadolibre.com"
+  },
+  {
+    "token": "micron",
+    "label": "micron",
+    "base": "https://micron.eightfold.ai",
+    "domain": "micron.com"
+  },
+  {
+    "token": "morganstanley",
+    "label": "morganstanley",
+    "base": "https://morganstanley.eightfold.ai",
+    "domain": "morganstanley.com"
+  },
+  {
+    "token": "nab",
+    "label": "National Australia Bank",
+    "base": "https://nab.eightfold.ai",
+    "domain": "nab.com.au"
+  },
+  {
+    "token": "nformal",
+    "label": "nformal",
+    "base": "https://nformal.eightfold.ai",
+    "domain": "nformal.com"
+  },
+  {
+    "token": "nvidia",
+    "label": "nvidia",
+    "base": "https://nvidia.eightfold.ai",
+    "domain": "nvidia.com"
+  },
+  {
+    "token": "on",
+    "label": "On",
+    "base": "https://on.eightfold.ai",
+    "domain": "on.com"
+  },
+  {
+    "token": "paypal",
+    "label": "paypal",
+    "base": "https://paypal.eightfold.ai",
+    "domain": "paypal.com"
+  },
+  {
+    "token": "plexus-eightfold",
+    "label": "plexus",
+    "base": "https://plexus.eightfold.ai",
+    "domain": "plexus.com"
+  },
+  {
+    "token": "ralliant",
+    "label": "ralliant",
+    "base": "https://ralliant.eightfold.ai",
+    "domain": "ralliant.com"
+  },
+  {
+    "token": "slb",
+    "label": "SLB",
+    "base": "https://slb.eightfold.ai",
+    "domain": "slb.com"
+  },
+  {
+    "token": "starbucks",
+    "label": "Starbucks",
+    "base": "https://starbucks.eightfold.ai",
+    "domain": "starbucks.com"
+  },
+  {
+    "token": "telekom-growthhub",
+    "label": "Deutsche Telekom",
+    "base": "https://telekom-growthhub.eightfold.ai",
+    "domain": "telekom-growthhub.com"
+  },
+  {
+    "token": "trinet",
+    "label": "TriNet",
+    "base": "https://trinet.eightfold.ai",
+    "domain": "trinet.com"
+  },
+  {
+    "token": "ukg",
+    "label": "UKG",
+    "base": "https://apply.ukg.com",
+    "domain": "ukg.com"
+  },
+  {
+    "token": "vialto",
+    "label": "Vialto Partners",
+    "base": "https://vialto.eightfold.ai",
+    "domain": "vialto.com"
+  },
+  {
+    "token": "vodafone",
+    "label": "Vodafone",
+    "base": "https://vodafone.eightfold.ai",
+    "domain": "vodafone.com"
+  }
+]
