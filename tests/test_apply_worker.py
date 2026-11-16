@@ -373,6 +373,18 @@ def test_the_tenant_exclusions_survive_an_unreadable_portal_list(tmp_path, monke
     assert _exclusions(tmp_path, monkeypatch, "[acme]", "not json") == ["acme", "bostonscientific"]
 
 
+def test_every_oracle_recruiting_employer_is_excluded(tmp_path, monkeypatch):
+    """Guest apply on Oracle Recruiting Cloud asks for an emailed code, so every
+    session would end in Needs Attention anyway; none is started."""
+    shipped = tmp_path / "shipped"
+    shipped.mkdir(exist_ok=True)
+    (shipped / "oracle_companies.json").write_text(json.dumps([
+        {"token": "bdo-usa", "label": "BDO USA", "host": "ebqb.fa.us2.oraclecloud.com",
+         "sites": ["CX_1"]}]), encoding="utf-8")
+    got = _exclusions(tmp_path, monkeypatch, "[acme]", "not json")
+    assert got == ["acme", "bdo-usa"]
+
+
 def test_the_session_is_given_the_users_own_location_list(tmp_path, launcher):
     """`apply_one.md` used to hardcode six strings and never read config, so a job
     scraped as `Arlington, VA, United States` and rendered as `Arlington, VA` was

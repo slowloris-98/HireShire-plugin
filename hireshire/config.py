@@ -7,7 +7,7 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-from hireshire import paths
+from hireshire import oracle_tenants, paths
 from hireshire.direct import tenants
 from hireshire.rate_limit import RateLimiter
 
@@ -23,6 +23,9 @@ class CompanyConfig(BaseModel):
     # Single-tenant career portals (Amazon/Apple/Google/Intuit/Meta/Microsoft). The
     # "token" is just the company name — see hireshire/scrapers/direct.py.
     direct_token: Optional[str] = None
+    # Oracle Recruiting Cloud: a row of config/oracle_companies.json, keyed by its
+    # readable token — see hireshire/oracle_tenants.py.
+    oracle_token: Optional[str] = None
     tags: list[str] = []
 
 
@@ -46,6 +49,9 @@ _DEFAULT_RATE_LIMITS = {
     "workday": RateLimitConfig(concurrency=8, min_interval_s=0.0),
     # Only 3 companies, all big-tech portals with no published limits — stay polite.
     "direct": RateLimitConfig(concurrency=3, min_interval_s=0.5),
+    # One pod per employer, so the load spreads across Oracle's hosts; no published
+    # limit. Discovery checked hundreds of sites at 4-way with no 429.
+    "oracle": RateLimitConfig(concurrency=8, min_interval_s=0.0),
 }
 
 # Per-board count of in-flight company workers. This is the company-level pool
@@ -60,6 +66,7 @@ _DEFAULT_COMPANY_CONCURRENCY = {
     "bamboohr": 5,
     "workday": 5,
     "direct": 6,
+    "oracle": 6,
 }
 
 
@@ -98,7 +105,7 @@ class ScraperSettings(BaseModel):
     # two requests per company) are the two biggest lists and dominate run time,
     # so they are opt-in. A disabled board's slug file is never even read.
     enabled_platforms: list[str] = Field(
-        default_factory=lambda: ["greenhouse", "ashby", "lever", "gem", "direct"]
+        default_factory=lambda: ["greenhouse", "ashby", "lever", "gem", "direct", "oracle"]
     )
 
     # Per-source throttling. Overridable via `settings.rate_limits` in config/scraper.yaml
@@ -189,6 +196,10 @@ class AppConfig(BaseModel):
     def direct_companies(self) -> list[CompanyConfig]:
         return [c for c in self.companies if c.direct_token]
 
+    @property
+    def oracle_companies(self) -> list[CompanyConfig]:
+        return [c for c in self.companies if c.oracle_token]
+
 
 def _read_slugs(path: Path | None) -> list[str]:
     """Read a flat JSON array of slugs. `None` means the board is disabled and
@@ -206,6 +217,7 @@ def _load_companies_from_jsons(
     workday_path: Path | None,
     direct_path: Path | None,
     gem_path: Path | None = None,
+    oracle_path: Path | None = None,
 ) -> list[CompanyConfig]:
     companies: list[CompanyConfig] = []
     for slug in _read_slugs(ashby_path):
@@ -232,6 +244,9 @@ def _load_companies_from_jsons(
             if entry["token"] not in named:
                 named.add(entry["token"])
                 companies.append(CompanyConfig(name=entry["token"], direct_token=entry["token"]))
+    if oracle_path is not None:
+        for entry in oracle_tenants.entries(oracle_path):
+            companies.append(CompanyConfig(name=entry["label"], oracle_token=entry["token"]))
     return companies
 
 
@@ -242,11 +257,18 @@ def _load_companies_from_jsons(
 # defaults, so it gets Gem too; one that dropped any of them made a choice, and keeps
 # it. The price: with all four on, Gem cannot be switched off alone.
 _PRE_GEM_DEFAULTS = frozenset({"greenhouse", "ashby", "lever", "direct"})
+# The same rule for Oracle Recruiting Cloud (0.33.0), with its own baseline: the five
+# defaults before it. Applied after the Gem rule, so an install from before Gem that
+# never trimmed its boards gets both. The same price: with all five on, Oracle cannot
+# be switched off alone.
+_PRE_ORACLE_DEFAULTS = frozenset({"greenhouse", "ashby", "lever", "gem", "direct"})
 
 
 def _with_new_defaults(platforms: list[str]) -> list[str]:
     if "gem" not in platforms and _PRE_GEM_DEFAULTS <= set(platforms):
-        return [*platforms, "gem"]
+        platforms = [*platforms, "gem"]
+    if "oracle" not in platforms and _PRE_ORACLE_DEFAULTS <= set(platforms):
+        platforms = [*platforms, "oracle"]
     return platforms
 
 
@@ -273,5 +295,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         workday_path=_p("workday", "workday_companies.json"),
         direct_path=_p("direct", "direct_companies.json"),
         gem_path=_p("gem", "gem_companies.json"),
+        oracle_path=_p("oracle", oracle_tenants.FILENAME),
     )
     return AppConfig(settings=settings, companies=companies)

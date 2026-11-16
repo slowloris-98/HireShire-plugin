@@ -4,6 +4,18 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.33.0] — 2026-11-16
+
+### Added
+
+- **Employers that hire through Oracle's careers software are now searched** — 138 of
+  them, among them American Express, Oracle, Macy's, Sherwin-Williams, Texas Instruments,
+  Southern Company, SAIC, Hilton Grand Vacations, Williams-Sonoma and BDO, with about
+  57,000 open jobs between them. They are part of the default sweep, so an existing
+  install picks them up on its next run unless you had narrowed which job boards to
+  search. Applying on these sites is left to you for now, so their shortlisted jobs
+  appear under Needs Attention for you to apply by hand.
+
 ## [0.32.0] — 2026-11-16
 
 ### Added

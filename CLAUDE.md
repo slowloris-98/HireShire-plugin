@@ -156,7 +156,42 @@ Consequences already worked out, which should not be re-derived:
   pre-Gem defaults, and leaves a trimmed list alone because trimming was a choice. The
   accepted cost: with those four on, Gem cannot be switched off by itself. A future
   board that should reach existing installs needs the same treatment, with its own
-  pre-board baseline.
+  pre-board baseline. **Oracle Recruiting Cloud is the second such board**:
+  `_PRE_ORACLE_DEFAULTS` is the five defaults before it, and the rule runs *after* the
+  Gem rule, so an install from before Gem that never trimmed its boards gains both.
+
+- **Oracle Recruiting Cloud employers are rows in `config/oracle_companies.json`, grown
+  only by `scripts/discover_oracle.py`** (add-only, the sibling of
+  `discover_eightfold.py`). `hireshire/oracle_tenants.py` is the only reader. Five
+  things were measured on live pods and fail silently if undone:
+  - **Everything goes to the pod, `<pod>.fa.<region>.oraclecloud.com`, never the
+    employer's careers domain.** `careers.americanexpress.com` answers the API with a
+    redirect to a 404 page; the pod host is written in that page, which is how
+    `--extra` turns a vanity URL into a row.
+  - **A pod answers an unknown site number with its default site's jobs.** On BDO,
+    `CX`, `CX_xx` and `jobsearch` all returned the same 675 as `BDOExperiencedCareers`,
+    while the real second site `CX_1` had jobs the main one lacks. So every crawled
+    site "works": `prune_sites` keeps a site only if its first page reaches ids the
+    kept ones do not, and the scraper still dedupes a pod's sites by requisition id.
+    Do not drop the pruning because every site answered 200.
+  - **Requisition ids are small integers that repeat between employers**, so `job_id`
+    is `oracle:<token>:<id>`. A bare id would make the overview's buttons ambiguous.
+  - **`PostedDate` has no time, and it is read as the END of its day** (capped at the
+    scrape), not midnight. `scraper.py`'s age gate compares instants, so a midnight
+    reading drops a job posted at 22:00 UTC from the 01:00 sweep that first sees it —
+    and from every later sweep, so it is never seen at all. The end-of-day reading can
+    only keep a job up to a day too long. The newest-first walk (`limit` caps at 200)
+    stops on a whole page dated before the cutoff's *day*, and the detail call
+    replaces the date with the exact `ExternalPostedStartDate`.
+  - **The list has no description**, so `oracle` is in `DETAIL_SOURCES` and
+    `detail_path` is `host|site|id`: the funnel's detail fetcher holds no employer
+    list. The detail also adds the secondary locations, which the list omits, so the
+    location gate at scrape time sees only the primary one.
+
+  The token is a readable slug of the site page's title, because the dashboard prints
+  `board_token` as the company; a clash with another board's slug gets `-oracle`.
+  Every Oracle token is in the applier's exclusions: guest apply asks for an emailed
+  code, which would end each session in Needs Attention anyway.
 - **The recurring sweep is NOT session-scoped, and nothing may make it so again.**
   `scripts/run_orchestration.py` is an ordinary sleep/sweep loop. `--monitor` runs it
   recurring, `--sweep` runs one cycle (`--once`) and is what the OS scheduler entry
