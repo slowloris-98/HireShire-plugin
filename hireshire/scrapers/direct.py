@@ -14,7 +14,8 @@ Meta were once thought to need a browser, and neither does: Microsoft's 403
 ("Not authorized for PCSX") comes from `/api/apply/v2/jobs` only, and Meta's
 400 goes away once a request carries browser fetch metadata. Lumen, Qualcomm and
 Applied Materials are Eightfold tenants like Microsoft and share its walk (`handlers/eightfold.py`);
-Rivian is a Jibe board. See each handler.
+every further Eightfold tenant is a row in `config/eightfold_tenants.json`, bound to
+that same walk with no module of its own. Rivian is a Jibe board. See each handler.
 """
 
 from __future__ import annotations
@@ -31,8 +32,8 @@ from hireshire.models.job import Job
 from hireshire.rate_limit import RateLimiter
 from hireshire.scrapers.base import AbstractScraper
 from hireshire.scrapers.handlers import (
-    amazon, apple, appliedmaterials, google, intuit, lumen, meta, microsoft, qualcomm,
-    rivian,
+    amazon, apple, appliedmaterials, eightfold, google, intuit, lumen, meta, microsoft,
+    qualcomm, rivian,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,9 @@ _HANDLERS = {
     rivian.TOKEN: rivian,
     appliedmaterials.TOKEN: appliedmaterials,
 }
+# Every other Eightfold tenant is a row in config/eightfold_tenants.json. A module
+# above wins on a token clash: it is the one carrying notes about that tenant.
+_HANDLERS.update({t: h for t, h in eightfold.handlers_from_file().items() if t not in _HANDLERS})
 
 # These portals soft-block non-browser user agents, so present a browser one
 # (same approach as workday.py / bamboohr.py).

@@ -10,6 +10,7 @@ from hireshire.models.job import Job
 from hireshire.rate_limit import RateLimiter
 from hireshire.scrapers.bamboohr import BambooHRScraper
 from hireshire.scrapers.direct import DirectScraper
+from hireshire.scrapers.oracle import OracleScraper
 from hireshire.scrapers.workday import WorkdayScraper
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 # Boards whose description lives behind a separate per-job detail call.
 # "direct" covers Google/Intuit (Apple's list payload already carries the
 # description, so its jobs arrive with content_text set and are skipped below).
-DETAIL_SOURCES = ("workday", "bamboohr", "direct")
+DETAIL_SOURCES = ("workday", "bamboohr", "direct", "oracle")
 
 
 class DetailFetcher:
@@ -42,6 +43,9 @@ class DetailFetcher:
             "workday": WorkdayScraper(self._client, RateLimiter(limiter_width, 0.0)),
             "bamboohr": BambooHRScraper(self._client, RateLimiter(limiter_width, 0.0)),
             "direct": DirectScraper(self._client, RateLimiter(limiter_width, 0.0)),
+            # Hydrates from the job alone (`detail_path` is host|site|id), so it needs
+            # no employer list here.
+            "oracle": OracleScraper(self._client, RateLimiter(limiter_width, 0.0), tenants={}),
         }
         return self
 

@@ -1,0 +1,2469 @@
+[
+  {
+    "token": "aci-worldwide",
+    "label": "ACI Worldwide",
+    "host": "ebwg.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "acosta",
+    "label": "Acosta",
+    "host": "eczy.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "adani",
+    "label": "Adani",
+    "host": "eibd.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "adena-health",
+    "label": "Adena Health",
+    "host": "eord.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "adventist-health",
+    "label": "Adventist Health",
+    "host": "ecvz.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "aeo",
+    "label": "AEO",
+    "host": "hcml.fa.us2.oraclecloud.com",
+    "sites": [
+      "AEO"
+    ]
+  },
+  {
+    "token": "agsouth-farm-credit",
+    "label": "AgSouth Farm Credit",
+    "host": "eozs.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_13",
+      "CX_30",
+      "CX_11",
+      "CX_5",
+      "CX_8",
+      "CX_22",
+      "CX_20"
+    ]
+  },
+  {
+    "token": "airtel-africa",
+    "label": "Airtel Africa",
+    "host": "erey.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "al-othman-holding-company",
+    "label": "Al-Othman Holding Company",
+    "host": "eknh.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1001",
+      "CX_6001"
+    ]
+  },
+  {
+    "token": "albertsons-companies",
+    "label": "Albertsons Companies",
+    "host": "eofd.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "allegheny-intermediate-unit",
+    "label": "Allegheny Intermediate Unit",
+    "host": "einj.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "american-bureau-of-shipping",
+    "label": "American Bureau of Shipping",
+    "host": "hbbq.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "american-express",
+    "label": "American Express",
+    "host": "egug.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "american-tower-global",
+    "label": "American Tower Global",
+    "host": "hdsn.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "amneal-india",
+    "label": "Amneal India",
+    "host": "hcfa.fa.us2.oraclecloud.com",
+    "sites": [
+      "AmnealIndiaCareers",
+      "CX"
+    ]
+  },
+  {
+    "token": "amplifon",
+    "label": "Amplifon",
+    "host": "efuf.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "aperam",
+    "label": "Aperam",
+    "host": "hdhy.fa.em3.oraclecloud.com",
+    "sites": [
+      "AperamCareerSite"
+    ]
+  },
+  {
+    "token": "apollo-hospitals",
+    "label": "Apollo Hospitals",
+    "host": "cgs.fa.ap2.oraclecloud.com",
+    "sites": [
+      "CX_2"
+    ]
+  },
+  {
+    "token": "app-recruitment",
+    "label": "APP Recruitment",
+    "host": "eify.fa.us6.oraclecloud.com",
+    "sites": [
+      "jobsearch",
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "apparel",
+    "label": "Apparel",
+    "host": "ediu.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1013"
+    ]
+  },
+  {
+    "token": "araymond",
+    "label": "ARaymond",
+    "host": "hdex.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "arcadis",
+    "label": "Arcadis",
+    "host": "ebcs.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "arcelormittal-oracle",
+    "label": "ArcelorMittal",
+    "host": "emfg.fa.em4.oraclecloud.com",
+    "sites": [
+      "CX_4001"
+    ]
+  },
+  {
+    "token": "arconic",
+    "label": "Arconic",
+    "host": "hdnn.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "arcor-global",
+    "label": "Arcor Global",
+    "host": "emqm.fa.us6.oraclecloud.com",
+    "sites": [
+      "grupoarcorgl"
+    ]
+  },
+  {
+    "token": "arqiva",
+    "label": "Arqiva",
+    "host": "ehik.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "asharq",
+    "label": "Asharq",
+    "host": "emrb.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "aspen-medical",
+    "label": "Aspen Medical",
+    "host": "engw.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "aspetar",
+    "label": "Aspetar",
+    "host": "eipb.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_5"
+    ]
+  },
+  {
+    "token": "aster-dm-healthcare",
+    "label": "Aster DM Healthcare",
+    "host": "hcdt.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "at-home",
+    "label": "At Home",
+    "host": "hdiy.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "atco",
+    "label": "ATCO",
+    "host": "eezy.fa.ca2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "atlantic-health-system",
+    "label": "Atlantic Health System",
+    "host": "erqh.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "australiansuper",
+    "label": "AustralianSuper",
+    "host": "ejjl.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "barrick-mining-corporation",
+    "label": "Barrick Mining Corporation",
+    "host": "ehkn.fa.ca2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "bdo-usa-experienced",
+    "label": "BDO USA Experienced",
+    "host": "ebqb.fa.us2.oraclecloud.com",
+    "sites": [
+      "BDOExperiencedCareers",
+      "CX_1"
+    ]
+  },
+  {
+    "token": "bed-bath-beyond",
+    "label": "Bed Bath & Beyond",
+    "host": "eklv.fa.ca3.oraclecloud.com",
+    "sites": [
+      "bedbathandbeyond"
+    ]
+  },
+  {
+    "token": "benoy",
+    "label": "Benoy",
+    "host": "edte.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "beyond-oracle",
+    "label": "BEYOND",
+    "host": "ejds.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "black-box",
+    "label": "Black Box",
+    "host": "eoje.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "bny",
+    "label": "BNY",
+    "host": "eofe.fa.us2.oraclecloud.com",
+    "sites": [
+      "BNY"
+    ]
+  },
+  {
+    "token": "boston-beer",
+    "label": "Boston Beer",
+    "host": "hcrb.fa.us2.oraclecloud.com",
+    "sites": [
+      "BostonBeerCareers"
+    ]
+  },
+  {
+    "token": "business-operations-and-legal",
+    "label": "Business Operations and Legal",
+    "host": "ehpy.fa.em5.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "calderys",
+    "label": "Calderys",
+    "host": "egmk.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "candidate-experience-site-lateral",
+    "label": "Candidate Experience Site - Lateral",
+    "host": "hdpc.fa.us2.oraclecloud.com",
+    "sites": [
+      "LateralHiring",
+      "CX"
+    ]
+  },
+  {
+    "token": "canon",
+    "label": "Canon",
+    "host": "ejqe.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "cantor-fitzgerald-bgc",
+    "label": "Cantor Fitzgerald/BGC",
+    "host": "hdow.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1001",
+      "CX_1003"
+    ]
+  },
+  {
+    "token": "carnival-corporation",
+    "label": "Carnival Corporation",
+    "host": "eicl.fa.em5.oraclecloud.com",
+    "sites": [
+      "CORP",
+      "CX_1"
+    ]
+  },
+  {
+    "token": "carriere-coris-bank-international",
+    "label": "Carri\u00e8re - Coris Bank International",
+    "host": "ekhw.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "carrington",
+    "label": "Carrington",
+    "host": "emvo.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_3002"
+    ]
+  },
+  {
+    "token": "cbiz",
+    "label": "CBIZ",
+    "host": "ebez.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1",
+      "CX_4"
+    ]
+  },
+  {
+    "token": "cecony",
+    "label": "CECONY",
+    "host": "ejcu.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1033"
+    ]
+  },
+  {
+    "token": "centra-health",
+    "label": "Centra Health",
+    "host": "ejid.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "centracare",
+    "label": "CentraCare",
+    "host": "elyb.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "centrus-global",
+    "label": "Centrus Global",
+    "host": "eese.fa.us8.oraclecloud.com",
+    "sites": [
+      "CentrusEnergyCareers"
+    ]
+  },
+  {
+    "token": "chartwell-career-site-english",
+    "label": "Chartwell Career Site English",
+    "host": "hcrw.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1"
+    ]
+  },
+  {
+    "token": "cherry-creek",
+    "label": "Cherry Creek",
+    "host": "enmv.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "church",
+    "label": "Church",
+    "host": "epej.fa.us2.oraclecloud.com",
+    "sites": [
+      "ChurchEmployment"
+    ]
+  },
+  {
+    "token": "cimb-thailand",
+    "label": "CIMB  Thailand",
+    "host": "ejox.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_7",
+      "CX_11",
+      "CX_2"
+    ]
+  },
+  {
+    "token": "city-of-fredericton",
+    "label": "City of Fredericton",
+    "host": "eihe.fa.ca2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "city-of-greeley",
+    "label": "City of Greeley",
+    "host": "elvp.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "clean-harbors",
+    "label": "Clean Harbors",
+    "host": "epyc.fa.us2.oraclecloud.com",
+    "sites": [
+      "CLH"
+    ]
+  },
+  {
+    "token": "clubcorp",
+    "label": "ClubCorp",
+    "host": "ecwl.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_3001"
+    ]
+  },
+  {
+    "token": "cnrl-professional",
+    "label": "CNRL Professional",
+    "host": "ehaa.fa.ca2.oraclecloud.com",
+    "sites": [
+      "CNRL",
+      "CX_3"
+    ]
+  },
+  {
+    "token": "cohu",
+    "label": "Cohu",
+    "host": "hcbo.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "construction-specialties",
+    "label": "Construction Specialties",
+    "host": "efhn.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "copa-airlines",
+    "label": "Copa Airlines",
+    "host": "ejom.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "cornwall",
+    "label": "Cornwall",
+    "host": "ehgv.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "corserv",
+    "label": "Corserv",
+    "host": "ekzo.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "cotton-on",
+    "label": "COTTON ON",
+    "host": "ekxm.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "county-of-berks",
+    "label": "County of Berks",
+    "host": "eolj.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "creighton-university",
+    "label": "Creighton University",
+    "host": "hcps.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "csc",
+    "label": "CSC",
+    "host": "hczw.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "dallah-recruitment-system",
+    "label": "Dallah Recruitment System",
+    "host": "eniy.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_6001"
+    ]
+  },
+  {
+    "token": "damac",
+    "label": "DAMAC",
+    "host": "ejwe.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "darling-ingredients",
+    "label": "Darling Ingredients",
+    "host": "ekgz.fa.us6.oraclecloud.com",
+    "sites": [
+      "DarlingII"
+    ]
+  },
+  {
+    "token": "datavail",
+    "label": "Datavail",
+    "host": "eifn.fa.us6.oraclecloud.com",
+    "sites": [
+      "ExternalCareerSite"
+    ]
+  },
+  {
+    "token": "dc",
+    "label": "DC",
+    "host": "ertd.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "dc-water",
+    "label": "DC Water",
+    "host": "elxb.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "denso-career-connection",
+    "label": "DENSO Career Connection",
+    "host": "hcwt.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "deq",
+    "label": "DEQ",
+    "host": "eybw.fa.us8.oraclecloud.com",
+    "sites": [
+      "Virginia"
+    ]
+  },
+  {
+    "token": "diebold-nixdorf",
+    "label": "Diebold Nixdorf",
+    "host": "eeug.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "digital-realty-global",
+    "label": "Digital Realty Global",
+    "host": "hdep.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "dnv",
+    "label": "DNV",
+    "host": "ecyq.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "dp-world",
+    "label": "DP World",
+    "host": "ehpv.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "dps",
+    "label": "DPS",
+    "host": "esgj.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "dtcc",
+    "label": "DTCC",
+    "host": "ebxr.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "dtu",
+    "label": "DTU",
+    "host": "efzu.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "dubai-world-trade-centre",
+    "label": "Dubai World Trade Centre",
+    "host": "bun.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "ebhu",
+    "label": "ebhu",
+    "host": "ebhu.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "ebtw",
+    "label": "ebtw",
+    "host": "ebtw.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "echs",
+    "label": "echs",
+    "host": "echs.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "eevd",
+    "label": "eevd",
+    "host": "eevd.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1",
+      "CX_6",
+      "CX_15",
+      "CX_8007",
+      "CX_1001",
+      "CX_10007",
+      "CX_4",
+      "CX_16",
+      "CX_20",
+      "CX_11007",
+      "CX_3"
+    ]
+  },
+  {
+    "token": "egcu",
+    "label": "egcu",
+    "host": "egcu.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "egpa",
+    "label": "egpa",
+    "host": "egpa.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "eieb",
+    "label": "eieb",
+    "host": "eieb.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "eijc",
+    "label": "eijc",
+    "host": "eijc.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "eiqu",
+    "label": "eiqu",
+    "host": "eiqu.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "eizj",
+    "label": "eizj",
+    "host": "eizj.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "ejis",
+    "label": "ejis",
+    "host": "ejis.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "ejov",
+    "label": "ejov",
+    "host": "ejov.fa.ca2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "ekac",
+    "label": "ekac",
+    "host": "ekac.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "ekcm",
+    "label": "ekcm",
+    "host": "ekcm.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "ekpl",
+    "label": "ekpl",
+    "host": "ekpl.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_3001"
+    ]
+  },
+  {
+    "token": "elij",
+    "label": "elij",
+    "host": "elij.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "emaar",
+    "label": "EMAAR",
+    "host": "emhm.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "emerson",
+    "label": "Emerson",
+    "host": "hdjq.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "england-rugby",
+    "label": "England Rugby",
+    "host": "ecer.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "enterprise-wide",
+    "label": "Enterprise Wide",
+    "host": "hdrc.fa.ca3.oraclecloud.com",
+    "sites": [
+      "CX_7002",
+      "CX_3001"
+    ]
+  },
+  {
+    "token": "ep-central-casting",
+    "label": "EP | Central Casting",
+    "host": "eoko.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "equity-residential",
+    "label": "Equity Residential",
+    "host": "hcjm.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "esf",
+    "label": "ESF",
+    "host": "eoix.fa.ap1.oraclecloud.com",
+    "sites": [
+      "ESFCareerSite"
+    ]
+  },
+  {
+    "token": "esm-vacancies",
+    "label": "ESM Vacancies",
+    "host": "ebuz.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "estes-express-lines",
+    "label": "Estes Express Lines",
+    "host": "ecwr.fa.us2.oraclecloud.com",
+    "sites": [
+      "work4estes"
+    ]
+  },
+  {
+    "token": "explore-rh",
+    "label": "Explore RH",
+    "host": "hcqq.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_5004"
+    ]
+  },
+  {
+    "token": "fab",
+    "label": "FAB",
+    "host": "ehjd.fa.em2.oraclecloud.com",
+    "sites": [
+      "fabCareers"
+    ]
+  },
+  {
+    "token": "fife-council",
+    "label": "Fife Council",
+    "host": "ekmu.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_6009"
+    ]
+  },
+  {
+    "token": "fmol-health",
+    "label": "FMOL Health",
+    "host": "eqtm.fa.us2.oraclecloud.com",
+    "sites": [
+      "fmolhs"
+    ]
+  },
+  {
+    "token": "ford-global",
+    "label": "Ford Global",
+    "host": "efds.fa.em5.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "fortive-ejta",
+    "label": "Fortive",
+    "host": "ejta.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "foundation-medicine",
+    "label": "Foundation Medicine",
+    "host": "hcyc.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "fujifilm-business-innovation-new-zealand",
+    "label": "FUJIFILM Business Innovation New Zealand",
+    "host": "hcjq.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_9",
+      "CX_1",
+      "CX_13"
+    ]
+  },
+  {
+    "token": "galadari-brothers",
+    "label": "Galadari Brothers",
+    "host": "efcs.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "galliford-try",
+    "label": "Galliford Try",
+    "host": "cbct.fa.em2.oraclecloud.com",
+    "sites": [
+      "gallifordtrycareers"
+    ]
+  },
+  {
+    "token": "garrett-advancing-motion",
+    "label": "Garrett Advancing Motion",
+    "host": "ehth.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "gdi-oracle",
+    "label": "GDI",
+    "host": "ekif.fa.em2.oraclecloud.com",
+    "sites": [
+      "GDICareers"
+    ]
+  },
+  {
+    "token": "government-of-new-brunswick",
+    "label": "Government of New Brunswick",
+    "host": "emgi.fa.ca3.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "great-canadian-entertainment",
+    "label": "Great Canadian Entertainment",
+    "host": "elvk.fa.ca3.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "guinness",
+    "label": "Guinness",
+    "host": "eobn.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "hand-protection",
+    "label": "Hand Protection",
+    "host": "emdm.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "havering",
+    "label": "Havering",
+    "host": "elfy.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "hcc",
+    "label": "HCC",
+    "host": "hcre.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_3001"
+    ]
+  },
+  {
+    "token": "hcgn",
+    "label": "hcgn",
+    "host": "hcgn.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "hcut",
+    "label": "hcut",
+    "host": "hcut.fa.ap2.oraclecloud.com",
+    "sites": [
+      "Careers"
+    ]
+  },
+  {
+    "token": "hcwp",
+    "label": "hcwp",
+    "host": "hcwp.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1",
+      "CX_8001"
+    ]
+  },
+  {
+    "token": "hcwx",
+    "label": "hcwx",
+    "host": "hcwx.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_12",
+      "CX_2"
+    ]
+  },
+  {
+    "token": "hdhe",
+    "label": "hdhe",
+    "host": "hdhe.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "healthcareersinsask-ca",
+    "label": "HealthCareersInSask.ca",
+    "host": "emqk.fa.ca3.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "heathrow",
+    "label": "Heathrow",
+    "host": "encd.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_6005"
+    ]
+  },
+  {
+    "token": "heriot-watt-university",
+    "label": "Heriot-Watt University",
+    "host": "enzj.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "hill-minimal-112022",
+    "label": "Hill Minimal 112022",
+    "host": "hcib.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "hillside",
+    "label": "Hillside",
+    "host": "ebrf.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "hilton-grand-vacations",
+    "label": "Hilton Grand Vacations",
+    "host": "efuq.fa.us6.oraclecloud.com",
+    "sites": [
+      "HiltonGrandVacations"
+    ]
+  },
+  {
+    "token": "hoffman-construction-company",
+    "label": "Hoffman Construction Company",
+    "host": "efsp.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "hologic",
+    "label": "Hologic",
+    "host": "ebwb.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "hub-group",
+    "label": "Hub Group",
+    "host": "hdat.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "hus-urasivusto",
+    "label": "HUS Urasivusto",
+    "host": "ejnv.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "ib",
+    "label": "IB",
+    "host": "ejst.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "ifm-investors",
+    "label": "IFM Investors",
+    "host": "enlc.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "income-insurance-limited",
+    "label": "Income Insurance Limited",
+    "host": "etvy.fa.ap2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "infoblox",
+    "label": "Infoblox",
+    "host": "efpv.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "inspira-health",
+    "label": "Inspira Health",
+    "host": "ernh.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "integris-health",
+    "label": "INTEGRIS Health",
+    "host": "ertr.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_3001"
+    ]
+  },
+  {
+    "token": "interbank",
+    "label": "Interbank",
+    "host": "epvw.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "ipsos",
+    "label": "Ipsos",
+    "host": "ecqf.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "irena-employment",
+    "label": "IRENA Employment",
+    "host": "eexh.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "jdi",
+    "label": "JDI",
+    "host": "hcpd.fa.ca2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "jefferies",
+    "label": "Jefferies",
+    "host": "hdid.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "jobs-carmeuse",
+    "label": "Jobs @ Carmeuse",
+    "host": "ekiz.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "jobs-onsemi",
+    "label": "Jobs onsemi",
+    "host": "hctz.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "jurong-port",
+    "label": "Jurong Port",
+    "host": "ephv.fa.ap2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "kcb-group",
+    "label": "KCB Group",
+    "host": "eoin.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_3001"
+    ]
+  },
+  {
+    "token": "king-ranch",
+    "label": "King Ranch",
+    "host": "eeof.fa.us6.oraclecloud.com",
+    "sites": [
+      "King"
+    ]
+  },
+  {
+    "token": "kings-college",
+    "label": "King's College",
+    "host": "effb.fa.em3.oraclecloud.com",
+    "sites": [
+      "KingsCareerPortal"
+    ]
+  },
+  {
+    "token": "kldiscovery",
+    "label": "KLDiscovery",
+    "host": "ekug.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1001",
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "kpmg-global-services",
+    "label": "KPMG Global Services",
+    "host": "ejgk.fa.em2.oraclecloud.com",
+    "sites": [
+      "jobsearch",
+      "CX_1"
+    ]
+  },
+  {
+    "token": "kroll",
+    "label": "Kroll",
+    "host": "hcxs.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1"
+    ]
+  },
+  {
+    "token": "lambeth",
+    "label": "Lambeth",
+    "host": "effe.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "landmark-group",
+    "label": "LANDMARK GROUP",
+    "host": "efhi.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "lbc-orc",
+    "label": "LBC ORC",
+    "host": "ecum.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_2"
+    ]
+  },
+  {
+    "token": "learning-care-group",
+    "label": "Learning Care Group",
+    "host": "ejql.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "lewisham",
+    "label": "Lewisham",
+    "host": "efuy.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1",
+      "CX_5002"
+    ]
+  },
+  {
+    "token": "lhcg-volunteer",
+    "label": "LHCG Volunteer",
+    "host": "erzb.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "lucy-group",
+    "label": "Lucy Group",
+    "host": "hdga.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "macys",
+    "label": "Macy's",
+    "host": "ebwh.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1001",
+      "CX_1002"
+    ]
+  },
+  {
+    "token": "marie-curie-volunteers",
+    "label": "Marie Curie - Volunteers",
+    "host": "eofb.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_4001"
+    ]
+  },
+  {
+    "token": "mas-holdings",
+    "label": "MAS Holdings",
+    "host": "egmh.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "mauser-packaging-solutions",
+    "label": "Mauser Packaging Solutions",
+    "host": "hdpn.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "mbc-group",
+    "label": "MBC Group",
+    "host": "ehff.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "mcleod",
+    "label": "McLeod",
+    "host": "erym.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "michael-baker-international",
+    "label": "Michael Baker International",
+    "host": "ebxs.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_2"
+    ]
+  },
+  {
+    "token": "milaha",
+    "label": "Milaha",
+    "host": "ejqa.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_4"
+    ]
+  },
+  {
+    "token": "misk-foundation-new-career-site-splash-page",
+    "label": "Misk Foundation New Career Site Splash Page",
+    "host": "ejpi.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "molina-talent-acquisition",
+    "label": "Molina Talent Acquisition",
+    "host": "hckd.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "morrisons",
+    "label": "Morrisons",
+    "host": "eicg.fa.em2.oraclecloud.com",
+    "sites": [
+      "MorrisonsJobs"
+    ]
+  },
+  {
+    "token": "mountaire",
+    "label": "Mountaire",
+    "host": "ebtg.fa.us2.oraclecloud.com",
+    "sites": [
+      "Career"
+    ]
+  },
+  {
+    "token": "mouser",
+    "label": "Mouser",
+    "host": "eabw.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "mtn",
+    "label": "MTN",
+    "host": "ehle.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "mufg-pension-market-services",
+    "label": "MUFG Pension & Market Services",
+    "host": "hcmn.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "mx",
+    "label": "MX",
+    "host": "ehtc.fa.ca2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "mycronic-job-openings",
+    "label": "Mycronic Job Openings",
+    "host": "ehtv.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "myriad-genetics",
+    "label": "Myriad Genetics",
+    "host": "ekgn.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "nahdi",
+    "label": "Nahdi",
+    "host": "efan.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "namos-solutions",
+    "label": "Namos Solutions",
+    "host": "edfl.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "national-pen",
+    "label": "National Pen",
+    "host": "eihb.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "nationwide",
+    "label": "Nationwide",
+    "host": "dnn.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "naturescot",
+    "label": "NatureScot",
+    "host": "ejki.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "ncga",
+    "label": "NCGA",
+    "host": "eoee.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "nci",
+    "label": "NCI",
+    "host": "enhi.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "nemourscareersite",
+    "label": "NemoursCareerSite",
+    "host": "epyz.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "new-lhrc",
+    "label": "New LHRC",
+    "host": "evqk.fa.us8.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "newham",
+    "label": "Newham",
+    "host": "elyq.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "next",
+    "label": "Next",
+    "host": "ekeq.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_3001"
+    ]
+  },
+  {
+    "token": "nhc-innovation",
+    "label": "NHC Innovation",
+    "host": "eghj.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_6001",
+      "CX_8001"
+    ]
+  },
+  {
+    "token": "nmc",
+    "label": "NMC",
+    "host": "eiby.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1",
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "nmt",
+    "label": "NMT",
+    "host": "ejvr.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_2"
+    ]
+  },
+  {
+    "token": "northwest-mississippi-community-college",
+    "label": "Northwest Mississippi Community College",
+    "host": "emor.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "nottingham-city-council",
+    "label": "Nottingham City Council",
+    "host": "eism.fa.em2.oraclecloud.com",
+    "sites": [
+      "ncc",
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "nov",
+    "label": "NOV",
+    "host": "egay.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_4001"
+    ]
+  },
+  {
+    "token": "nova-systems",
+    "label": "Nova Systems",
+    "host": "epdj.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "nrc-norcap",
+    "label": "NRC NORCAP",
+    "host": "ekum.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_2019"
+    ]
+  },
+  {
+    "token": "nri",
+    "label": "NRI",
+    "host": "edtq.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "nsf",
+    "label": "NSF",
+    "host": "hcnz.fa.us2.oraclecloud.com",
+    "sites": [
+      "NSFCareers"
+    ]
+  },
+  {
+    "token": "ocbc",
+    "label": "OCBC",
+    "host": "empq.fa.ap2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "oceaneering",
+    "label": "Oceaneering",
+    "host": "ebfr.fa.us2.oraclecloud.com",
+    "sites": [
+      "jobs"
+    ]
+  },
+  {
+    "token": "onity",
+    "label": "Onity",
+    "host": "ebhz.fa.us2.oraclecloud.com",
+    "sites": [
+      "Onity"
+    ]
+  },
+  {
+    "token": "ooba",
+    "label": "ooba",
+    "host": "ejuu.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "oracle",
+    "label": "Oracle",
+    "host": "eeho.fa.us2.oraclecloud.com",
+    "sites": [
+      "jobsearch"
+    ]
+  },
+  {
+    "token": "oxford-nanopore-technologies",
+    "label": "Oxford Nanopore Technologies",
+    "host": "ejnh.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "pearson",
+    "label": "Pearson",
+    "host": "hccz.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_2"
+    ]
+  },
+  {
+    "token": "pella-windows-doors",
+    "label": "Pella Windows & Doors",
+    "host": "ebgj.fa.us2.oraclecloud.com",
+    "sites": [
+      "Pella"
+    ]
+  },
+  {
+    "token": "pittsburg-state-university",
+    "label": "Pittsburg State University",
+    "host": "ebyf.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "pni",
+    "label": "PNI",
+    "host": "efyb.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "powell",
+    "label": "Powell",
+    "host": "ekcf.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "providence",
+    "label": "Providence",
+    "host": "evac.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1003",
+      "CX_1"
+    ]
+  },
+  {
+    "token": "psrs",
+    "label": "PSRS",
+    "host": "ejrd.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_4"
+    ]
+  },
+  {
+    "token": "pulse-oracle",
+    "label": "Pulse",
+    "host": "ejgl.fa.ap1.oraclecloud.com",
+    "sites": [
+      "UOWPULSE"
+    ]
+  },
+  {
+    "token": "qic",
+    "label": "QIC",
+    "host": "ejbe.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "quad",
+    "label": "Quad",
+    "host": "ebud.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "quest-diagnostics",
+    "label": "Quest Diagnostics",
+    "host": "hdox.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "r-l-carriers",
+    "label": "R+L Carriers",
+    "host": "erhk.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "reiter-affiliated-companies",
+    "label": "Reiter Affiliated Companies",
+    "host": "eohm.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_6004"
+    ]
+  },
+  {
+    "token": "resideo",
+    "label": "Resideo",
+    "host": "ehtl.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1",
+      "CX_2",
+      "CX"
+    ]
+  },
+  {
+    "token": "rheem",
+    "label": "Rheem",
+    "host": "hdde.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "rice-university-minimal-template",
+    "label": "Rice University Minimal Template",
+    "host": "emdz.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "ricoh",
+    "label": "Ricoh",
+    "host": "cbha.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "s-c",
+    "label": "S&C",
+    "host": "ejia.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "safaricom-telecommunications-ethiopia-plc",
+    "label": "Safaricom Telecommunications Ethiopia PLC",
+    "host": "egjd.fa.us6.oraclecloud.com",
+    "sites": [
+      "STEP"
+    ]
+  },
+  {
+    "token": "saic",
+    "label": "SAIC",
+    "host": "eihu.fa.us8.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "samsonite",
+    "label": "Samsonite",
+    "host": "ekkf.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1"
+    ]
+  },
+  {
+    "token": "samuel-son-co-1855",
+    "label": "Samuel, Son & Co. 1855",
+    "host": "ebct.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_3002"
+    ]
+  },
+  {
+    "token": "savannah-river-national-laboratory",
+    "label": "Savannah River National Laboratory",
+    "host": "ewvl.fa.us8.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "savencia",
+    "label": "Savencia",
+    "host": "eoct.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_2005"
+    ]
+  },
+  {
+    "token": "sbh",
+    "label": "SBH",
+    "host": "eigx.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_13",
+      "CX_1"
+    ]
+  },
+  {
+    "token": "sbic",
+    "label": "SBIC",
+    "host": "edox.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_3001"
+    ]
+  },
+  {
+    "token": "schroders",
+    "label": "Schroders",
+    "host": "ekbq.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_2"
+    ]
+  },
+  {
+    "token": "seaspan",
+    "label": "Seaspan",
+    "host": "hckz.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_2003"
+    ]
+  },
+  {
+    "token": "sedgman",
+    "label": "Sedgman",
+    "host": "elgl.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_2004"
+    ]
+  },
+  {
+    "token": "shaner",
+    "label": "SHANER",
+    "host": "ebwv.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "sherwin-williams",
+    "label": "Sherwin-Williams",
+    "host": "ejhp.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_2"
+    ]
+  },
+  {
+    "token": "si-group",
+    "label": "SI Group",
+    "host": "hccg.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "sitio-carrera-essa",
+    "label": "Sitio Carrera ESSA",
+    "host": "hbcp.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_3"
+    ]
+  },
+  {
+    "token": "skidmore",
+    "label": "Skidmore",
+    "host": "eodq.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "slab-careersite",
+    "label": "SLAB_Careersite",
+    "host": "efpb.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "southern-company",
+    "label": "Southern Company",
+    "host": "emje.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "st-croix-county",
+    "label": "St. Croix County",
+    "host": "efff.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "stantec",
+    "label": "Stantec",
+    "host": "hdhl.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "station-casinos",
+    "label": "Station Casinos",
+    "host": "ejfh.fa.us6.oraclecloud.com",
+    "sites": [
+      "StationCasinos"
+    ]
+  },
+  {
+    "token": "stats-perform",
+    "label": "Stats Perform",
+    "host": "eobe.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "subaru",
+    "label": "Subaru",
+    "host": "hcal.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "suffolk-jobs-direct",
+    "label": "Suffolk Jobs Direct",
+    "host": "eoce.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "sumitomo-shi-fw",
+    "label": "Sumitomo SHI FW",
+    "host": "eiox.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "sundt",
+    "label": "Sundt",
+    "host": "eewl.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1"
+    ]
+  },
+  {
+    "token": "sunflower",
+    "label": "Sunflower",
+    "host": "ecvu.fa.us2.oraclecloud.com",
+    "sites": [
+      "SunflowerCareers"
+    ]
+  },
+  {
+    "token": "tata-capital",
+    "label": "Tata Capital",
+    "host": "eofh.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_3001"
+    ]
+  },
+  {
+    "token": "te-herenga-wakavictoria-university-of-wellington",
+    "label": "Te Herenga Waka\u2014Victoria University of Wellington",
+    "host": "ejye.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "telenet",
+    "label": "Telenet",
+    "host": "ebza.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "tenet-healthcare-corporation",
+    "label": "Tenet Healthcare Corporation",
+    "host": "eodr.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "texas-childrens",
+    "label": "Texas Children's",
+    "host": "eohh.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "texas-instruments",
+    "label": "Texas Instruments",
+    "host": "edbz.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "texas-womans-university-twu",
+    "label": "Texas Woman\u2019s University | TWU",
+    "host": "ewal.fa.us8.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "tforce-freight",
+    "label": "TForce Freight",
+    "host": "efjm.fa.ca2.oraclecloud.com",
+    "sites": [
+      "TForceFreight"
+    ]
+  },
+  {
+    "token": "the-fedcap-group",
+    "label": "The Fedcap Group",
+    "host": "eckb.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1001",
+      "CX_1011",
+      "CX_1003"
+    ]
+  },
+  {
+    "token": "the-kroger-co",
+    "label": "The Kroger Co.",
+    "host": "eluq.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "trans-ova-genetics",
+    "label": "Trans Ova Genetics",
+    "host": "hdjm.fa.ca2.oraclecloud.com",
+    "sites": [
+      "TransOva",
+      "CX_3",
+      "CX_2"
+    ]
+  },
+  {
+    "token": "twe-global",
+    "label": "TWE Global",
+    "host": "ebpm.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "uc-health",
+    "label": "UC Health",
+    "host": "eswt.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1001"
+    ]
+  },
+  {
+    "token": "uisce-eireann",
+    "label": "Uisce \u00c9ireann",
+    "host": "elyx.fa.em2.oraclecloud.com",
+    "sites": [
+      "careers"
+    ]
+  },
+  {
+    "token": "undp",
+    "label": "UNDP",
+    "host": "estm.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1",
+      "CX_1001",
+      "CX_2003"
+    ]
+  },
+  {
+    "token": "unitedlex",
+    "label": "UnitedLex",
+    "host": "ekkk.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "university-of-edinburgh",
+    "label": "University of Edinburgh",
+    "host": "elxw.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1001",
+      "CX_1004"
+    ]
+  },
+  {
+    "token": "university-of-waikato",
+    "label": "University of Waikato",
+    "host": "elhs.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "uob-employee",
+    "label": "UoB Employee",
+    "host": "edzz.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_6001"
+    ]
+  },
+  {
+    "token": "uow",
+    "label": "UOW",
+    "host": "efhc.fa.ca2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "uw-health",
+    "label": "UW Health",
+    "host": "eimy.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "valaris",
+    "label": "Valaris",
+    "host": "efqq.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1008"
+    ]
+  },
+  {
+    "token": "vanderbilt-university",
+    "label": "Vanderbilt University",
+    "host": "ecsr.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "vdot",
+    "label": "VDOT",
+    "host": "etgi.fa.us8.oraclecloud.com",
+    "sites": [
+      "CX_4005"
+    ]
+  },
+  {
+    "token": "viking-office",
+    "label": "Viking Office",
+    "host": "ehkf.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_2001"
+    ]
+  },
+  {
+    "token": "wells-enterprises",
+    "label": "Wells Enterprises",
+    "host": "hcsb.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "west-midlands-police",
+    "label": "West Midlands Police",
+    "host": "ecwz.fa.em3.oraclecloud.com",
+    "sites": [
+      "WMP"
+    ]
+  },
+  {
+    "token": "westpac-group",
+    "label": "Westpac Group",
+    "host": "ebuu.fa.ap1.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "williams-sonoma",
+    "label": "Williams-Sonoma",
+    "host": "ehac.fa.us6.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "wm",
+    "label": "WM",
+    "host": "emcm.fa.us2.oraclecloud.com",
+    "sites": [
+      "WMCareers"
+    ]
+  },
+  {
+    "token": "wood",
+    "label": "Wood",
+    "host": "ehif.fa.em2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "working-at-signature-aviation",
+    "label": "Working at Signature Aviation",
+    "host": "hdbt.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
+    "token": "worthington-steel",
+    "label": "Worthington Steel",
+    "host": "cbdt.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX"
+    ]
+  },
+  {
+    "token": "wsp",
+    "label": "WSP",
+    "host": "emit.fa.ca3.oraclecloud.com",
+    "sites": [
+      "CX",
+      "CX_1005",
+      "CX_1004"
+    ]
+  },
+  {
+    "token": "wtw",
+    "label": "WTW",
+    "host": "eedu.fa.em3.oraclecloud.com",
+    "sites": [
+      "CX_1003"
+    ]
+  },
+  {
+    "token": "yum",
+    "label": "Yum!",
+    "host": "eczd.fa.us2.oraclecloud.com",
+    "sites": [
+      "CX_1",
+      "CX_4001",
+      "CX_9001"
+    ]
+  }
+]

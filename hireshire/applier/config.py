@@ -8,8 +8,9 @@ from typing import Any, Literal, Optional, get_args
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-from hireshire import paths
+from hireshire import oracle_tenants, paths
 from hireshire.applier import limits
+from hireshire.direct import tenants
 
 logger = logging.getLogger(__name__)
 
@@ -212,10 +213,14 @@ def _direct_portals() -> list[str]:
             (paths.SHIPPED_CONFIG / "direct_companies.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         logger.debug("Could not read direct_companies.json for the exclusions: %s", exc)
-        return []
-    if not isinstance(value, list):
-        return []
-    return [str(v).strip() for v in value if str(v).strip()]
+        value = []
+    portals = [str(v).strip() for v in value if str(v).strip()] if isinstance(value, list) else []
+    # The data-file Eightfold tenants are direct portals too, excluded the same way
+    # as the four tenants that have modules. The Oracle Recruiting Cloud employers are
+    # excluded too: guest apply there asks for an emailed code, which would end every
+    # session in Needs Attention anyway. Each file is read on its own, so one
+    # unreadable file does not drop the others' names.
+    return portals + tenants.tokens() + oracle_tenants.tokens()
 
 
 def _with_direct_portals(companies: list[str]) -> list[str]:

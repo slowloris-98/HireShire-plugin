@@ -27,6 +27,7 @@ from hireshire.http_client import build_client
 from hireshire.scrapers.ashby import AshbyScraper
 from hireshire.scrapers.bamboohr import BambooHRScraper
 from hireshire.scrapers.gem import GemScraper
+from hireshire.scrapers.oracle import OracleScraper
 from hireshire.direct.locations import filter_haystack, infer_country
 from hireshire.direct.scope import resolve_scope
 from hireshire.scrapers.direct import DirectScraper
@@ -124,9 +125,10 @@ async def main(
     bamboohr_companies = list(config.bamboohr_companies)
     workday_companies = list(config.workday_companies)
     direct_companies = list(config.direct_companies)
+    oracle_companies = list(config.oracle_companies)
 
     if not (greenhouse_companies or lever_companies or ashby_companies or gem_companies
-            or bamboohr_companies or workday_companies or direct_companies):
+            or bamboohr_companies or workday_companies or direct_companies or oracle_companies):
         if not quiet:
             console.print("[yellow]No companies to scrape. Check `enabled_platforms` in scraper.yaml.[/yellow]")
         return
@@ -168,6 +170,8 @@ async def main(
             sources.append(f"[bold]{len(workday_companies)}[/bold] via Workday")
         if direct_companies:
             sources.append(f"[bold]{len(direct_companies)}[/bold] via direct portals")
+        if oracle_companies:
+            sources.append(f"[bold]{len(oracle_companies)}[/bold] via Oracle Recruiting")
         console.print(f"Fetching from {' + '.join(sources)}")
         console.print()
 
@@ -202,6 +206,11 @@ async def main(
                 max_pages=settings.direct_max_pages, cutoff=cutoff,
                 scope=resolve_scope(settings.location_filter) if direct_companies else None,
             )
+            # List-only, like the direct portals: the description is one detail call
+            # per job, which the matcher funnel makes only for jobs past its gates.
+            oracle_scraper = OracleScraper(
+                client, settings.make_limiter("oracle"), settings.retry_attempts, cutoff=cutoff,
+            )
 
             total_companies = (
                 len(greenhouse_companies)
@@ -211,6 +220,7 @@ async def main(
                 + len(bamboohr_companies)
                 + len(workday_companies)
                 + len(direct_companies)
+                + len(oracle_companies)
             )
             await store.set_companies_total(total_companies)
             prog_ctx = (
@@ -342,6 +352,7 @@ async def main(
                     run_board(bamboohr_companies, bamboohr_scraper, "bamboohr_token", "bamboohr"),
                     run_board(workday_companies, workday_scraper, "workday_token", "workday"),
                     run_board(direct_companies, direct_scraper, "direct_token", "direct"),
+                    run_board(oracle_companies, oracle_scraper, "oracle_token", "oracle"),
                 )
 
         await store.finalise_run(started_at, stats=dict(counters))

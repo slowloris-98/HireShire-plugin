@@ -320,7 +320,7 @@ _PORTALS = ["amazon", "apple", "appliedmaterials", "google", "intuit", "lumen", 
 
 def _exclusions(tmp_path, monkeypatch, user_list: str, portals: str | None) -> list[str]:
     shipped = tmp_path / "shipped"
-    shipped.mkdir()
+    shipped.mkdir(exist_ok=True)
     if portals is not None:
         (shipped / "direct_companies.json").write_text(portals, encoding="utf-8")
     applier = tmp_path / "applier.yaml"
@@ -348,6 +348,41 @@ def test_the_users_own_exclusions_survive_and_are_not_repeated(tmp_path, monkeyp
 def test_an_unreadable_portal_list_leaves_the_users_exclusions_alone(tmp_path, monkeypatch,
                                                                      portals):
     assert _exclusions(tmp_path, monkeypatch, "[acme]", portals) == ["acme"]
+
+
+_TENANT_ROW = {"token": "bostonscientific", "label": "Boston Scientific",
+               "base": "https://bostonscientific.eightfold.ai", "domain": "bostonscientific.com"}
+
+
+def _write_tenants(tmp_path, rows) -> None:
+    shipped = tmp_path / "shipped"
+    shipped.mkdir(exist_ok=True)
+    (shipped / "eightfold_tenants.json").write_text(json.dumps(rows), encoding="utf-8")
+
+
+def test_a_data_file_eightfold_tenant_is_excluded_like_a_direct_portal(tmp_path, monkeypatch):
+    """A tenant with no module is still a direct portal, so it is kept out of the
+    applier exactly as Lumen and Qualcomm are."""
+    _write_tenants(tmp_path, [_TENANT_ROW])
+    got = _exclusions(tmp_path, monkeypatch, "[acme]", json.dumps(_PORTALS))
+    assert {c.lower() for c in got} == set(_PORTALS) | {"acme", "bostonscientific"}
+
+
+def test_the_tenant_exclusions_survive_an_unreadable_portal_list(tmp_path, monkeypatch):
+    _write_tenants(tmp_path, [_TENANT_ROW])
+    assert _exclusions(tmp_path, monkeypatch, "[acme]", "not json") == ["acme", "bostonscientific"]
+
+
+def test_every_oracle_recruiting_employer_is_excluded(tmp_path, monkeypatch):
+    """Guest apply on Oracle Recruiting Cloud asks for an emailed code, so every
+    session would end in Needs Attention anyway; none is started."""
+    shipped = tmp_path / "shipped"
+    shipped.mkdir(exist_ok=True)
+    (shipped / "oracle_companies.json").write_text(json.dumps([
+        {"token": "bdo-usa", "label": "BDO USA", "host": "ebqb.fa.us2.oraclecloud.com",
+         "sites": ["CX_1"]}]), encoding="utf-8")
+    got = _exclusions(tmp_path, monkeypatch, "[acme]", "not json")
+    assert got == ["acme", "bdo-usa"]
 
 
 def test_the_session_is_given_the_users_own_location_list(tmp_path, launcher):

@@ -575,7 +575,7 @@ Four things that trip people up:
    > board types searches many more employers, but each run takes considerably
    > longer.
 
-   Default is `greenhouse`, `ashby`, `lever`, `gem`, `direct`; the slower two are
+   Default is `greenhouse`, `ashby`, `lever`, `gem`, `direct`, `oracle`; the slower two are
    `workday` and `bamboohr`. Do not quote employer counts, and do not quote a specific
    multiplier for the extra time — nobody has timed it yet. Say "considerably
    longer" until a real timed run exists.

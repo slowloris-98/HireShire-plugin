@@ -37,6 +37,7 @@ python matcher.py                     # gate → rerank → cutoff → score
 python orchestrate.py --once          # both, writing a results CSV
 python scripts/calibrate_cutoffs.py   # what rerank.min_score should be, from real runs
 python scripts/discover_slugs.py      # new ATS slugs from Common Crawl; dry run, --write merges
+python scripts/discover_all.py        # slugs + Eightfold + Oracle in turn; dry run, --write merges
 
 # Engine, as the plugin runs it (re-execs into the venv in the data dir)
 python scripts/run_engine.py orchestrate.py --once
@@ -156,7 +157,42 @@ Consequences already worked out, which should not be re-derived:
   pre-Gem defaults, and leaves a trimmed list alone because trimming was a choice. The
   accepted cost: with those four on, Gem cannot be switched off by itself. A future
   board that should reach existing installs needs the same treatment, with its own
-  pre-board baseline.
+  pre-board baseline. **Oracle Recruiting Cloud is the second such board**:
+  `_PRE_ORACLE_DEFAULTS` is the five defaults before it, and the rule runs *after* the
+  Gem rule, so an install from before Gem that never trimmed its boards gains both.
+
+- **Oracle Recruiting Cloud employers are rows in `config/oracle_companies.json`, grown
+  only by `scripts/discover_oracle.py`** (add-only, the sibling of
+  `discover_eightfold.py`). `hireshire/oracle_tenants.py` is the only reader. Five
+  things were measured on live pods and fail silently if undone:
+  - **Everything goes to the pod, `<pod>.fa.<region>.oraclecloud.com`, never the
+    employer's careers domain.** `careers.americanexpress.com` answers the API with a
+    redirect to a 404 page; the pod host is written in that page, which is how
+    `--extra` turns a vanity URL into a row.
+  - **A pod answers an unknown site number with its default site's jobs.** On BDO,
+    `CX`, `CX_xx` and `jobsearch` all returned the same 675 as `BDOExperiencedCareers`,
+    while the real second site `CX_1` had jobs the main one lacks. So every crawled
+    site "works": `prune_sites` keeps a site only if its first page reaches ids the
+    kept ones do not, and the scraper still dedupes a pod's sites by requisition id.
+    Do not drop the pruning because every site answered 200.
+  - **Requisition ids are small integers that repeat between employers**, so `job_id`
+    is `oracle:<token>:<id>`. A bare id would make the overview's buttons ambiguous.
+  - **`PostedDate` has no time, and it is read as the END of its day** (capped at the
+    scrape), not midnight. `scraper.py`'s age gate compares instants, so a midnight
+    reading drops a job posted at 22:00 UTC from the 01:00 sweep that first sees it —
+    and from every later sweep, so it is never seen at all. The end-of-day reading can
+    only keep a job up to a day too long. The newest-first walk (`limit` caps at 200)
+    stops on a whole page dated before the cutoff's *day*, and the detail call
+    replaces the date with the exact `ExternalPostedStartDate`.
+  - **The list has no description**, so `oracle` is in `DETAIL_SOURCES` and
+    `detail_path` is `host|site|id`: the funnel's detail fetcher holds no employer
+    list. The detail also adds the secondary locations, which the list omits, so the
+    location gate at scrape time sees only the primary one.
+
+  The token is a readable slug of the site page's title, because the dashboard prints
+  `board_token` as the company; a clash with another board's slug gets `-oracle`.
+  Every Oracle token is in the applier's exclusions: guest apply asks for an emailed
+  code, which would end each session in Needs Attention anyway.
 - **The recurring sweep is NOT session-scoped, and nothing may make it so again.**
   `scripts/run_orchestration.py` is an ordinary sleep/sweep loop. `--monitor` runs it
   recurring, `--sweep` runs one cycle (`--once`) and is what the OS scheduler entry
@@ -1543,6 +1579,27 @@ suppresses Rich in favour of `logging` — required under the monitor.
     country** (Lumen: US 113, India 14, the `OR` form 113) — so do not "simplify" the
     per-country walk into one request. Read `locations`, never `standardizedLocations`:
     on Lumen the short form renders "Remote, United States" as `Remote, OR, US`, Oregon.
+
+    **Every other Eightfold tenant is a row in `config/eightfold_tenants.json`, not a
+    module.** `hireshire/direct/tenants.py` is its only reader, so the company loader,
+    `direct._HANDLERS` and the applier's exclusions cannot disagree; a module wins a
+    token clash. Rows come only from `scripts/discover_eightfold.py`, which is add-only
+    like `discover_slugs.py` and reuses its index plumbing. Four things it learned:
+    - **A tenant is a host, so the candidate is the subdomain of `*.eightfold.ai`** and
+      `domain=` is read off the crawled URLs' own query strings, then the careers page's
+      escaped config. It is **never guessed**: a wrong one answers zero positions, which
+      reads as an empty board. `volkscience.com` (Eightfold's legal name) is the
+      placeholder an unconfigured host reports, and is never a tenant's domain.
+    - **`base` is the tenant's own host and is never shared.** `app.eightfold.ai`
+      answers Lumen by `domain=` but gives Boston Scientific zero, and a moved tenant's
+      careers page redirects to its own domain, which becomes `base`.
+    - **A token that is another board's slug gets `-eightfold`.** The applier excludes
+      by company token, so a bare `deloitte` tenant would have switched auto-apply off
+      for Lever's `deloitte` board. `tests/test_discover_eightfold.py` fails on a clash.
+    - **Not every tenant serves PCSX.** Netflix answers 403 on `/api/pcsx/search` and
+      426 jobs on the older `/api/apply/v2/jobs`, a different shape the walk does not
+      read; such tenants stay `unverified`, as do BNY and American Express, which have
+      moved off `eightfold.ai` (404) to vanity domains `--extra` can add.
   - **Rivian** is a Jibe board (`/api/jobs`, 100 a page, description in the list) with
     **no scope column**: its `country=` answers an unknown value with 0 jobs and a 200,
     and the facet exists only where Rivian has openings. The board is ~1,000 jobs, so it
