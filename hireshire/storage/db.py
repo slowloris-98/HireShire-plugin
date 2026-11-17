@@ -989,7 +989,7 @@ class Database:
         blob is only written when the matcher finalises and the page has to be right
         mid-sweep. Note it therefore **no longer reproduces the matcher's own
         `stages["above_cutoff"]`**, which counts YoE drops in on purpose — see the YoE
-        section of CLAUDE.md. The tile and `matcher.py`'s `above cutoff → judged`
+        section of `docs/dev/funnel.md`. The tile and `matcher.py`'s `above cutoff → judged`
         console line are answering different questions and will disagree.
         """
         return (

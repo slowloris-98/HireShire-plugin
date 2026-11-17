@@ -3,7 +3,7 @@
 This replaced `orchestration_status.py`, which answered "is a sweep running" from a
 heartbeat, a five-minute staleness window and a liveness veto. All of that existed to
 support `--status` and a session-scoped teardown, and both are gone — see the note in
-CLAUDE.md on why the sweep no longer couples itself to a Claude Code session.
+`docs/dev/runtime.md` on why the sweep no longer couples itself to a Claude Code session.
 
 Two callers, and only two:
 

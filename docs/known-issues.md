@@ -8,7 +8,7 @@ marked fixed — the fix is in `CHANGELOG.md` and the git history, and a table o
 things that are no longer true is a table nobody rereads. **IDs are stable and are
 never reused**, so gaps are expected (A2, A3 and S1 were resolved and removed on
 2026-09-22, A5 and R1 on 2026-09-22, S4 on 2026-10-02, and D1 was added and resolved on
-2026-10-03) and `CLAUDE.md`'s references to an issue by number stay valid.
+2026-10-03) and `docs/dev/`'s references to an issue by number stay valid.
 
 ## Applier
 

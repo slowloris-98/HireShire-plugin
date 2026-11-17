@@ -1,0 +1,5 @@
+# hireshire/applier — developer notes
+
+Loaded when Claude works in this directory. The detail lives in `docs/dev/`.
+
+@../../docs/dev/applier.md
