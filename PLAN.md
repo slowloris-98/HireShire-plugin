@@ -180,7 +180,7 @@ default sweep is ~10,000 and the rest is one setup answer away.
 > recorded against that run only. The layering below was not the problem; the
 > problem was that the list could only ever grow, because nothing re-checked it
 > during a sweep and the only road back was a terminal command. See the
-> "no dead-slug skip list" bullet in `CLAUDE.md` for the full reasoning. Kept here
+> "no dead-slug skip list" bullet in `docs/dev/boards-and-locations.md` for the full reasoning. Kept here
 > as a record of the original plan — do not implement it.
 
 `config/bad_slugs.json` is mutated at runtime *and* must receive our curated updates — but

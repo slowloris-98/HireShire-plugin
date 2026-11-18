@@ -4,6 +4,14 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.33.1] — 2026-11-17
+
+### Added
+
+- **Akamai's careers site is now searched.** It runs on Oracle's careers software, so
+  it is part of the default sweep like the other Oracle employers, and applying there
+  is left to you: its shortlisted jobs appear under Needs Attention.
+
 ## [0.33.0] — 2026-11-16
 
 ### Added

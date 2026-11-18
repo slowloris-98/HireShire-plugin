@@ -2,7 +2,7 @@
 
 How a job gets from a company's careers page to your shortlist.
 
-See the [specs](SPECS.md) for install and settings, and `CLAUDE.md` for the
+See the [specs](SPECS.md) for install and settings, and `docs/dev/` for the
 file-level internals.
 
 ## The whole flow

@@ -17,7 +17,8 @@ smart applier:
 
 
 New companies:
-eightfold slugs
+tesla
+akamai
 naukri api
 
 

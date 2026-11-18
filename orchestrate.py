@@ -443,7 +443,7 @@ async def _stop_report_ticker(ticker: asyncio.Task, busy: threading.Lock) -> Non
     """End the ticker and wait for any rebuild it already started.
 
     Both halves are required, and the ordering they protect is documented in
-    CLAUDE.md: the pages' meta refresh is armed only while the pipeline's `runs`
+    `docs/dev/reports.md`: the pages' meta refresh is armed only while the pipeline's `runs`
     row is absent, so the `final=True` write must be the last one. Cancelling the task
     alone is not enough — `schedule` dispatches to an executor thread, so a rebuild
     fired a moment earlier can still be mid-write and would land *after* the final

@@ -554,7 +554,8 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
     llm_key = "" if score is None else e(str(score))
     return (
         f'<details class="job" id="j:{e(job.get("job_id"))}" data-hay="{e(hay)}" '
-        f'data-posted="{_epoch(job.get("posted_at"))}" data-llm="{llm_key}">'
+        f'data-posted="{_epoch(job.get("posted_at"))}" data-llm="{llm_key}"'
+        f'{" data-declined" if reason == DECLINED_BY_USER else ""}>'
         "<summary>"
         f'<span class="job-i">{rank}</span>'
         f'<span class="job-t">{e(title)}{sub_html}</span>'
@@ -569,7 +570,8 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
 
 
 def _accordion(key: str, label: str, jobs: list[dict], total: int,
-               applied: bool = False, attention: bool = False) -> str:
+               applied: bool = False, attention: bool = False,
+               hide_declined: bool = False) -> str:
     """One section: a filter box, a sticky column header, a bounded scroll box.
 
     No pagination, unlike the last section, and deliberately: every row is already
@@ -610,7 +612,9 @@ def _accordion(key: str, label: str, jobs: list[dict], total: int,
         '<option value="posted">Newest posted</option>'
         '<option value="llm">Highest LLM score</option>'
         "</select>"
-        '<span class="filter-note f-note"></span>'
+        + ('<label><input type="checkbox" class="f-declined"> Hide declined</label>'
+           if hide_declined else "")
+        + '<span class="filter-note f-note"></span>'
         "</div>"
         f'<div class="scroll-y" id="rows:{e(key)}" tabindex="0" data-keep-scroll="1">'
         f"{_JOB_HEAD}{rows}"
@@ -829,13 +833,15 @@ _FILTER_SCRIPT = """
         ? total.toLocaleString() + " shown"
         : n.toLocaleString() + " of " + total.toLocaleString();
     }
-    input.addEventListener("input", function () {
+    var hide = root.querySelector(".f-declined");
+    function apply() {
       // `data-hay` is lowercased server-side, so this is one `indexOf` per row per
       // keystroke with no allocation — 300 rows stay instant on a phone.
       var q = input.value.trim().toLowerCase(), n = 0;
       for (var j = 0; j < total; j++) {
         var row = rows[j];
-        var hit = !q || (row.getAttribute("data-hay") || "").indexOf(q) !== -1;
+        var hit = (!q || (row.getAttribute("data-hay") || "").indexOf(q) !== -1)
+          && !(hide && hide.checked && row.hasAttribute("data-declined"));
         // `hidden` rather than a class: it takes the row out of layout *and* out of
         // the accessibility tree, and a row the reader had open stays open while
         // hidden — clearing the filter brings it back expanded rather than reset.
@@ -844,8 +850,17 @@ _FILTER_SCRIPT = """
       }
       scroller.scrollTop = 0;
       paint(n);
-    });
+    }
+    input.addEventListener("input", apply);
     paint(total);
+    if (hide && scroller.id) {
+      var hideKey = scroller.id + ":hide";
+      if (readSorts()[hideKey]) { hide.checked = true; apply(); }
+      hide.addEventListener("change", function () {
+        apply();
+        saveSort(hideKey, hide.checked);
+      });
+    }
   }
 })();
 </script>
@@ -1264,7 +1279,7 @@ def build(snapshot: dict[str, Any], label: str | None = None) -> str:
   {_accordion("applied", "Jobs Applied", snapshot["applied"], snapshot["applied_total"], applied=True)}
   {_accordion("attention", "Needs Attention", attention, attention_total, attention=True)}
   {_accordion("shortlisted", "Jobs Shortlisted (to be applied)", snapshot["shortlisted"], snapshot["shortlisted_total"])}
-  {_accordion("filtered", "Jobs Filtered (yet to be scored or not picked)", snapshot["filtered"], snapshot["filtered_total"])}
+  {_accordion("filtered", "Jobs Filtered (yet to be scored or not picked)", snapshot["filtered"], snapshot["filtered_total"], hide_declined=True)}
 {seen_html}
 </div>"""
 
