@@ -70,6 +70,14 @@
     ]
   },
   {
+    "token": "akamai",
+    "label": "Akamai",
+    "host": "fa-extu-saasfaprod1.fa.ocs.oraclecloud.com",
+    "sites": [
+      "CX_1"
+    ]
+  },
+  {
     "token": "al-othman-holding-company",
     "label": "Al-Othman Holding Company",
     "host": "eknh.fa.em2.oraclecloud.com",

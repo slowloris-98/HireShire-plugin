@@ -18,6 +18,7 @@ smart applier:
 
 New companies:
 tesla
+akamai
 naukri api
 
 
