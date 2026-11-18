@@ -214,6 +214,12 @@ tokens, so against an 8,192-token window the setting is a cost dial, not a limit
   for `Assistant Coach` and `Assistant Restaurant Manager`), and localised employers
   fragment (~+900 to +1,010 LLM calls per sweep, which land on the retryable cap).
 
+  A description of `2 * max_word_diff` words or fewer is treated like an empty one —
+  a singleton. Two n-word texts sharing no word differ by 2n, so below that length the
+  limit carries no evidence. Point72 ships the title as the whole description, and
+  five unrelated jobs ("Network Support Engineer", "Cloud Security Specialist", …)
+  shared one verdict and one application before this guard.
+
 
 ## The codex judge
 

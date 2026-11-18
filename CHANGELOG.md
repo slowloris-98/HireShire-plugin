@@ -4,6 +4,26 @@ All notable changes to this plugin are documented here. Versions follow
 [semver](https://semver.org/); users only receive an update when `version` in
 `.claude-plugin/plugin.json` is bumped.
 
+## [0.34.0] — 2026-11-17
+
+### Added
+
+- **Jobs Filtered has a "Hide declined" box** beside its sort menu. Tick it to hide the
+  jobs you marked as not pursuing, leaving the ones that did not make the thresholds.
+  It stays ticked while the page refreshes during a sweep.
+
+### Fixed
+
+- **Duplicate postings in Jobs Filtered now say why they are there.** When an employer
+  posts the same job several times, one copy is scored and applied to and the rest
+  share its score. Those copies used to show a high score and no reason; they now read
+  "Duplicate requisition — verdict copied from its cluster".
+- **Jobs with almost no description are no longer treated as duplicates of each other.**
+  Some employers publish only the job title as the description, and unrelated jobs
+  there (a network support role and a cloud security role, say) were grouped as one,
+  so only one of them was scored and applied to. Each is now scored on its own. Jobs
+  already grouped this way are left as they were.
+
 ## [0.33.1] — 2026-11-17
 
 ### Added

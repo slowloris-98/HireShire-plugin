@@ -176,6 +176,12 @@ def group(
     Postings with no description are never clustered — an absent description is an
     absence of evidence, not evidence of uniqueness, and the alternative is grouping
     jobs on nothing at all. They come back as singletons.
+
+    So do descriptions of `2 * max_word_diff` words or fewer. Two n-word texts with no
+    word in common differ by 2n, so at that length the limit cannot tell one job from
+    an unrelated one. Point72 ships the title as the whole description, and five
+    unrelated jobs ("Network Support Engineer", "Cloud Security Specialist", …) merged
+    under one verdict and one application.
     """
     scores = scores or {}
 
@@ -194,7 +200,7 @@ def group(
 
         for job in sorted(board_jobs, key=lambda j: _rank_key(j, scores)):
             tokens = normalise_description(getattr(job, "content_text", None))
-            if not tokens:
+            if len(tokens) <= 2 * max_word_diff:
                 clusters.append([job])
                 continue
 

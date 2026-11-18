@@ -225,6 +225,10 @@ def test_empty_pool_never_loads_the_model():
 
 # --- clustering ------------------------------------------------------------------
 
+# Long enough to be compared: `cluster.group` leaves descriptions of 20 words or
+# fewer unclustered, since a 10-word limit cannot tell two such texts apart.
+REQUISITION = " ".join(f"duty{i}" for i in range(40))
+
 def test_repeat_postings_share_one_call():
     """31 copies of one requisition once consumed 31 of 100 slots. One cluster, one
     call — and the copies come back as siblings so their score can be filled in.
@@ -237,7 +241,7 @@ def test_repeat_postings_share_one_call():
     not consulted at all.
     """
     dupes = [
-        make_job(str(i), content_text="one requisition, posted five times")
+        make_job(str(i), content_text=REQUISITION)
         for i in range(5)
     ]
     other = make_job("99", title="Client Success Manager")
@@ -263,7 +267,7 @@ def test_every_member_of_a_dropped_cluster_gets_its_own_row():
     """A member with no row never reaches the all-jobs export and is never marked
     seen — it simply vanishes from the run, which is the one outcome clustering is
     supposed to make impossible."""
-    dupes = [make_job(str(i), content_text="one requisition") for i in range(3)]
+    dupes = [make_job(str(i), content_text=REQUISITION) for i in range(3)]
     other = make_job("50", title="Client Success Manager")
 
     _, dropped, _ = run_batch([*dupes, other], min_score=99.0)

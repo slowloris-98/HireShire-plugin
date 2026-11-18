@@ -435,6 +435,19 @@ def test_a_location_skip_without_a_recorded_location_still_reads(tmp_path):
     assert "page says" not in block
 
 
+def test_a_cluster_sibling_keeps_its_score_and_says_why(tmp_path):
+    """A sibling carries a real score copied from its representative and is never
+    shortlisted. Without the label an 88 in Jobs Filtered reads as unexplained."""
+    db = _populated(tmp_path)
+    _match(db, RUN, "j6", score=88, shortlisted=False, skipped=True,
+           reason="duplicate_of_cluster", rerank=7.50)
+    db.insert_jobs(RUN, [_job("j6")])
+
+    block = _job_block(overview.build(_snapshot(db), RUN), "j6")
+    assert '<span class="job-s">88</span>' in block
+    assert data.reason_label("duplicate_of_cluster") in block
+
+
 def test_the_last_section_is_ordered_by_the_cross_encoder(tmp_path):
     db = _populated(tmp_path)
     _match(db, RUN, "j6", score=0, skipped=True, reason="rerank_below_cutoff",
