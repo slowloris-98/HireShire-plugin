@@ -140,13 +140,17 @@ def test_results_are_emitted_before_the_sweep_finishes(harness):
     assert result.job_id == "j1"
 
 
+# Long enough to be compared: descriptions of 20 words or fewer are never clustered.
+REQUISITION = " ".join(f"duty{i}" for i in range(40))
+
+
 def test_no_llm_run_emits_every_job_including_cluster_siblings(harness):
     db = harness
     jobs = [
-        make_job("d1", "Multi-Media Account Executive", content_text="one requisition"),
-        make_job("d2", "Multi-Media Account Executive", content_text="one requisition"),
+        make_job("d1", "Multi-Media Account Executive", content_text=REQUISITION),
+        make_job("d2", "Multi-Media Account Executive", content_text=REQUISITION),
         # Same requisition, different title — the title is not consulted.
-        make_job("d3", "Multi-Media Account Executive - 101.5", content_text="one requisition"),
+        make_job("d3", "Multi-Media Account Executive - 101.5", content_text=REQUISITION),
         make_job("solo", "Client Success Manager"),
     ]
     forwarded = run_queue_mode(jobs, db)

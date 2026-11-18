@@ -465,7 +465,6 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
     results CSV leaves `llm_score` blank to avoid.
     """
     reason = job.get("skip_reason") or ""
-    judged = reason in ("", "duplicate_of_cluster")
     score = job.get("relevance_score") if reason in _SCORED_REASONS else None
     shortlisted = bool(job.get("shortlisted"))
     url = job.get("absolute_url") or ""
@@ -477,7 +476,9 @@ def _job_entry(job: dict, rank: int, applied: bool = False,
     # is a whole sentence, and the applied stamp is a status plus a timestamp. Both
     # sit under the title, which keeps the six columns scannable and — the part that
     # matters — keeps a *why* on the section whose only question is why.
-    sub = "" if judged else data.reason_label(reason)
+    # A cluster sibling is labelled too: it carries a real score copied from its
+    # representative, and without the line a high score here reads as unexplained.
+    sub = data.reason_label(reason) if reason else ""
     # The location the applier's session actually read off the page. Worth naming: the
     # bare label says a job is out of scope, this says which place put it there, and
     # the alternative is reopening the posting to find out. Absent on rows written

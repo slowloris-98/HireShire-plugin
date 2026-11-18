@@ -137,6 +137,26 @@ def test_postings_without_a_description_are_never_clustered(empty):
     assert cluster_sizes(jobs) == [1, 1, 1]
 
 
+def test_a_stub_description_is_never_clustered():
+    """Point72 ships the title as the whole description. Two 3-word texts sharing no
+    word differ by 6, inside the limit of 10, so they used to merge — unrelated jobs
+    under one verdict and one application."""
+    jobs = [
+        make_job("a", content_text="Network Support Engineer"),
+        make_job("b", content_text="Cloud Security Specialist"),
+        make_job("c", content_text="Network Support Engineer"),
+    ]
+    assert cluster_sizes(jobs) == [1, 1, 1]
+
+
+def test_the_stub_bound_is_twice_the_limit():
+    """21 words is the shortest text the limit can still separate from an unrelated one."""
+    at = text(tuple(f"w{i}" for i in range(20)))
+    past = text(tuple(f"w{i}" for i in range(21)))
+    assert len(group([make_job("a", content_text=at), make_job("b", content_text=at)])) == 2
+    assert len(group([make_job("a", content_text=past), make_job("b", content_text=past)])) == 1
+
+
 def test_an_absent_description_never_joins_a_real_cluster():
     jobs = [
         make_job("a", content_text=text(BASE)),
